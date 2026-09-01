@@ -29,6 +29,20 @@
       "when": 1788245489971,
       "tag": "0003_charming_zaladane",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1788248943407,
+      "tag": "0004_sweet_puma",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1788250663289,
+      "tag": "0005_silky_deathstrike",
+      "breakpoints": true
     }
   ]
 }

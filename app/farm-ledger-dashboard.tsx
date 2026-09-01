@@ -31,6 +31,7 @@ import {
   LayoutDashboard,
   Link2,
   List,
+  LockKeyhole,
   Loader2,
   Mail,
   MapPin,
@@ -90,6 +91,7 @@ import {
   FARM_INBOX_STATUS_LABELS,
   FARM_PROJECT_STATUS_LABELS,
   FARM_PROJECT_TYPE_LABELS,
+  FARM_VISIT_STATUS_LABELS,
   FARM_WORK_STATUS_LABELS,
   FARM_WORK_PRIORITY_LABELS,
   FARM_WORK_TYPE_LABELS,
@@ -104,7 +106,9 @@ import {
   type FarmProjectType,
   type FarmRecord,
   type FarmRecordInput,
+  type FarmVisitStatus,
   type FarmWorkItem,
+  type FarmWorkVisit,
   type FarmWorkPriority,
   type SubscriptionStatus,
 } from '@/lib/farm-types';
@@ -128,13 +132,14 @@ type DialogKind =
   | 'inbox'
   | 'inbox_route'
   | 'history'
+  | 'visit'
   | null;
 type FormSubmitEvent = Parameters<
   NonNullable<ComponentProps<'form'>['onSubmit']>
 >[0];
 type WorkType = FarmWorkItem['workType'];
 type WorkStatus = FarmWorkItem['status'];
-type WorkMode = 'inbox' | 'board' | 'list' | 'review';
+type WorkMode = 'inbox' | 'control' | 'board' | 'list' | 'review';
 type HistoryChannel = FarmHistoryEntry['channel'];
 
 const FARM_LOG_TYPE_LABELS = FARM_WORK_TYPE_LABELS;
@@ -168,6 +173,10 @@ interface WorkItemForm extends HistoryDraft {
   nextAction: string;
   priority: FarmWorkPriority;
   reviewDate: string;
+  responseDueAt: string;
+  blockedReason: string;
+  blockedBy: string;
+  expectedUnblockDate: string;
   checklistText: string;
 }
 
@@ -179,6 +188,24 @@ interface HistoryForm extends HistoryDraft {
   owner: string;
   dueDate: string;
   expectedOutcome: string;
+  responseDueAt: string;
+  markResponded: boolean;
+  blockedReason: string;
+  blockedBy: string;
+  expectedUnblockDate: string;
+}
+
+interface VisitForm {
+  id: string;
+  scheduledAt: string;
+  assignedTo: string;
+  status: FarmVisitStatus;
+  actualStartedAt: string;
+  actualEndedAt: string;
+  preparationNote: string;
+  result: string;
+  nextVisitAt: string;
+  recordedBy: string;
 }
 
 interface InboxForm {
@@ -205,6 +232,8 @@ const emptyWorkspace: FarmLedgerWorkspace = {
   records: [],
   inboxItems: [],
   workItems: [],
+  blockerEpisodes: [],
+  visits: [],
   checklistItems: [],
   historyEntries: [],
 };
@@ -263,6 +292,14 @@ function dateWithOffset(days: number) {
   const date = new Date();
   date.setDate(date.getDate() + days);
   return localDateString(date);
+}
+
+function responseTargetValue(
+  priority: FarmWorkPriority = 'medium',
+  base = new Date(),
+) {
+  const hours = priority === 'high' ? 24 : priority === 'medium' ? 72 : 168;
+  return localDateTimeValue(new Date(base.getTime() + hours * 3600000));
 }
 
 function addYears(dateValue: string, years: number) {
@@ -332,6 +369,92 @@ function dueClass(dateValue: string, completed = false) {
   if (days !== null && days <= 7)
     return 'border-[#ead9b8] bg-[#fff9ed] text-[#94601c]';
   return 'border-[#d9dfda] bg-[#f5f7f5] text-[#707b73]';
+}
+
+type ResponseRisk =
+  | 'none'
+  | 'stable'
+  | 'warning'
+  | 'urgent'
+  | 'breached'
+  | 'achieved'
+  | 'failed';
+
+function responseRisk(
+  workItem: FarmWorkItem,
+  referenceTimestamp: number,
+): ResponseRisk {
+  if (!workItem.responseDueAt) return 'none';
+  if (workItem.respondedAt) {
+    return workItem.respondedAt <= workItem.responseDueAt
+      ? 'achieved'
+      : 'failed';
+  }
+  const hours = (workItem.responseDueAt - referenceTimestamp) / 3600000;
+  if (hours < 0) return 'breached';
+  if (hours <= 24) return 'urgent';
+  if (hours <= 72) return 'warning';
+  return 'stable';
+}
+
+function responseRiskLabel(risk: ResponseRisk) {
+  return {
+    none: '응답 목표 없음',
+    stable: '응답 여유',
+    warning: '응답 주의',
+    urgent: '24시간 이내',
+    breached: '응답 목표 초과',
+    achieved: '응답 목표 달성',
+    failed: '응답 목표 실패',
+  }[risk];
+}
+
+function responseRiskClass(risk: ResponseRisk) {
+  if (risk === 'breached' || risk === 'failed')
+    return 'border-[#efc4b7] bg-[#fff1ed] text-[#aa4e30]';
+  if (risk === 'urgent') return 'border-[#ead0b2] bg-[#fff5e8] text-[#9c5c12]';
+  if (risk === 'warning') return 'border-[#eadfba] bg-[#fffbea] text-[#8b6a20]';
+  if (risk === 'achieved')
+    return 'border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]';
+  return 'border-[#d9dfda] bg-[#f5f7f5] text-[#707b73]';
+}
+
+const RESPONSE_RISK_ORDER: Record<ResponseRisk, number> = {
+  breached: 0,
+  urgent: 1,
+  warning: 2,
+  failed: 3,
+  stable: 4,
+  none: 5,
+  achieved: 6,
+};
+
+function compareServiceWorkItems(
+  left: FarmWorkItem,
+  right: FarmWorkItem,
+  referenceTimestamp: number,
+) {
+  const completionOrder =
+    Number(left.status === 'completed') - Number(right.status === 'completed');
+  if (completionOrder) return completionOrder;
+
+  const riskOrder =
+    RESPONSE_RISK_ORDER[responseRisk(left, referenceTimestamp)] -
+    RESPONSE_RISK_ORDER[responseRisk(right, referenceTimestamp)];
+  if (riskOrder) return riskOrder;
+
+  if (left.status === 'waiting' && right.status === 'waiting') {
+    const blockedOrder =
+      (left.blockedAt || left.updatedAt) - (right.blockedAt || right.updatedAt);
+    if (blockedOrder) return blockedOrder;
+  }
+
+  return right.lastActivityAt - left.lastActivityAt;
+}
+
+function elapsedDays(timestamp: number) {
+  if (!timestamp) return 0;
+  return Math.max(0, Math.floor((Date.now() - timestamp) / 86400000));
 }
 
 function csvCell(value: string | number) {
@@ -424,6 +547,10 @@ function emptyWorkItemForm(farmRecordId = ''): WorkItemForm {
     nextAction: '',
     priority: 'medium',
     reviewDate: dateWithOffset(3),
+    responseDueAt: responseTargetValue('medium'),
+    blockedReason: '',
+    blockedBy: '',
+    expectedUnblockDate: '',
     checklistText: '',
   };
 }
@@ -436,6 +563,10 @@ function emptyHistoryForm(
   owner = '',
   dueDate = '',
   expectedOutcome = '',
+  responseDueAt = '',
+  blockedReason = '',
+  blockedBy = '',
+  expectedUnblockDate = '',
 ): HistoryForm {
   return {
     ...emptyHistoryDraft(),
@@ -446,6 +577,27 @@ function emptyHistoryForm(
     owner,
     dueDate,
     expectedOutcome,
+    responseDueAt,
+    markResponded: false,
+    blockedReason,
+    blockedBy,
+    expectedUnblockDate,
+  };
+}
+
+function emptyVisitForm(owner = '', scheduledAt = ''): VisitForm {
+  return {
+    id: '',
+    scheduledAt:
+      scheduledAt || localDateTimeValue(new Date(Date.now() + 86400000)),
+    assignedTo: owner,
+    status: 'scheduled',
+    actualStartedAt: '',
+    actualEndedAt: '',
+    preparationNote: '',
+    result: '',
+    nextVisitAt: '',
+    recordedBy: owner,
   };
 }
 
@@ -483,6 +635,14 @@ function workPriorityClass(priority: FarmWorkPriority) {
     return 'border-[#efc8bb] bg-[#fff1ec] text-[#a94f32]';
   if (priority === 'low') return 'border-[#d8dfdc] bg-[#f5f7f6] text-[#6d7972]';
   return 'border-[#d7d8b8] bg-[#fbfaed] text-[#7d762d]';
+}
+
+function visitStatusClass(status: FarmVisitStatus) {
+  if (status === 'completed')
+    return 'border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]';
+  if (status === 'canceled')
+    return 'border-[#d9dfda] bg-[#f5f7f5] text-[#707b73]';
+  return 'border-[#c9d9ef] bg-[#f0f5fb] text-[#416c9c]';
 }
 
 function WorkIcon({
@@ -539,6 +699,7 @@ export function FarmLedgerDashboard() {
   const [view, setView] = useState<View>('overview');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [riskNow, setRiskNow] = useState(() => Date.now());
   const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState('all');
@@ -568,6 +729,7 @@ export function FarmLedgerDashboard() {
   const [historyForm, setHistoryForm] = useState<HistoryForm>(() =>
     emptyHistoryForm(),
   );
+  const [visitForm, setVisitForm] = useState<VisitForm>(() => emptyVisitForm());
   const [inboxForm, setInboxForm] = useState<InboxForm>(() => emptyInboxForm());
   const [clarifyingInboxId, setClarifyingInboxId] = useState('');
   const [inboxRouteFarmId, setInboxRouteFarmId] = useState('');
@@ -592,6 +754,8 @@ export function FarmLedgerDashboard() {
         !Array.isArray(data.farms) ||
         !Array.isArray(data.inboxItems) ||
         !Array.isArray(data.workItems) ||
+        !Array.isArray(data.blockerEpisodes) ||
+        !Array.isArray(data.visits) ||
         !Array.isArray(data.checklistItems) ||
         !Array.isArray(data.historyEntries)
       ) {
@@ -622,6 +786,11 @@ export function FarmLedgerDashboard() {
     const timer = window.setTimeout(() => void loadWorkspace(), 0);
     return () => window.clearTimeout(timer);
   }, [loadWorkspace]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setRiskNow(Date.now()), 60000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const recordsByFarm = useMemo(() => {
     const map = new Map<string, FarmRecord[]>();
@@ -669,6 +838,31 @@ export function FarmLedgerDashboard() {
     return map;
   }, [workspace.checklistItems]);
 
+  const blockerEpisodesByWorkItem = useMemo(() => {
+    const map = new Map<string, typeof workspace.blockerEpisodes>();
+    for (const episode of workspace.blockerEpisodes) {
+      map.set(episode.workItemId, [
+        ...(map.get(episode.workItemId) ?? []),
+        episode,
+      ]);
+    }
+    for (const episodes of map.values()) {
+      episodes.sort((a, b) => b.openedAt - a.openedAt);
+    }
+    return map;
+  }, [workspace.blockerEpisodes]);
+
+  const visitsByWorkItem = useMemo(() => {
+    const map = new Map<string, FarmWorkVisit[]>();
+    for (const visit of workspace.visits) {
+      map.set(visit.workItemId, [...(map.get(visit.workItemId) ?? []), visit]);
+    }
+    for (const visits of map.values()) {
+      visits.sort((a, b) => b.scheduledAt - a.scheduledAt);
+    }
+    return map;
+  }, [workspace.visits]);
+
   const projectById = useMemo(
     () => new Map(workspace.projects.map((project) => [project.id, project])),
     [workspace.projects],
@@ -700,6 +894,12 @@ export function FarmLedgerDashboard() {
     : [];
   const selectedChecklist = selectedWorkItem
     ? (checklistByWorkItem.get(selectedWorkItem.id) ?? [])
+    : [];
+  const selectedBlockerEpisodes = selectedWorkItem
+    ? (blockerEpisodesByWorkItem.get(selectedWorkItem.id) ?? [])
+    : [];
+  const selectedVisits = selectedWorkItem
+    ? (visitsByWorkItem.get(selectedWorkItem.id) ?? [])
     : [];
 
   function projectForWorkItem(workItem: FarmWorkItem) {
@@ -813,6 +1013,8 @@ export function FarmLedgerDashboard() {
           workItem.description,
           workItem.expectedOutcome,
           workItem.nextAction,
+          workItem.blockedReason,
+          workItem.blockedBy,
           farm?.name ?? '',
           project?.name ?? '',
           ...entries.flatMap((entry) => [
@@ -878,14 +1080,13 @@ export function FarmLedgerDashboard() {
       .includes(inboxRouteFarmQuery);
   });
   const totalInProgressCount = workspace.workItems.filter(
-    (item) => item.status === 'in_progress',
+    (item) => item.status === 'in_progress' || item.status === 'waiting',
   ).length;
   const today = localDateString();
   const sevenDaysAgo =
     new Date(`${today}T00:00:00`).getTime() - 7 * 24 * 60 * 60 * 1000;
   const recentCompletedWorkItems = workspace.workItems.filter(
-    (item) =>
-      item.status === 'completed' && item.lastActivityAt >= sevenDaysAgo,
+    (item) => item.status === 'completed' && item.completedAt >= sevenDaysAgo,
   );
   const missingNextActionWorkItems = workspace.workItems.filter(
     (item) => item.status !== 'completed' && !item.nextAction.trim(),
@@ -897,7 +1098,7 @@ export function FarmLedgerDashboard() {
       item.reviewDate <= today,
   );
   const staleWaitingWorkItems = workspace.workItems.filter(
-    (item) => item.status === 'waiting' && item.lastActivityAt < sevenDaysAgo,
+    (item) => item.status === 'waiting' && item.blockedAt < sevenDaysAgo,
   );
   const overdueWorkItems = workspace.workItems.filter((workItem) => {
     const days = daysUntil(workItem.dueDate);
@@ -909,6 +1110,115 @@ export function FarmLedgerDashboard() {
       workItem.status !== 'completed' && days !== null && days >= 0 && days <= 7
     );
   });
+  const pendingResponseWorkItems = workspace.workItems
+    .filter(
+      (item) =>
+        item.status !== 'completed' &&
+        item.responseDueAt > 0 &&
+        item.respondedAt === 0,
+    )
+    .sort((a, b) => a.responseDueAt - b.responseDueAt);
+  const untargetedResponseWorkItems = workspace.workItems
+    .filter(
+      (item) =>
+        item.status !== 'completed' &&
+        item.responseDueAt === 0 &&
+        (historiesByWorkItem.get(item.id) ?? []).some((entry) =>
+          entry.receivedContent.trim(),
+        ),
+    )
+    .sort((a, b) => a.lastActivityAt - b.lastActivityAt);
+  const breachedResponseWorkItems = pendingResponseWorkItems.filter(
+    (item) => responseRisk(item, riskNow) === 'breached',
+  );
+  const urgentResponseWorkItems = pendingResponseWorkItems.filter((item) =>
+    ['urgent', 'warning'].includes(responseRisk(item, riskNow)),
+  );
+  const blockedWorkItems = workspace.workItems
+    .filter((item) => item.status === 'waiting')
+    .sort(
+      (a, b) => (a.blockedAt || a.updatedAt) - (b.blockedAt || b.updatedAt),
+    );
+  const controlRiskCount = new Set([
+    ...breachedResponseWorkItems.map((item) => item.id),
+    ...blockedWorkItems.map((item) => item.id),
+  ]).size;
+  const startOfToday = new Date(`${today}T00:00:00`).getTime();
+  const endOfToday = startOfToday + 86400000;
+  const visitQueue = workspace.visits
+    .filter(
+      (visit) =>
+        visit.status === 'scheduled' &&
+        visit.scheduledAt < startOfToday + 8 * 86400000,
+    )
+    .sort((a, b) => a.scheduledAt - b.scheduledAt);
+  const todayVisits = visitQueue.filter(
+    (visit) =>
+      visit.scheduledAt >= startOfToday && visit.scheduledAt < endOfToday,
+  );
+  const ownerLoadSummaries = [
+    ...workspace.workItems
+      .filter((item) => item.status !== 'completed')
+      .reduce(
+        (map, item) => {
+          const current = map.get(item.owner) ?? {
+            owner: item.owner,
+            active: 0,
+            high: 0,
+            overdue: 0,
+            blocked: 0,
+          };
+          current.active += 1;
+          if (item.priority === 'high') current.high += 1;
+          if ((daysUntil(item.dueDate) ?? 0) < 0) current.overdue += 1;
+          if (item.status === 'waiting') current.blocked += 1;
+          map.set(item.owner, current);
+          return map;
+        },
+        new Map<
+          string,
+          {
+            owner: string;
+            active: number;
+            high: number;
+            overdue: number;
+            blocked: number;
+          }
+        >(),
+      )
+      .values(),
+  ].sort(
+    (a, b) => b.overdue - a.overdue || b.high - a.high || b.active - a.active,
+  );
+  const projectHealthSummaries = workspace.projects
+    .filter((project) => project.status === 'active')
+    .map((project) => {
+      const items = workspace.workItems.filter(
+        (item) => recordById.get(item.farmRecordId)?.projectId === project.id,
+      );
+      const activeItems = items.filter((item) => item.status !== 'completed');
+      const hasOffTrack = activeItems.some(
+        (item) =>
+          responseRisk(item, riskNow) === 'breached' ||
+          (item.priority === 'high' && (daysUntil(item.dueDate) ?? 0) < 0) ||
+          (item.status === 'waiting' && elapsedDays(item.blockedAt) >= 5),
+      );
+      const hasRisk = activeItems.some(
+        (item) =>
+          ['urgent', 'warning'].includes(responseRisk(item, riskNow)) ||
+          (daysUntil(item.dueDate) ?? 0) < 0 ||
+          item.status === 'waiting',
+      );
+      return {
+        project,
+        items: activeItems,
+        health: hasOffTrack ? 'off_track' : hasRisk ? 'at_risk' : 'on_track',
+      } as const;
+    })
+    .sort((a, b) => {
+      const rank = { off_track: 0, at_risk: 1, on_track: 2 };
+      return rank[a.health] - rank[b.health] || b.items.length - a.items.length;
+    });
   const weeklyReviewItems = [
     ...new Map(
       [
@@ -916,6 +1226,7 @@ export function FarmLedgerDashboard() {
         ...overdueWorkItems,
         ...reviewDueWorkItems,
         ...staleWaitingWorkItems,
+        ...breachedResponseWorkItems,
       ].map((item) => [item.id, item]),
     ).values(),
   ].sort((a, b) => a.lastActivityAt - b.lastActivityAt);
@@ -1331,10 +1642,60 @@ export function FarmLedgerDashboard() {
         workItem.owner,
         workItem.dueDate,
         workItem.expectedOutcome,
+        workItem.responseDueAt
+          ? localDateTimeValue(new Date(workItem.responseDueAt))
+          : '',
+        workItem.blockedReason,
+        workItem.blockedBy,
+        workItem.expectedUnblockDate,
       ),
     );
     setFormError('');
     setDialog('history');
+  }
+
+  function openVisitDialog(visit?: FarmWorkVisit) {
+    if (!selectedWorkItem) return;
+    if (selectedWorkItem.status === 'completed') {
+      toast.add({
+        title: '완료된 업무입니다',
+        description: '업무를 다시 진행 상태로 바꾼 뒤 방문을 추가해 주세요.',
+        type: 'warning',
+      });
+      return;
+    }
+    if (visit && visit.status !== 'scheduled') {
+      toast.add({
+        title: '완료·취소 기록은 잠겨 있습니다',
+        description: '현장 증빙을 보존하기 위해 사후 수정할 수 없습니다.',
+        type: 'warning',
+      });
+      return;
+    }
+    setVisitForm(
+      visit
+        ? {
+            id: visit.id,
+            scheduledAt: localDateTimeValue(new Date(visit.scheduledAt)),
+            assignedTo: visit.assignedTo,
+            status: visit.status,
+            actualStartedAt: visit.actualStartedAt
+              ? localDateTimeValue(new Date(visit.actualStartedAt))
+              : '',
+            actualEndedAt: visit.actualEndedAt
+              ? localDateTimeValue(new Date(visit.actualEndedAt))
+              : '',
+            preparationNote: visit.preparationNote,
+            result: visit.result,
+            nextVisitAt: visit.nextVisitAt
+              ? localDateTimeValue(new Date(visit.nextVisitAt))
+              : '',
+            recordedBy: visit.recordedBy,
+          }
+        : emptyVisitForm(selectedWorkItem.owner),
+    );
+    setFormError('');
+    setDialog('visit');
   }
 
   function openInboxDialog() {
@@ -1373,6 +1734,10 @@ export function FarmLedgerDashboard() {
       description: '수신함에서 정리한 요청입니다.',
       expectedOutcome:
         '요청 사항을 처리하고 농가 또는 사업 담당자에게 결과를 확인받습니다.',
+      responseDueAt: responseTargetValue(
+        'medium',
+        new Date(inboxItem.receivedAt),
+      ),
       channel: inboxItem.channel,
       sender: inboxItem.sender,
       receivedContent: inboxItem.content,
@@ -1753,6 +2118,19 @@ export function FarmLedgerDashboard() {
               workItemForm.status === 'completed'
                 ? ''
                 : workItemForm.reviewDate,
+            responseDueAt: workItemForm.responseDueAt
+              ? new Date(workItemForm.responseDueAt).getTime()
+              : 0,
+            blockedReason:
+              workItemForm.status === 'waiting'
+                ? workItemForm.blockedReason
+                : '',
+            blockedBy:
+              workItemForm.status === 'waiting' ? workItemForm.blockedBy : '',
+            expectedUnblockDate:
+              workItemForm.status === 'waiting'
+                ? workItemForm.expectedUnblockDate
+                : '',
           },
           history: {
             channel: workItemForm.channel,
@@ -1827,6 +2205,20 @@ export function FarmLedgerDashboard() {
             owner: historyForm.owner,
             dueDate: historyForm.dueDate,
             expectedOutcome: historyForm.expectedOutcome,
+            responseDueAt: historyForm.responseDueAt
+              ? new Date(historyForm.responseDueAt).getTime()
+              : 0,
+            markResponded: historyForm.markResponded,
+            blockedReason:
+              historyForm.newStatus === 'waiting'
+                ? historyForm.blockedReason
+                : '',
+            blockedBy:
+              historyForm.newStatus === 'waiting' ? historyForm.blockedBy : '',
+            expectedUnblockDate:
+              historyForm.newStatus === 'waiting'
+                ? historyForm.expectedUnblockDate
+                : '',
           },
         }),
       });
@@ -1846,6 +2238,62 @@ export function FarmLedgerDashboard() {
         error instanceof Error
           ? error.message
           : '진행 기록을 추가하지 못했습니다.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitVisit(event: FormSubmitEvent) {
+    event.preventDefault();
+    if (!selectedWorkItem) return;
+    setSubmitting(true);
+    setFormError('');
+    try {
+      const response = await fetch('/api/farm-ledger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'visit',
+          visit: {
+            id: visitForm.id,
+            workItemId: selectedWorkItem.id,
+            scheduledAt: new Date(visitForm.scheduledAt).getTime(),
+            assignedTo: visitForm.assignedTo,
+            status: visitForm.status,
+            actualStartedAt: visitForm.actualStartedAt
+              ? new Date(visitForm.actualStartedAt).getTime()
+              : 0,
+            actualEndedAt: visitForm.actualEndedAt
+              ? new Date(visitForm.actualEndedAt).getTime()
+              : 0,
+            preparationNote: visitForm.preparationNote,
+            result: visitForm.result,
+            nextVisitAt: visitForm.nextVisitAt
+              ? new Date(visitForm.nextVisitAt).getTime()
+              : 0,
+            recordedBy: visitForm.recordedBy,
+          },
+        }),
+      });
+      const data = await readResponse(response);
+      if (!response.ok || !data.visit) {
+        throw new Error(data.error || '현장 방문 기록을 저장하지 못했습니다.');
+      }
+      await loadWorkspace(true);
+      setDialog(null);
+      toast.add({
+        title: visitForm.id
+          ? '현장 방문 기록을 수정했습니다'
+          : '현장 방문 일정을 등록했습니다',
+        description: selectedWorkItem.title,
+        type: 'success',
+      });
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : '현장 방문 기록을 저장하지 못했습니다.',
       );
     } finally {
       setSubmitting(false);
@@ -1875,6 +2323,10 @@ export function FarmLedgerDashboard() {
     const completedChecklist = checklist.filter(
       (item) => item.isCompleted,
     ).length;
+    const responseState = responseRisk(workItem, riskNow);
+    const nextVisit = (visitsByWorkItem.get(workItem.id) ?? [])
+      .filter((visit) => visit.status === 'scheduled')
+      .sort((a, b) => a.scheduledAt - b.scheduledAt)[0];
     const isSelected = selectedWorkItemId === workItem.id;
     return (
       <button
@@ -1909,6 +2361,14 @@ export function FarmLedgerDashboard() {
               >
                 {FARM_WORK_PRIORITY_LABELS[workItem.priority]}
               </Badge>
+              {responseState !== 'none' && (
+                <Badge
+                  variant="outline"
+                  className={responseRiskClass(responseState)}
+                >
+                  {responseRiskLabel(responseState)}
+                </Badge>
+              )}
             </div>
             <h4 className="mt-2 font-semibold text-[#29382f]">
               {workItem.title}
@@ -1923,6 +2383,17 @@ export function FarmLedgerDashboard() {
           </time>
         </div>
         <div className="mt-3 rounded-xl bg-[#f4f8f2] p-3">
+          {workItem.status === 'waiting' && (
+            <div className="mb-3 rounded-lg border border-[#efc9bd] bg-[#fff3ef] p-2.5">
+              <p className="text-[11px] font-semibold text-[#a34e33]">
+                막힌 지 {elapsedDays(workItem.blockedAt)}일 ·{' '}
+                {workItem.blockedBy || '해제 주체 미입력'}
+              </p>
+              <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#744d40]">
+                {workItem.blockedReason || '막힘 사유를 확인해 주세요.'}
+              </p>
+            </div>
+          )}
           <p className="text-[11px] font-semibold text-[#4e765b]">다음 행동</p>
           <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#435349]">
             {workItem.status === 'completed'
@@ -1932,6 +2403,13 @@ export function FarmLedgerDashboard() {
           {checklist.length > 0 && (
             <p className="mt-2 text-[11px] text-[#7b877f]">
               체크리스트 {completedChecklist}/{checklist.length}
+            </p>
+          )}
+          {nextVisit && (
+            <p className="mt-2 flex items-center gap-1 text-[11px] font-medium text-[#4f6f5a]">
+              <MapPin className="size-3" /> 다음 현장 방문{' '}
+              {formatTimestamp(nextVisit.scheduledAt, true)} ·{' '}
+              {nextVisit.assignedTo}
             </p>
           )}
         </div>
@@ -2373,14 +2851,15 @@ export function FarmLedgerDashboard() {
                       <div className="mb-6 flex flex-col justify-between gap-4 xl:flex-row xl:items-end">
                         <div>
                           <p className="text-sm font-medium text-[#647568]">
-                            GTD · Kanban · 현장 체크리스트
+                            GTD · Kanban · Service Operations
                           </p>
                           <h1 className="mt-1 text-[28px] font-bold">
                             업무 현황
                           </h1>
                           <p className="mt-2 text-sm text-[#77847b]">
                             들어온 내용을 한곳에 모으고, 다음 행동을 정해 흐름과
-                            완료 기준을 관리합니다.
+                            완료 기준을 관리하고 대응 위험·막힘·현장 방문을
+                            관제합니다.
                           </p>
                         </div>
                         <Button
@@ -2399,6 +2878,12 @@ export function FarmLedgerDashboard() {
                               '수신함',
                               Inbox,
                               unprocessedInboxItems.length,
+                            ],
+                            [
+                              'control',
+                              '서비스 관제',
+                              BarChart3,
+                              controlRiskCount,
                             ],
                             ['board', '업무 보드', LayoutDashboard, null],
                             ['list', '목록', List, null],
@@ -2445,7 +2930,7 @@ export function FarmLedgerDashboard() {
                                   {openWorkItems}건
                                 </p>
                                 <p className="mt-1 text-[11px] text-[#89938c]">
-                                  접수·처리 중·회신 대기
+                                  접수·처리 중·대기·막힘
                                 </p>
                               </CardContent>
                             </Card>
@@ -2503,7 +2988,11 @@ export function FarmLedgerDashboard() {
                               }
                             >
                               <SelectTrigger className="h-10 w-full">
-                                <SelectValue />
+                                <SelectValue>
+                                  {workTypeFilter === 'all'
+                                    ? '모든 업무 유형'
+                                    : FARM_WORK_TYPE_LABELS[workTypeFilter]}
+                                </SelectValue>
                               </SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="all">
@@ -2528,7 +3017,13 @@ export function FarmLedgerDashboard() {
                                 }
                               >
                                 <SelectTrigger className="h-10 w-full">
-                                  <SelectValue />
+                                  <SelectValue>
+                                    {workStatusFilter === 'all'
+                                      ? '모든 상태'
+                                      : FARM_WORK_STATUS_LABELS[
+                                          workStatusFilter
+                                        ]}
+                                  </SelectValue>
                                 </SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="all">모든 상태</SelectItem>
@@ -2737,6 +3232,303 @@ export function FarmLedgerDashboard() {
                         </div>
                       )}
 
+                      {workMode === 'control' && (
+                        <div className="space-y-4">
+                          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                            {[
+                              {
+                                label: '응답 목표 초과',
+                                value: breachedResponseWorkItems.length,
+                                note: '최초 확인이 늦어진 업무',
+                                tone: 'border-[#efc9bd] bg-[#fff4ef] text-[#a64f32]',
+                              },
+                              {
+                                label: '72시간 이내 대응',
+                                value: urgentResponseWorkItems.length,
+                                note: '지금 순서를 정할 업무',
+                                tone: 'border-[#ead9b8] bg-[#fff9ed] text-[#94601c]',
+                              },
+                              {
+                                label: '막힘·대기',
+                                value: blockedWorkItems.length,
+                                note: '해제 주체와 다음 조치 확인',
+                                tone: 'border-[#e7d4c7] bg-[#fff8f3] text-[#8c5c3f]',
+                              },
+                              {
+                                label: '오늘 현장 방문',
+                                value: todayVisits.length,
+                                note: '기사와 방문 일정을 확인',
+                                tone: 'border-[#cfe1d3] bg-[#f1f8f2] text-[#397154]',
+                              },
+                            ].map((item) => (
+                              <div
+                                key={item.label}
+                                className={`rounded-2xl border p-4 ${item.tone}`}
+                              >
+                                <p className="text-xs font-semibold">
+                                  {item.label}
+                                </p>
+                                <p className="mt-1 text-2xl font-bold">
+                                  {item.value}건
+                                </p>
+                                <p className="mt-1 text-[11px] opacity-70">
+                                  {item.note}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+                            <div className="space-y-4">
+                              <section className="rounded-2xl border border-[#dfe6dd] bg-white p-4 sm:p-5">
+                                <div className="mb-4 flex items-start justify-between gap-3">
+                                  <div>
+                                    <h2 className="font-bold">
+                                      서비스 목표 큐
+                                    </h2>
+                                    <p className="mt-1 text-xs text-[#7b877f]">
+                                      최초 대응 목표가 가까운 순서입니다.
+                                    </p>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    <Badge variant="outline">
+                                      대기 {pendingResponseWorkItems.length}
+                                    </Badge>
+                                    <Badge
+                                      variant="outline"
+                                      className="border-[#e5d7bb] bg-[#fff9ed] text-[#8d6727]"
+                                    >
+                                      목표 미설정{' '}
+                                      {untargetedResponseWorkItems.length}
+                                    </Badge>
+                                  </div>
+                                </div>
+                                <div className="space-y-2">
+                                  {pendingResponseWorkItems
+                                    .slice(0, 8)
+                                    .map((item) => (
+                                      <WorkItemCard
+                                        key={item.id}
+                                        workItem={item}
+                                        compact
+                                      />
+                                    ))}
+                                  {!pendingResponseWorkItems.length && (
+                                    <div className="rounded-xl bg-[#f4f8f2] p-5 text-center text-sm text-[#718078]">
+                                      최초 대응을 기다리는 업무가 없습니다.
+                                    </div>
+                                  )}
+                                  {untargetedResponseWorkItems.length > 0 && (
+                                    <div className="mt-4 rounded-xl border border-dashed border-[#e2d4b7] bg-[#fffdf7] p-3">
+                                      <p className="mb-2 text-xs font-bold text-[#806224]">
+                                        기존 수신 업무의 대응 목표를 정해 주세요
+                                      </p>
+                                      <div className="space-y-2">
+                                        {untargetedResponseWorkItems
+                                          .slice(0, 5)
+                                          .map((item) => (
+                                            <WorkItemCard
+                                              key={item.id}
+                                              workItem={item}
+                                              compact
+                                            />
+                                          ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              </section>
+
+                              <section className="rounded-2xl border border-[#ead5ca] bg-white p-4 sm:p-5">
+                                <div className="mb-4">
+                                  <h2 className="font-bold text-[#754d3d]">
+                                    막힘 해제 큐
+                                  </h2>
+                                  <p className="mt-1 text-xs text-[#8a746a]">
+                                    오래 막힌 업무부터 원인·해제 주체·다음
+                                    행동을 확인합니다.
+                                  </p>
+                                </div>
+                                <div className="space-y-2">
+                                  {blockedWorkItems.slice(0, 8).map((item) => (
+                                    <WorkItemCard
+                                      key={item.id}
+                                      workItem={item}
+                                      compact
+                                    />
+                                  ))}
+                                  {!blockedWorkItems.length && (
+                                    <div className="rounded-xl bg-[#f8f6f4] p-5 text-center text-sm text-[#80766f]">
+                                      현재 막힌 업무가 없습니다.
+                                    </div>
+                                  )}
+                                </div>
+                              </section>
+                            </div>
+
+                            <div className="space-y-4">
+                              <section className="rounded-2xl border border-[#dfe6dd] bg-white p-4 sm:p-5">
+                                <div className="mb-4 flex items-start justify-between gap-3">
+                                  <div>
+                                    <h2 className="font-bold">
+                                      현장 방문 일정
+                                    </h2>
+                                    <p className="mt-1 text-xs text-[#7b877f]">
+                                      지난 미완료 방문과 앞으로 7일 일정입니다.
+                                    </p>
+                                  </div>
+                                  <MapPin className="size-5 text-[#4d805e]" />
+                                </div>
+                                <div className="space-y-2">
+                                  {visitQueue.slice(0, 10).map((visit) => {
+                                    const workItem = workItemById.get(
+                                      visit.workItemId,
+                                    );
+                                    const farm = workItem
+                                      ? farmById.get(workItem.farmId)
+                                      : null;
+                                    const delayed =
+                                      visit.scheduledAt < startOfToday;
+                                    return (
+                                      <button
+                                        key={visit.id}
+                                        type="button"
+                                        disabled={!workItem}
+                                        onClick={() =>
+                                          workItem &&
+                                          openFarm(workItem.farmId, workItem.id)
+                                        }
+                                        className="w-full rounded-xl border border-[#e1e7df] bg-[#f8faf7] p-3 text-left hover:border-[#bad2c0] disabled:cursor-default"
+                                      >
+                                        <div className="flex items-start justify-between gap-3">
+                                          <div className="min-w-0">
+                                            <p className="truncate text-sm font-semibold">
+                                              {workItem?.title ??
+                                                '연결 업무 확인 필요'}
+                                            </p>
+                                            <p className="mt-1 text-xs text-[#718078]">
+                                              {farm?.name ?? '농가 미확인'} ·{' '}
+                                              {visit.assignedTo}
+                                            </p>
+                                          </div>
+                                          {delayed && (
+                                            <Badge
+                                              variant="outline"
+                                              className="border-[#efc4b7] bg-[#fff1ed] text-[#aa4e30]"
+                                            >
+                                              방문 지연
+                                            </Badge>
+                                          )}
+                                        </div>
+                                        <p className="mt-2 flex items-center gap-1 text-xs font-semibold text-[#3d7152]">
+                                          <CalendarClock className="size-3.5" />
+                                          {formatTimestamp(visit.scheduledAt)}
+                                        </p>
+                                      </button>
+                                    );
+                                  })}
+                                  {!visitQueue.length && (
+                                    <p className="rounded-xl bg-[#f4f8f2] p-4 text-center text-sm text-[#718078]">
+                                      7일 이내 현장 방문이 없습니다.
+                                    </p>
+                                  )}
+                                </div>
+                              </section>
+
+                              <section className="rounded-2xl border border-[#dfe6dd] bg-white p-4 sm:p-5">
+                                <div className="mb-4">
+                                  <h2 className="font-bold">
+                                    담당자 업무 신호
+                                  </h2>
+                                  <p className="mt-1 text-xs text-[#7b877f]">
+                                    단순 건수와 위험 신호입니다. 실제
+                                    소요시간·가용량은 별도 확인이 필요합니다.
+                                  </p>
+                                </div>
+                                <div className="space-y-2">
+                                  {ownerLoadSummaries
+                                    .slice(0, 10)
+                                    .map((item) => (
+                                      <div
+                                        key={item.owner}
+                                        className="flex items-center justify-between gap-3 rounded-xl bg-[#f6f8f5] px-3 py-2.5"
+                                      >
+                                        <div>
+                                          <p className="text-sm font-semibold">
+                                            {item.owner}
+                                          </p>
+                                          <p className="mt-0.5 text-[11px] text-[#7b877f]">
+                                            높음 {item.high} · 지연{' '}
+                                            {item.overdue} · 막힘 {item.blocked}
+                                          </p>
+                                        </div>
+                                        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-[#356d50] shadow-sm">
+                                          {item.active}건
+                                        </span>
+                                      </div>
+                                    ))}
+                                </div>
+                              </section>
+
+                              <section className="rounded-2xl border border-[#dfe6dd] bg-white p-4 sm:p-5">
+                                <div className="mb-4">
+                                  <h2 className="font-bold">
+                                    사업 자동 위험 신호
+                                  </h2>
+                                  <p className="mt-1 text-xs text-[#7b877f]">
+                                    응답 초과·마감 지연·장기 막힘만으로 자동
+                                    판단하며, 책임자의 공식 상태 보고를 대신하지
+                                    않습니다.
+                                  </p>
+                                </div>
+                                <div className="space-y-2">
+                                  {projectHealthSummaries.map((item) => {
+                                    const health = {
+                                      on_track: {
+                                        label: '정상',
+                                        className:
+                                          'border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]',
+                                      },
+                                      at_risk: {
+                                        label: '주의',
+                                        className:
+                                          'border-[#ead9b8] bg-[#fff9ed] text-[#94601c]',
+                                      },
+                                      off_track: {
+                                        label: '위험',
+                                        className:
+                                          'border-[#efc4b7] bg-[#fff1ed] text-[#aa4e30]',
+                                      },
+                                    }[item.health];
+                                    return (
+                                      <div
+                                        key={item.project.id}
+                                        className="flex items-center justify-between gap-3 rounded-xl border border-[#e1e7df] p-3"
+                                      >
+                                        <div className="min-w-0">
+                                          <p className="truncate text-sm font-semibold">
+                                            {item.project.name}
+                                          </p>
+                                          <p className="mt-0.5 text-[11px] text-[#7b877f]">
+                                            미완료 업무 {item.items.length}건
+                                          </p>
+                                        </div>
+                                        <Badge
+                                          variant="outline"
+                                          className={health.className}
+                                        >
+                                          {health.label}
+                                        </Badge>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </section>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       {workMode === 'board' && (
                         <div className="flex snap-x gap-4 overflow-x-auto pb-3">
                           {WORK_COLUMNS.map((column) => {
@@ -2772,15 +3564,15 @@ export function FarmLedgerDashboard() {
                                     }
                                   >
                                     {column.status === 'in_progress'
-                                      ? `${totalInProgressCount} / ${WORK_IN_PROGRESS_LIMIT}`
+                                      ? `처리+대기 ${totalInProgressCount} / ${WORK_IN_PROGRESS_LIMIT}`
                                       : columnItems.length}
                                   </Badge>
                                 </div>
                                 {wipExceeded && (
                                   <div className="mb-3 flex gap-2 rounded-xl bg-[#fff1ec] p-3 text-xs text-[#9d4e34]">
                                     <CircleAlert className="mt-0.5 size-4 shrink-0" />
-                                    새 업무보다 진행 중인 업무를 먼저 마무리해
-                                    주세요.
+                                    처리 중과 대기·막힘 업무를 합친 한도입니다.
+                                    새 업무보다 기존 약속을 먼저 정리해 주세요.
                                   </div>
                                 )}
                                 <div className="space-y-3">
@@ -2818,14 +3610,14 @@ export function FarmLedgerDashboard() {
                                 '약속한 기한을 다시 잡습니다.',
                               ],
                               [
-                                '오늘 검토',
+                                '검토일 도래·지남',
                                 reviewDueWorkItems.length,
-                                '대기 업무를 다시 확인합니다.',
+                                '다시 보기로 한 업무를 확인합니다.',
                               ],
                               [
                                 '7일 넘은 대기',
                                 staleWaitingWorkItems.length,
-                                '회신을 재촉하거나 종료합니다.',
+                                '해제 조건을 확인하거나 종료합니다.',
                               ],
                             ].map(([label, count, description]) => (
                               <Card
@@ -3820,7 +4612,9 @@ export function FarmLedgerDashboard() {
                       {serviceWorkItems.length ? (
                         <div className="grid gap-4 xl:grid-cols-2">
                           {[...serviceWorkItems]
-                            .sort((a, b) => b.lastActivityAt - a.lastActivityAt)
+                            .sort((a, b) =>
+                              compareServiceWorkItems(a, b, riskNow),
+                            )
                             .map((item) => {
                               const farm = farmById.get(item.farmId);
                               const project = projectForWorkItem(item);
@@ -4385,6 +5179,230 @@ export function FarmLedgerDashboard() {
                             )}
                           </div>
                         </div>
+                        {(selectedWorkItem.responseDueAt > 0 ||
+                          selectedWorkItem.status === 'waiting') && (
+                          <div className="mt-4 grid gap-3 md:grid-cols-2">
+                            {selectedWorkItem.responseDueAt > 0 && (
+                              <div className="rounded-2xl border border-[#dce7dc] bg-white p-4">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <p className="text-xs font-bold text-[#5d7163]">
+                                    최초 대응 관리
+                                  </p>
+                                  <Badge
+                                    variant="outline"
+                                    className={responseRiskClass(
+                                      responseRisk(selectedWorkItem, riskNow),
+                                    )}
+                                  >
+                                    {responseRiskLabel(
+                                      responseRisk(selectedWorkItem, riskNow),
+                                    )}
+                                  </Badge>
+                                </div>
+                                <p className="mt-3 text-sm font-semibold">
+                                  목표{' '}
+                                  {formatTimestamp(
+                                    selectedWorkItem.responseDueAt,
+                                  )}
+                                </p>
+                                <p className="mt-1 text-xs leading-5 text-[#728078]">
+                                  {selectedWorkItem.respondedAt
+                                    ? `최초 대응 ${formatTimestamp(selectedWorkItem.respondedAt)}`
+                                    : '아직 최초 대응 완료 기록이 없습니다.'}
+                                </p>
+                              </div>
+                            )}
+                            {selectedWorkItem.status === 'waiting' && (
+                              <div className="rounded-2xl border border-[#ecd4c7] bg-[#fff8f3] p-4">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <p className="text-xs font-bold text-[#8d4f35]">
+                                    진행 차단 요인
+                                  </p>
+                                  <Badge
+                                    variant="outline"
+                                    className="border-[#ecd4c7] bg-white text-[#9a5a3d]"
+                                  >
+                                    {elapsedDays(selectedWorkItem.blockedAt)}
+                                    일째
+                                  </Badge>
+                                </div>
+                                <p className="mt-3 whitespace-pre-wrap text-sm leading-6">
+                                  {selectedWorkItem.blockedReason ||
+                                    '막힘 사유 확인 필요'}
+                                </p>
+                                <p className="mt-2 text-xs leading-5 text-[#8f6a59]">
+                                  해제 책임자{' '}
+                                  {selectedWorkItem.blockedBy || '미입력'} ·
+                                  예상{' '}
+                                  {formatDate(
+                                    selectedWorkItem.expectedUnblockDate,
+                                  )}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {selectedBlockerEpisodes.length > 0 && (
+                          <div className="mt-4 rounded-2xl border border-[#e5ddd5] bg-white p-4">
+                            <div>
+                              <h4 className="text-sm font-bold">막힘 이력</h4>
+                              <p className="mt-1 text-xs text-[#7b877f]">
+                                원인, 해제에 필요한 주체, 해결 결과를 기간별로
+                                보존합니다.
+                              </p>
+                            </div>
+                            <div className="mt-4 space-y-2">
+                              {selectedBlockerEpisodes.map((episode) => (
+                                <article
+                                  key={episode.id}
+                                  className="rounded-xl border border-[#ece4dc] bg-[#fffaf6] p-3"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <Badge
+                                      variant="outline"
+                                      className={
+                                        episode.closedAt
+                                          ? 'border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]'
+                                          : 'border-[#ecd4c7] bg-white text-[#9a5a3d]'
+                                      }
+                                    >
+                                      {episode.closedAt
+                                        ? '해결됨'
+                                        : `${elapsedDays(episode.openedAt)}일째 진행 중`}
+                                    </Badge>
+                                    <span className="text-[11px] text-[#7b877f]">
+                                      {formatTimestamp(episode.openedAt)}
+                                      {episode.closedAt
+                                        ? ` ~ ${formatTimestamp(episode.closedAt)}`
+                                        : ' ~ 현재'}
+                                    </span>
+                                  </div>
+                                  <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                                    {episode.reason}
+                                  </p>
+                                  <p className="mt-1 text-xs text-[#8f6a59]">
+                                    해제에 필요한 사람·기관{' '}
+                                    {episode.blockedBy || '미입력'} · 예상{' '}
+                                    {formatDate(episode.expectedUnblockDate)}
+                                  </p>
+                                  {episode.resolution && (
+                                    <p className="mt-2 rounded-lg bg-[#eef6f0] px-3 py-2 text-xs leading-5 text-[#476752]">
+                                      <strong>해결 결과 · </strong>
+                                      {episode.resolution}
+                                    </p>
+                                  )}
+                                </article>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <div className="mt-4 rounded-2xl border border-[#dce7dc] bg-white p-4">
+                          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                            <div>
+                              <h4 className="text-sm font-bold">현장 방문</h4>
+                              <p className="mt-1 text-xs text-[#7b877f]">
+                                한 업무에 여러 번 방문해도 일정과 결과를 각각
+                                남깁니다.
+                              </p>
+                            </div>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={selectedWorkItem.status === 'completed'}
+                              onClick={() => openVisitDialog()}
+                            >
+                              <Plus /> 방문 추가
+                            </Button>
+                          </div>
+                          <div className="mt-4 space-y-2">
+                            {selectedVisits.map((visit) => (
+                              <article
+                                key={visit.id}
+                                className="rounded-xl border border-[#e1e6e0] bg-[#fafbf9] p-3"
+                              >
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <Badge
+                                        variant="outline"
+                                        className={visitStatusClass(
+                                          visit.status,
+                                        )}
+                                      >
+                                        {FARM_VISIT_STATUS_LABELS[visit.status]}
+                                      </Badge>
+                                      <span className="text-xs font-semibold text-[#536259]">
+                                        {formatTimestamp(visit.scheduledAt)}
+                                      </span>
+                                    </div>
+                                    <p className="mt-2 text-sm">
+                                      방문 담당 {visit.assignedTo || '미지정'}
+                                    </p>
+                                    {visit.preparationNote && (
+                                      <p className="mt-2 whitespace-pre-wrap rounded-lg bg-white px-3 py-2 text-xs leading-5 text-[#5e6b63]">
+                                        <strong>준비 메모 · </strong>
+                                        {visit.preparationNote}
+                                      </p>
+                                    )}
+                                    {visit.status === 'completed' && (
+                                      <p className="mt-1 text-xs leading-5 text-[#728078]">
+                                        실제 작업{' '}
+                                        {formatTimestamp(visit.actualStartedAt)}{' '}
+                                        ~ {formatTimestamp(visit.actualEndedAt)}
+                                      </p>
+                                    )}
+                                    {visit.result && (
+                                      <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-[#5e6b63]">
+                                        <strong>
+                                          {visit.status === 'canceled'
+                                            ? '취소 사유 · '
+                                            : '조치 결과 · '}
+                                        </strong>
+                                        {visit.result}
+                                      </p>
+                                    )}
+                                    {visit.recordedBy && (
+                                      <p className="mt-2 text-[11px] text-[#7b877f]">
+                                        기록자 {visit.recordedBy}
+                                      </p>
+                                    )}
+                                    {visit.nextVisitAt > 0 && (
+                                      <p className="mt-2 text-xs font-semibold text-[#416c9c]">
+                                        후속 방문 등록 당시{' '}
+                                        {formatTimestamp(visit.nextVisitAt)}
+                                      </p>
+                                    )}
+                                  </div>
+                                  {visit.status === 'scheduled' ? (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => openVisitDialog(visit)}
+                                    >
+                                      <Pencil /> 수정
+                                    </Button>
+                                  ) : (
+                                    <Badge
+                                      variant="outline"
+                                      className="border-[#d8ded9] bg-white text-[#6f7c73]"
+                                    >
+                                      <LockKeyhole className="size-3" /> 증빙
+                                      잠금
+                                    </Badge>
+                                  )}
+                                </div>
+                              </article>
+                            ))}
+                            {!selectedVisits.length && (
+                              <div className="rounded-xl border border-dashed border-[#d7dfd5] px-3 py-6 text-center text-xs text-[#7b877f]">
+                                등록된 현장 방문이 없습니다. 방문 전 일정을 먼저
+                                잡아 주세요.
+                              </div>
+                            )}
+                          </div>
+                        </div>
                         {selectedChecklist.length > 0 && (
                           <div className="mt-4 rounded-2xl border border-[#dce7dc] bg-white p-4">
                             <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
@@ -4641,7 +5659,9 @@ export function FarmLedgerDashboard() {
                     }
                   >
                     <SelectTrigger className="h-10 w-full">
-                      <SelectValue />
+                      <SelectValue>
+                        {FARM_PROJECT_TYPE_LABELS[projectForm.projectType]}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="general">일반 사업</SelectItem>
@@ -5295,7 +6315,9 @@ export function FarmLedgerDashboard() {
                     }
                   >
                     <SelectTrigger className="h-10 w-full">
-                      <SelectValue />
+                      <SelectValue>
+                        {FARM_HISTORY_CHANNEL_LABELS[inboxForm.channel]}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="email">메일</SelectItem>
@@ -5576,7 +6598,9 @@ export function FarmLedgerDashboard() {
                       }
                     >
                       <SelectTrigger className="h-10 w-full">
-                        <SelectValue />
+                        <SelectValue>
+                          {FARM_WORK_TYPE_LABELS[workItemForm.workType]}
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="communication">수신·연락</SelectItem>
@@ -5600,12 +6624,14 @@ export function FarmLedgerDashboard() {
                       }
                     >
                       <SelectTrigger className="h-10 w-full">
-                        <SelectValue />
+                        <SelectValue>
+                          {FARM_WORK_STATUS_LABELS[workItemForm.status]}
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="open">접수</SelectItem>
                         <SelectItem value="in_progress">처리 중</SelectItem>
-                        <SelectItem value="waiting">회신 대기</SelectItem>
+                        <SelectItem value="waiting">대기·막힘</SelectItem>
                         <SelectItem value="completed">완료</SelectItem>
                       </SelectContent>
                     </Select>
@@ -5653,15 +6679,24 @@ export function FarmLedgerDashboard() {
                     <FieldLabel>우선순위</FieldLabel>
                     <Select
                       value={workItemForm.priority}
-                      onValueChange={(value) =>
+                      onValueChange={(value) => {
+                        const priority = value as FarmWorkPriority;
                         setWorkItemForm((current) => ({
                           ...current,
-                          priority: value as FarmWorkPriority,
-                        }))
-                      }
+                          priority,
+                          responseDueAt: responseTargetValue(
+                            priority,
+                            current.occurredAt
+                              ? new Date(current.occurredAt)
+                              : new Date(),
+                          ),
+                        }));
+                      }}
                     >
                       <SelectTrigger className="h-10 w-full">
-                        <SelectValue />
+                        <SelectValue>
+                          {FARM_WORK_PRIORITY_LABELS[workItemForm.priority]}
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="high">높음</SelectItem>
@@ -5682,6 +6717,23 @@ export function FarmLedgerDashboard() {
                         }))
                       }
                     />
+                  </Field>
+                  <Field className="sm:col-span-2">
+                    <FieldLabel>최초 대응 목표</FieldLabel>
+                    <Input
+                      type="datetime-local"
+                      value={workItemForm.responseDueAt}
+                      onChange={(event) =>
+                        setWorkItemForm((current) => ({
+                          ...current,
+                          responseDueAt: event.target.value,
+                        }))
+                      }
+                    />
+                    <p className="text-[11px] leading-5 text-[#7b877f]">
+                      우선순위 기본값은 높음 24시간 · 보통 72시간 · 낮음
+                      7일입니다. 필요하면 직접 바꿀 수 있습니다.
+                    </p>
                   </Field>
                   <Field className="sm:col-span-2">
                     <FieldLabel>업무 설명</FieldLabel>
@@ -5722,6 +6774,60 @@ export function FarmLedgerDashboard() {
                       placeholder="예: 농가에 전화해 현장 방문 가능 시간을 확인한다"
                     />
                   </Field>
+                  {workItemForm.status === 'waiting' && (
+                    <div className="grid gap-4 rounded-2xl border border-[#ecd4c7] bg-[#fff8f3] p-4 sm:col-span-2 sm:grid-cols-2">
+                      <div className="sm:col-span-2">
+                        <p className="text-sm font-bold text-[#8d4f35]">
+                          대기 사유를 구조화해 주세요
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-[#8f6a59]">
+                          누구의 어떤 답을 기다리는지 명확해야 담당자가 바뀌어도
+                          업무를 이어갈 수 있습니다.
+                        </p>
+                      </div>
+                      <Field className="sm:col-span-2">
+                        <FieldLabel>막힘 사유</FieldLabel>
+                        <Textarea
+                          required
+                          value={workItemForm.blockedReason}
+                          onChange={(event) =>
+                            setWorkItemForm((current) => ({
+                              ...current,
+                              blockedReason: event.target.value,
+                            }))
+                          }
+                          placeholder="예: 농가의 통신사 변경 확답을 기다리는 중"
+                        />
+                      </Field>
+                      <Field>
+                        <FieldLabel>해제 책임자·회신 주체</FieldLabel>
+                        <Input
+                          required
+                          value={workItemForm.blockedBy}
+                          onChange={(event) =>
+                            setWorkItemForm((current) => ({
+                              ...current,
+                              blockedBy: event.target.value,
+                            }))
+                          }
+                          placeholder="예: 농가 김대표 / 통신사 담당자"
+                        />
+                      </Field>
+                      <Field>
+                        <FieldLabel>예상 해제일</FieldLabel>
+                        <Input
+                          type="date"
+                          value={workItemForm.expectedUnblockDate}
+                          onChange={(event) =>
+                            setWorkItemForm((current) => ({
+                              ...current,
+                              expectedUnblockDate: event.target.value,
+                            }))
+                          }
+                        />
+                      </Field>
+                    </div>
+                  )}
                   <Field className="sm:col-span-2">
                     <FieldLabel>체크리스트</FieldLabel>
                     <Textarea
@@ -5762,7 +6868,9 @@ export function FarmLedgerDashboard() {
                       }
                     >
                       <SelectTrigger className="h-10 w-full">
-                        <SelectValue />
+                        <SelectValue>
+                          {FARM_HISTORY_CHANNEL_LABELS[workItemForm.channel]}
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="email">메일</SelectItem>
@@ -5930,7 +7038,9 @@ export function FarmLedgerDashboard() {
                     }
                   >
                     <SelectTrigger className="h-10 w-full">
-                      <SelectValue />
+                      <SelectValue>
+                        {FARM_HISTORY_CHANNEL_LABELS[historyForm.channel]}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="email">메일</SelectItem>
@@ -5947,20 +7057,31 @@ export function FarmLedgerDashboard() {
                   <FieldLabel>변경 상태</FieldLabel>
                   <Select
                     value={historyForm.newStatus}
-                    onValueChange={(value) =>
+                    onValueChange={(value) => {
+                      const newStatus = value as WorkStatus;
                       setHistoryForm((current) => ({
                         ...current,
-                        newStatus: value as WorkStatus,
-                      }))
-                    }
+                        newStatus,
+                        responseDueAt:
+                          newStatus === 'completed' && selectedWorkItem
+                            ? selectedWorkItem.responseDueAt
+                              ? localDateTimeValue(
+                                  new Date(selectedWorkItem.responseDueAt),
+                                )
+                              : ''
+                            : current.responseDueAt,
+                      }));
+                    }}
                   >
                     <SelectTrigger className="h-10 w-full">
-                      <SelectValue />
+                      <SelectValue>
+                        {FARM_WORK_STATUS_LABELS[historyForm.newStatus]}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="open">접수</SelectItem>
                       <SelectItem value="in_progress">처리 중</SelectItem>
-                      <SelectItem value="waiting">회신 대기</SelectItem>
+                      <SelectItem value="waiting">대기·막힘</SelectItem>
                       <SelectItem value="completed">완료</SelectItem>
                     </SelectContent>
                   </Select>
@@ -6002,7 +7123,9 @@ export function FarmLedgerDashboard() {
                     }
                   >
                     <SelectTrigger className="h-10 w-full">
-                      <SelectValue />
+                      <SelectValue>
+                        {FARM_WORK_PRIORITY_LABELS[historyForm.priority]}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="high">높음</SelectItem>
@@ -6025,6 +7148,81 @@ export function FarmLedgerDashboard() {
                     }
                   />
                 </Field>
+                <Field className="sm:col-span-2">
+                  <FieldLabel>최초 대응 목표</FieldLabel>
+                  <Input
+                    type="datetime-local"
+                    value={historyForm.responseDueAt}
+                    disabled={
+                      Boolean(selectedWorkItem?.respondedAt) ||
+                      historyForm.markResponded ||
+                      historyForm.newStatus === 'completed'
+                    }
+                    onChange={(event) =>
+                      setHistoryForm((current) => ({
+                        ...current,
+                        responseDueAt: event.target.value,
+                      }))
+                    }
+                  />
+                  {(Boolean(selectedWorkItem?.respondedAt) ||
+                    historyForm.markResponded ||
+                    historyForm.newStatus === 'completed') && (
+                    <p className="text-[11px] leading-5 text-[#7b877f]">
+                      최초 대응을 기록할 때 기존 목표와 판정 기준을 함께
+                      잠급니다.
+                    </p>
+                  )}
+                </Field>
+                {selectedWorkItem && selectedWorkItem.respondedAt === 0 && (
+                  <button
+                    type="button"
+                    aria-pressed={historyForm.markResponded}
+                    onClick={() =>
+                      setHistoryForm((current) => {
+                        const markResponded = !current.markResponded;
+                        return {
+                          ...current,
+                          markResponded,
+                          responseDueAt:
+                            markResponded && selectedWorkItem
+                              ? selectedWorkItem.responseDueAt
+                                ? localDateTimeValue(
+                                    new Date(selectedWorkItem.responseDueAt),
+                                  )
+                                : ''
+                              : current.responseDueAt,
+                        };
+                      })
+                    }
+                    className={`flex items-start gap-3 rounded-2xl border p-3 text-left sm:col-span-2 ${
+                      historyForm.markResponded
+                        ? 'border-[#bcdcc5] bg-[#eef8f1]'
+                        : 'border-[#dce4dd] bg-[#fafbf9]'
+                    }`}
+                  >
+                    <span
+                      className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-md border ${
+                        historyForm.markResponded
+                          ? 'border-[#4e9768] bg-[#4e9768] text-white'
+                          : 'border-[#b7c2ba] bg-white'
+                      }`}
+                    >
+                      {historyForm.markResponded && (
+                        <Check className="size-3.5" />
+                      )}
+                    </span>
+                    <span>
+                      <span className="block text-sm font-semibold">
+                        최초 대응 완료로 기록
+                      </span>
+                      <span className="mt-0.5 block text-xs leading-5 text-[#738078]">
+                        농가 또는 전달자에게 처음 회신·안내한 기록이라면
+                        선택하세요. 완료 상태로 바꾸면 자동으로 처리됩니다.
+                      </span>
+                    </span>
+                  </button>
+                )}
                 <Field className="sm:col-span-2">
                   <FieldLabel>다음 행동</FieldLabel>
                   <Input
@@ -6056,6 +7254,60 @@ export function FarmLedgerDashboard() {
                     placeholder="완료됐다고 판단할 기준"
                   />
                 </Field>
+                {historyForm.newStatus === 'waiting' && (
+                  <div className="grid gap-4 rounded-2xl border border-[#ecd4c7] bg-[#fff8f3] p-4 sm:col-span-2 sm:grid-cols-2">
+                    <div className="sm:col-span-2">
+                      <p className="text-sm font-bold text-[#8d4f35]">
+                        대기 사유와 해제 책임자를 남겨 주세요
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-[#8f6a59]">
+                        단순히 ‘대기’라고만 남기지 않고, 무엇이 풀려야 다시
+                        진행되는지 기록합니다.
+                      </p>
+                    </div>
+                    <Field className="sm:col-span-2">
+                      <FieldLabel>막힘 사유</FieldLabel>
+                      <Textarea
+                        required
+                        value={historyForm.blockedReason}
+                        onChange={(event) =>
+                          setHistoryForm((current) => ({
+                            ...current,
+                            blockedReason: event.target.value,
+                          }))
+                        }
+                        placeholder="예: 장비 교체 승인을 기다리는 중"
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel>해제에 필요한 사람·기관</FieldLabel>
+                      <Input
+                        required
+                        value={historyForm.blockedBy}
+                        onChange={(event) =>
+                          setHistoryForm((current) => ({
+                            ...current,
+                            blockedBy: event.target.value,
+                          }))
+                        }
+                        placeholder="예: 사업 담당 주무관"
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel>예상 해제일</FieldLabel>
+                      <Input
+                        type="date"
+                        value={historyForm.expectedUnblockDate}
+                        onChange={(event) =>
+                          setHistoryForm((current) => ({
+                            ...current,
+                            expectedUnblockDate: event.target.value,
+                          }))
+                        }
+                      />
+                    </Field>
+                  </div>
+                )}
                 <Field>
                   <FieldLabel>발생 일시</FieldLabel>
                   <Input
@@ -6097,8 +7349,17 @@ export function FarmLedgerDashboard() {
                   />
                 </Field>
                 <Field className="sm:col-span-2">
-                  <FieldLabel>처리 내용</FieldLabel>
+                  <FieldLabel>
+                    {selectedWorkItem?.status === 'waiting' &&
+                    historyForm.newStatus !== 'waiting'
+                      ? '막힘 해제 결과·처리 내용'
+                      : '처리 내용'}
+                  </FieldLabel>
                   <Textarea
+                    required={
+                      selectedWorkItem?.status === 'waiting' &&
+                      historyForm.newStatus !== 'waiting'
+                    }
                     value={historyForm.actionContent}
                     onChange={(event) =>
                       setHistoryForm((current) => ({
@@ -6109,6 +7370,13 @@ export function FarmLedgerDashboard() {
                     placeholder="이번에 확인하거나 처리한 내용과 다음 일정을 적어 주세요."
                     className="min-h-24"
                   />
+                  {selectedWorkItem?.status === 'waiting' &&
+                    historyForm.newStatus !== 'waiting' && (
+                      <p className="text-[11px] leading-5 text-[#8f6a59]">
+                        무엇이 해결되어 다시 진행할 수 있는지 남겨야 막힘 이력이
+                        닫힙니다.
+                      </p>
+                    )}
                 </Field>
                 <Field>
                   <FieldLabel>금액(원)</FieldLabel>
@@ -6163,6 +7431,15 @@ export function FarmLedgerDashboard() {
                     주세요.
                   </p>
                 )}
+              {historyForm.newStatus === 'completed' &&
+                selectedVisits.some(
+                  (visit) => visit.status === 'scheduled',
+                ) && (
+                  <p className="rounded-xl bg-[#fff1ec] px-3 py-2 text-xs text-[#9d4e34]">
+                    예정된 현장 방문이 있습니다. 방문을 완료하거나 취소한 뒤
+                    업무를 완료해 주세요.
+                  </p>
+                )}
               {formError && <FieldError>{formError}</FieldError>}
               <DialogFooter className="mx-0 mb-0 px-0 pb-0 pt-4">
                 <Button
@@ -6180,6 +7457,229 @@ export function FarmLedgerDashboard() {
                 >
                   {submitting && <Loader2 className="animate-spin" />}진행 기록
                   저장
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={dialog === 'visit'}
+          onOpenChange={(open) =>
+            !submitting && setDialog(open ? 'visit' : null)
+          }
+        >
+          <DialogContent className="max-h-[92vh] overflow-y-auto p-5 sm:max-w-[640px] sm:p-6">
+            <DialogHeader>
+              <DialogTitle className="text-lg">
+                {visitForm.id ? '현장 방문 일정 수정' : '현장 방문 추가'}
+              </DialogTitle>
+              <DialogDescription>
+                {selectedWorkItem?.title} 업무의 방문 일정과 실제 조치 결과를
+                남깁니다.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={submitVisit} className="mt-1 space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field>
+                  <FieldLabel>방문 예정 일시</FieldLabel>
+                  <Input
+                    required
+                    type="datetime-local"
+                    value={visitForm.scheduledAt}
+                    onChange={(event) =>
+                      setVisitForm((current) => ({
+                        ...current,
+                        scheduledAt: event.target.value,
+                      }))
+                    }
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel>방문 담당자</FieldLabel>
+                  <Input
+                    required
+                    value={visitForm.assignedTo}
+                    onChange={(event) =>
+                      setVisitForm((current) => ({
+                        ...current,
+                        assignedTo: event.target.value,
+                      }))
+                    }
+                    placeholder="현장 방문 담당자"
+                  />
+                </Field>
+                <Field className="sm:col-span-2">
+                  <FieldLabel>방문 상태</FieldLabel>
+                  <Select
+                    value={visitForm.status}
+                    onValueChange={(value) => {
+                      const status = value as FarmVisitStatus;
+                      const now = new Date();
+                      const startedAt = new Date(
+                        now.getTime() - 60 * 60 * 1000,
+                      );
+                      setVisitForm((current) => ({
+                        ...current,
+                        status,
+                        actualStartedAt:
+                          status === 'completed' && !current.actualStartedAt
+                            ? localDateTimeValue(startedAt)
+                            : status === 'completed'
+                              ? current.actualStartedAt
+                              : '',
+                        actualEndedAt:
+                          status === 'completed' && !current.actualEndedAt
+                            ? localDateTimeValue(now)
+                            : status === 'completed'
+                              ? current.actualEndedAt
+                              : '',
+                        result: status === current.status ? current.result : '',
+                        nextVisitAt:
+                          status === 'scheduled' ? '' : current.nextVisitAt,
+                      }));
+                    }}
+                  >
+                    <SelectTrigger className="h-10 w-full">
+                      <SelectValue>
+                        {FARM_VISIT_STATUS_LABELS[visitForm.status]}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="scheduled">예정</SelectItem>
+                      <SelectItem value="completed">완료</SelectItem>
+                      <SelectItem value="canceled">취소</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {!visitForm.id && visitForm.status !== 'scheduled' && (
+                    <p className="mt-1 text-[11px] leading-5 text-[#8f6a59]">
+                      이미 끝난 방문을 소급 기록할 때만 선택하세요. 저장한
+                      완료·취소 증빙은 수정할 수 없습니다.
+                    </p>
+                  )}
+                </Field>
+                {visitForm.status === 'completed' && (
+                  <>
+                    <Field>
+                      <FieldLabel>실제 시작 일시</FieldLabel>
+                      <Input
+                        required
+                        type="datetime-local"
+                        value={visitForm.actualStartedAt}
+                        onChange={(event) =>
+                          setVisitForm((current) => ({
+                            ...current,
+                            actualStartedAt: event.target.value,
+                          }))
+                        }
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel>실제 완료 일시</FieldLabel>
+                      <Input
+                        required
+                        type="datetime-local"
+                        value={visitForm.actualEndedAt}
+                        onChange={(event) =>
+                          setVisitForm((current) => ({
+                            ...current,
+                            actualEndedAt: event.target.value,
+                          }))
+                        }
+                      />
+                    </Field>
+                  </>
+                )}
+                <Field className="sm:col-span-2">
+                  <FieldLabel>방문 준비 메모</FieldLabel>
+                  <Textarea
+                    value={visitForm.preparationNote}
+                    onChange={(event) =>
+                      setVisitForm((current) => ({
+                        ...current,
+                        preparationNote: event.target.value,
+                      }))
+                    }
+                    placeholder="준비할 부품·장비나 농가 요청사항을 적어 주세요."
+                    className="min-h-20"
+                  />
+                </Field>
+                {visitForm.status !== 'scheduled' && (
+                  <Field className="sm:col-span-2">
+                    <FieldLabel>
+                      {visitForm.status === 'canceled'
+                        ? '취소 사유'
+                        : '현장 조치 결과'}
+                    </FieldLabel>
+                    <Textarea
+                      required
+                      value={visitForm.result}
+                      onChange={(event) =>
+                        setVisitForm((current) => ({
+                          ...current,
+                          result: event.target.value,
+                        }))
+                      }
+                      placeholder={
+                        visitForm.status === 'completed'
+                          ? '증상, 원인, 조치, 농가 확인 결과를 적어 주세요.'
+                          : '방문을 취소한 이유와 다시 잡을 계획을 적어 주세요.'
+                      }
+                      className="min-h-28"
+                    />
+                  </Field>
+                )}
+                <Field>
+                  <FieldLabel>기록자</FieldLabel>
+                  <Input
+                    required
+                    value={visitForm.recordedBy}
+                    onChange={(event) =>
+                      setVisitForm((current) => ({
+                        ...current,
+                        recordedBy: event.target.value,
+                      }))
+                    }
+                    placeholder="일정을 등록하거나 결과를 기록한 사람"
+                  />
+                </Field>
+                {visitForm.status !== 'scheduled' && (
+                  <Field>
+                    <FieldLabel>후속 방문 일시</FieldLabel>
+                    <Input
+                      type="datetime-local"
+                      value={visitForm.nextVisitAt}
+                      onChange={(event) =>
+                        setVisitForm((current) => ({
+                          ...current,
+                          nextVisitAt: event.target.value,
+                        }))
+                      }
+                    />
+                    <p className="text-[11px] leading-5 text-[#7b877f]">
+                      입력하면 같은 담당자의 새 방문 일정이 실제 작업함에
+                      등록됩니다.
+                    </p>
+                  </Field>
+                )}
+              </div>
+              {formError && <FieldError>{formError}</FieldError>}
+              <DialogFooter className="mx-0 mb-0 px-0 pb-0 pt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDialog(null)}
+                  disabled={submitting}
+                >
+                  취소
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={submitting}
+                  className="bg-[#2f7b59] hover:bg-[#286b4d]"
+                >
+                  {submitting && <Loader2 className="animate-spin" />}
+                  방문 기록 저장
                 </Button>
               </DialogFooter>
             </form>

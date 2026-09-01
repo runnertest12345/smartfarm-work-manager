@@ -6,6 +6,7 @@ import {
   createFarmWithRecord,
   createFarmWorkItem,
   listFarmLedgerWorkspace,
+  saveFarmWorkVisit,
   toggleFarmChecklistItem,
   updateFarm,
   updateFarmInboxStatus,
@@ -16,6 +17,7 @@ import {
   FARM_INBOX_STATUSES,
   FARM_PROJECT_STATUSES,
   FARM_PROJECT_TYPES,
+  FARM_VISIT_STATUSES,
   FARM_WORK_PRIORITIES,
   FARM_WORK_STATUSES,
   FARM_WORK_TYPES,
@@ -27,6 +29,7 @@ import {
   type FarmInput,
   type FarmProjectInput,
   type FarmRecordInput,
+  type FarmWorkVisitInput,
   type FarmWorkItemInput,
   type FarmWorkPriority,
   type FarmWorkStatus,
@@ -413,16 +416,26 @@ function parseWorkItemInput(value: unknown): FarmWorkItemInput | string {
   const expectedOutcomeValue = body.expectedOutcome ?? '';
   const nextActionValue = body.nextAction ?? '';
   const reviewDateValue = body.reviewDate ?? '';
+  const blockedReasonValue = body.blockedReason ?? '';
+  const blockedByValue = body.blockedBy ?? '';
+  const expectedUnblockDateValue = body.expectedUnblockDate ?? '';
+  const responseDueAt = integerValue(body.responseDueAt ?? 0);
   if (
     typeof expectedOutcomeValue !== 'string' ||
     typeof nextActionValue !== 'string' ||
-    typeof reviewDateValue !== 'string'
+    typeof reviewDateValue !== 'string' ||
+    typeof blockedReasonValue !== 'string' ||
+    typeof blockedByValue !== 'string' ||
+    typeof expectedUnblockDateValue !== 'string'
   ) {
-    return '업무 결과, 다음 행동, 검토일은 문자 항목으로 입력해 주세요.';
+    return '업무 계획과 막힘 정보는 문자 항목으로 입력해 주세요.';
   }
   const expectedOutcome = expectedOutcomeValue.trim();
   const nextAction = nextActionValue.trim();
   const reviewDate = reviewDateValue.trim();
+  const blockedReason = blockedReasonValue.trim();
+  const blockedBy = blockedByValue.trim();
+  const expectedUnblockDate = expectedUnblockDateValue.trim();
   const workType = body.workType;
   const status = body.status;
   const priority = body.priority ?? 'medium';
@@ -446,6 +459,22 @@ function parseWorkItemInput(value: unknown): FarmWorkItemInput | string {
     return '업무 우선순위를 확인해 주세요.';
   if (!validDate(reviewDate))
     return '검토일은 YYYY-MM-DD 형식으로 입력해 주세요.';
+  if (
+    !Number.isSafeInteger(responseDueAt) ||
+    (responseDueAt !== 0 &&
+      (responseDueAt < 946684800000 ||
+        responseDueAt > Date.now() + 5 * 365 * 86400000))
+  ) {
+    return '최초 대응 목표 일시를 확인해 주세요.';
+  }
+  if (blockedReason.length > 1000)
+    return '막힘 사유는 1,000자 이내로 입력해 주세요.';
+  if (blockedBy.length > 100) return '해제 주체는 100자 이내로 입력해 주세요.';
+  if (!validDate(expectedUnblockDate))
+    return '예상 해제일은 YYYY-MM-DD 형식으로 입력해 주세요.';
+  if (status === 'waiting' && (!blockedReason || !blockedBy)) {
+    return '대기 업무에는 막힘 사유와 해결해 줄 사람·기관을 입력해 주세요.';
+  }
 
   return {
     farmRecordId,
@@ -459,6 +488,10 @@ function parseWorkItemInput(value: unknown): FarmWorkItemInput | string {
     nextAction,
     priority: priority as FarmWorkPriority,
     reviewDate,
+    responseDueAt,
+    blockedReason,
+    blockedBy,
+    expectedUnblockDate,
   };
 }
 
@@ -569,9 +602,9 @@ function parseInitialHistoryInput(
   if (
     !Number.isSafeInteger(occurredAt) ||
     occurredAt < 946684800000 ||
-    occurredAt > Date.now() + 365 * 86400000
+    occurredAt > Date.now() + 5 * 60000
   )
-    return '발생 일시를 확인해 주세요.';
+    return '발생 일시는 현재보다 미래로 기록할 수 없습니다.';
   if (!validUrl(referenceUrl))
     return '참고 링크는 2,000자 이내의 http:// 또는 https:// 주소로 입력해 주세요.';
 
@@ -650,6 +683,51 @@ function parseHistoryInput(value: unknown): AddFarmHistoryEntryInput | string {
     if (expectedOutcome.length > 1000)
       return '완료 기준은 1,000자 이내로 입력해 주세요.';
   }
+  let responseDueAt: number | undefined;
+  if (body.responseDueAt !== undefined) {
+    responseDueAt = integerValue(body.responseDueAt);
+    if (
+      !Number.isSafeInteger(responseDueAt) ||
+      (responseDueAt !== 0 &&
+        (responseDueAt < 946684800000 ||
+          responseDueAt > Date.now() + 5 * 365 * 86400000))
+    ) {
+      return '최초 대응 목표 일시를 확인해 주세요.';
+    }
+  }
+  let markResponded: boolean | undefined;
+  if (body.markResponded !== undefined) {
+    if (typeof body.markResponded !== 'boolean')
+      return '최초 대응 완료 여부를 확인해 주세요.';
+    markResponded = body.markResponded;
+  }
+  let blockedReason: string | undefined;
+  if (body.blockedReason !== undefined) {
+    if (typeof body.blockedReason !== 'string')
+      return '막힘 사유를 문자로 입력해 주세요.';
+    blockedReason = body.blockedReason.trim();
+    if (blockedReason.length > 1000)
+      return '막힘 사유는 1,000자 이내로 입력해 주세요.';
+  }
+  let blockedBy: string | undefined;
+  if (body.blockedBy !== undefined) {
+    if (typeof body.blockedBy !== 'string')
+      return '해제 주체를 문자로 입력해 주세요.';
+    blockedBy = body.blockedBy.trim();
+    if (blockedBy.length > 100)
+      return '해제 주체는 100자 이내로 입력해 주세요.';
+  }
+  let expectedUnblockDate: string | undefined;
+  if (body.expectedUnblockDate !== undefined) {
+    if (typeof body.expectedUnblockDate !== 'string')
+      return '예상 해제일을 문자로 입력해 주세요.';
+    expectedUnblockDate = body.expectedUnblockDate.trim();
+    if (!validDate(expectedUnblockDate))
+      return '예상 해제일은 YYYY-MM-DD 형식으로 입력해 주세요.';
+  }
+  if (newStatus === 'waiting' && (!blockedReason || !blockedBy)) {
+    return '대기 업무에는 막힘 사유와 해결해 줄 사람·기관을 입력해 주세요.';
+  }
   return {
     workItemId,
     ...fields,
@@ -660,6 +738,121 @@ function parseHistoryInput(value: unknown): AddFarmHistoryEntryInput | string {
     ...(owner !== undefined ? { owner } : {}),
     ...(dueDate !== undefined ? { dueDate } : {}),
     ...(expectedOutcome !== undefined ? { expectedOutcome } : {}),
+    ...(responseDueAt !== undefined ? { responseDueAt } : {}),
+    ...(markResponded !== undefined ? { markResponded } : {}),
+    ...(blockedReason !== undefined ? { blockedReason } : {}),
+    ...(blockedBy !== undefined ? { blockedBy } : {}),
+    ...(expectedUnblockDate !== undefined ? { expectedUnblockDate } : {}),
+  };
+}
+
+function parseVisitInput(value: unknown): FarmWorkVisitInput | string {
+  const body = objectValue(value);
+  if (!body) return '현장 방문 정보를 확인해 주세요.';
+  let workItemId: string;
+  let id: string | undefined;
+  try {
+    workItemId = parseId(body.workItemId, '업무 ID');
+    if (body.id !== undefined && body.id !== '') {
+      id = parseId(body.id, '방문 ID');
+    }
+  } catch (error) {
+    return error instanceof Error ? error.message : '방문 ID를 확인해 주세요.';
+  }
+  if (
+    !hasStringFields(body, [
+      'assignedTo',
+      'preparationNote',
+      'result',
+      'recordedBy',
+    ])
+  ) {
+    return '방문 담당자, 준비 메모, 결과, 기록자를 문자로 입력해 주세요.';
+  }
+  const assignedTo = trimmed(body, 'assignedTo');
+  const preparationNote = trimmed(body, 'preparationNote');
+  const result = trimmed(body, 'result');
+  const recordedBy = trimmed(body, 'recordedBy');
+  const status = body.status;
+  const scheduledAt = integerValue(body.scheduledAt);
+  const actualStartedAt = integerValue(body.actualStartedAt);
+  const actualEndedAt = integerValue(body.actualEndedAt);
+  const nextVisitAt = integerValue(body.nextVisitAt);
+  const now = Date.now();
+  const maxTimestamp = now + 5 * 365 * 86400000;
+  const validOptionalTimestamp = (timestamp: number) =>
+    Number.isSafeInteger(timestamp) &&
+    (timestamp === 0 ||
+      (timestamp >= 946684800000 && timestamp <= maxTimestamp));
+
+  if (!assignedTo || assignedTo.length > 50)
+    return '방문 담당자는 1~50자로 입력해 주세요.';
+  if (!recordedBy || recordedBy.length > 50)
+    return '방문 기록자는 1~50자로 입력해 주세요.';
+  if (!FARM_VISIT_STATUSES.includes(status as FarmWorkVisitInput['status']))
+    return '방문 상태를 확인해 주세요.';
+  if (
+    !Number.isSafeInteger(scheduledAt) ||
+    scheduledAt < 946684800000 ||
+    scheduledAt > maxTimestamp
+  ) {
+    return '방문 예정 일시를 확인해 주세요.';
+  }
+  if (
+    !validOptionalTimestamp(actualStartedAt) ||
+    !validOptionalTimestamp(actualEndedAt) ||
+    !validOptionalTimestamp(nextVisitAt)
+  ) {
+    return '방문 시작·완료·다음 방문 일시를 확인해 주세요.';
+  }
+  if (preparationNote.length > 3000)
+    return '방문 준비 메모는 3,000자 이내로 입력해 주세요.';
+  if (
+    (actualStartedAt && actualStartedAt > now + 5 * 60000) ||
+    (actualEndedAt && actualEndedAt > now + 5 * 60000)
+  ) {
+    return '실제 방문 작업 시간은 미래로 기록할 수 없습니다.';
+  }
+  if (actualStartedAt && actualEndedAt && actualEndedAt <= actualStartedAt) {
+    return '방문 완료 일시는 시작 일시보다 늦어야 합니다.';
+  }
+  if (result.length > 3000) return '방문 결과는 3,000자 이내로 입력해 주세요.';
+  if (
+    status === 'completed' &&
+    (!actualStartedAt || !actualEndedAt || !result)
+  ) {
+    return '방문 완료 시 실제 시작·완료 일시와 결과를 입력해 주세요.';
+  }
+  if (status === 'canceled' && !result)
+    return '방문 취소 사유를 입력해 주세요.';
+  if (status === 'scheduled' && (actualStartedAt || actualEndedAt || result)) {
+    return '예정 방문에는 실제 작업 시간이나 결과를 입력할 수 없습니다.';
+  }
+  if (status === 'scheduled' && nextVisitAt) {
+    return '후속 방문은 현재 방문을 완료하거나 취소할 때 등록해 주세요.';
+  }
+  if (status === 'canceled' && (actualStartedAt || actualEndedAt)) {
+    return '취소 방문에는 실제 작업 시간을 입력할 수 없습니다.';
+  }
+  if (
+    nextVisitAt &&
+    nextVisitAt <= Math.max(status === 'completed' ? actualEndedAt : 0, now)
+  ) {
+    return '후속 방문 일시는 현재 시각과 이번 방문 완료 시각보다 늦어야 합니다.';
+  }
+
+  return {
+    ...(id ? { id } : {}),
+    workItemId,
+    scheduledAt,
+    assignedTo,
+    status: status as FarmWorkVisitInput['status'],
+    actualStartedAt,
+    actualEndedAt,
+    preparationNote,
+    result,
+    nextVisitAt,
+    recordedBy,
   };
 }
 
@@ -670,6 +863,51 @@ function knownErrorResponse(error: unknown) {
     FARM_NOT_FOUND: ['농가를 찾을 수 없습니다.', 404],
     FARM_RECORD_NOT_FOUND: ['농가의 사업 참여 정보를 찾을 수 없습니다.', 404],
     FARM_WORK_ITEM_NOT_FOUND: ['업무를 찾을 수 없습니다.', 404],
+    FARM_VISIT_NOT_FOUND: ['현장 방문 기록을 찾을 수 없습니다.', 404],
+    FARM_BLOCKER_DETAILS_REQUIRED: [
+      '대기 업무에는 막힘 사유와 해결해 줄 사람·기관이 필요합니다.',
+      409,
+    ],
+    FARM_VISIT_DETAILS_REQUIRED: [
+      '완료 방문에는 실제 작업 시간과 결과가, 취소 방문에는 취소 사유가 필요합니다.',
+      409,
+    ],
+    FARM_VISIT_LOCKED: [
+      '완료·취소된 방문 기록은 증빙 보존을 위해 수정할 수 없습니다.',
+      409,
+    ],
+    FARM_VISIT_PENDING: [
+      '예정된 현장 방문을 완료하거나 취소한 뒤 업무를 완료해 주세요.',
+      409,
+    ],
+    FARM_WORK_COMPLETED: [
+      '완료된 업무에는 현장 방문을 추가하거나 수정할 수 없습니다.',
+      409,
+    ],
+    FARM_BLOCKER_RESOLUTION_REQUIRED: [
+      '대기를 해제할 때는 무엇이 해결됐는지 처리 내용에 남겨 주세요.',
+      409,
+    ],
+    FARM_BLOCKER_TIME_INVALID: [
+      '막힘 해제 일시는 막힘이 시작된 뒤여야 합니다.',
+      409,
+    ],
+    FARM_BLOCKER_EPISODE_REQUIRED: [
+      '대기 상태의 막힘 이력이 없습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.',
+      409,
+    ],
+    FARM_BLOCKER_EPISODE_OPEN: [
+      '열린 막힘 이력을 먼저 해결 결과와 함께 닫아 주세요.',
+      409,
+    ],
+    FARM_RESPONSE_TARGET_LOCKED: [
+      '최초 대응을 기록하는 시점에는 기존 대응 목표를 바꿀 수 없습니다.',
+      409,
+    ],
+    FARM_COMPLETED_TIME_REQUIRED: [
+      '업무 완료 시각과 상태가 맞지 않습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.',
+      409,
+    ],
     FARM_INBOX_ITEM_NOT_FOUND: ['수신함 항목을 찾을 수 없습니다.', 404],
     FARM_INBOX_ALREADY_PROCESSED: ['이미 정리된 수신함 항목입니다.', 409],
     FARM_CHECKLIST_ITEM_NOT_FOUND: ['체크리스트 항목을 찾을 수 없습니다.', 404],
@@ -683,7 +921,9 @@ function knownErrorResponse(error: unknown) {
     ],
     FARM_CODE_EXISTS: ['이미 사용 중인 농장번호입니다.', 409],
   };
-  const known = responses[error.message];
+  const known = Object.entries(responses).find(([code]) =>
+    error.message.includes(code),
+  )?.[1];
   if (known) return errorResponse(known[0], known[1]);
   if (error.message.includes('UNIQUE constraint failed: farms.farm_code')) {
     return errorResponse('이미 사용 중인 농장번호입니다.', 409);
@@ -816,6 +1056,12 @@ export async function POST(request: Request) {
       const input = parseHistoryInput(body.history);
       if (typeof input === 'string') return errorResponse(input);
       return Response.json(await addFarmHistoryEntry(input), { status: 201 });
+    }
+
+    if (body.kind === 'visit') {
+      const input = parseVisitInput(body.visit);
+      if (typeof input === 'string') return errorResponse(input);
+      return Response.json(await saveFarmWorkVisit(input), { status: 201 });
     }
 
     return errorResponse('저장할 정보 종류를 확인해 주세요.');

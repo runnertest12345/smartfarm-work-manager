@@ -19,6 +19,7 @@ import type {
   FarmProjectStatus,
   FarmProjectType,
   FarmInboxStatus,
+  FarmVisitStatus,
   FarmWorkPriority,
   FarmWorkStatus,
   FarmWorkType,
@@ -165,6 +166,13 @@ export const farmWorkItems = sqliteTable(
       .notNull()
       .default('medium'),
     reviewDate: text('review_date').notNull().default(''),
+    responseDueAt: integer('response_due_at').notNull().default(0),
+    respondedAt: integer('responded_at').notNull().default(0),
+    blockedAt: integer('blocked_at').notNull().default(0),
+    blockedReason: text('blocked_reason').notNull().default(''),
+    blockedBy: text('blocked_by').notNull().default(''),
+    expectedUnblockDate: text('expected_unblock_date').notNull().default(''),
+    completedAt: integer('completed_at').notNull().default(0),
     lastActivityAt: integer('last_activity_at').notNull(),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
@@ -193,6 +201,12 @@ export const farmWorkItems = sqliteTable(
       table.reviewDate,
       table.priority,
     ),
+    index('idx_farm_work_items_response_risk').on(
+      table.status,
+      table.respondedAt,
+      table.responseDueAt,
+    ),
+    index('idx_farm_work_items_blocked').on(table.status, table.blockedAt),
   ],
 );
 
@@ -227,6 +241,76 @@ export const farmWorkChecklistItems = sqliteTable(
       table.sortOrder,
       table.createdAt,
     ),
+  ],
+);
+
+export const farmWorkVisits = sqliteTable(
+  'farm_work_visits',
+  {
+    id: text('id').primaryKey(),
+    workItemId: text('work_item_id')
+      .notNull()
+      .references(() => farmWorkItems.id, { onDelete: 'cascade' }),
+    scheduledAt: integer('scheduled_at').notNull(),
+    assignedTo: text('assigned_to').notNull(),
+    status: text('status')
+      .$type<FarmVisitStatus>()
+      .notNull()
+      .default('scheduled'),
+    actualStartedAt: integer('actual_started_at').notNull().default(0),
+    actualEndedAt: integer('actual_ended_at').notNull().default(0),
+    preparationNote: text('preparation_note').notNull().default(''),
+    result: text('result').notNull().default(''),
+    nextVisitAt: integer('next_visit_at').notNull().default(0),
+    recordedBy: text('recorded_by').notNull().default(''),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    check(
+      'chk_farm_work_visits_status',
+      sql`${table.status} IN ('scheduled', 'completed', 'canceled')`,
+    ),
+    index('idx_farm_work_visits_work_schedule').on(
+      table.workItemId,
+      table.scheduledAt,
+    ),
+    index('idx_farm_work_visits_status_schedule').on(
+      table.status,
+      table.scheduledAt,
+    ),
+  ],
+);
+
+export const farmBlockerEpisodes = sqliteTable(
+  'farm_blocker_episodes',
+  {
+    id: text('id').primaryKey(),
+    workItemId: text('work_item_id')
+      .notNull()
+      .references(() => farmWorkItems.id, { onDelete: 'cascade' }),
+    reason: text('reason').notNull(),
+    blockedBy: text('blocked_by').notNull(),
+    expectedUnblockDate: text('expected_unblock_date').notNull().default(''),
+    openedAt: integer('opened_at').notNull(),
+    closedAt: integer('closed_at').notNull().default(0),
+    resolution: text('resolution').notNull().default(''),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    check(
+      'chk_farm_blocker_episode_times',
+      sql`${table.closedAt} = 0 OR ${table.closedAt} >= ${table.openedAt}`,
+    ),
+    index('idx_farm_blocker_episodes_work_opened').on(
+      table.workItemId,
+      table.openedAt,
+    ),
+    index('idx_farm_blocker_episodes_open').on(table.closedAt, table.openedAt),
+    uniqueIndex('idx_farm_blocker_episodes_one_open')
+      .on(table.workItemId)
+      .where(sql`${table.closedAt} = 0`),
   ],
 );
 

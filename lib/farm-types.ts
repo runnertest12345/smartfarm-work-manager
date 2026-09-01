@@ -36,6 +36,13 @@ export type FarmWorkStatus = (typeof FARM_WORK_STATUSES)[number];
 export const FARM_WORK_PRIORITIES = ['high', 'medium', 'low'] as const;
 export type FarmWorkPriority = (typeof FARM_WORK_PRIORITIES)[number];
 
+export const FARM_VISIT_STATUSES = [
+  'scheduled',
+  'completed',
+  'canceled',
+] as const;
+export type FarmVisitStatus = (typeof FARM_VISIT_STATUSES)[number];
+
 export const FARM_INBOX_STATUSES = [
   'unprocessed',
   'converted',
@@ -84,7 +91,7 @@ export const FARM_WORK_TYPE_LABELS: Record<FarmWorkType, string> = {
 export const FARM_WORK_STATUS_LABELS: Record<FarmWorkStatus, string> = {
   open: '접수',
   in_progress: '처리 중',
-  waiting: '회신 대기',
+  waiting: '대기·막힘',
   completed: '완료',
 };
 
@@ -92,6 +99,12 @@ export const FARM_WORK_PRIORITY_LABELS: Record<FarmWorkPriority, string> = {
   high: '높음',
   medium: '보통',
   low: '낮음',
+};
+
+export const FARM_VISIT_STATUS_LABELS: Record<FarmVisitStatus, string> = {
+  scheduled: '방문 예정',
+  completed: '방문 완료',
+  canceled: '방문 취소',
 };
 
 export const FARM_INBOX_STATUS_LABELS: Record<FarmInboxStatus, string> = {
@@ -225,6 +238,13 @@ export interface FarmWorkItem {
   nextAction: string;
   priority: FarmWorkPriority;
   reviewDate: string;
+  responseDueAt: number;
+  respondedAt: number;
+  blockedAt: number;
+  blockedReason: string;
+  blockedBy: string;
+  expectedUnblockDate: string;
+  completedAt: number;
   lastActivityAt: number;
   createdAt: number;
   updatedAt: number;
@@ -242,6 +262,53 @@ export interface FarmWorkItemInput {
   nextAction: string;
   priority: FarmWorkPriority;
   reviewDate: string;
+  responseDueAt: number;
+  blockedReason: string;
+  blockedBy: string;
+  expectedUnblockDate: string;
+}
+
+export interface FarmWorkVisit {
+  id: string;
+  workItemId: string;
+  scheduledAt: number;
+  assignedTo: string;
+  status: FarmVisitStatus;
+  actualStartedAt: number;
+  actualEndedAt: number;
+  preparationNote: string;
+  result: string;
+  nextVisitAt: number;
+  recordedBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface FarmWorkVisitInput {
+  id?: string;
+  workItemId: string;
+  scheduledAt: number;
+  assignedTo: string;
+  status: FarmVisitStatus;
+  actualStartedAt: number;
+  actualEndedAt: number;
+  preparationNote: string;
+  result: string;
+  nextVisitAt: number;
+  recordedBy: string;
+}
+
+export interface FarmBlockerEpisode {
+  id: string;
+  workItemId: string;
+  reason: string;
+  blockedBy: string;
+  expectedUnblockDate: string;
+  openedAt: number;
+  closedAt: number;
+  resolution: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface FarmWorkChecklistItem {
@@ -315,6 +382,11 @@ export interface AddFarmHistoryEntryInput extends FarmHistoryEntryInput {
   owner?: string;
   dueDate?: string;
   expectedOutcome?: string;
+  responseDueAt?: number;
+  markResponded?: boolean;
+  blockedReason?: string;
+  blockedBy?: string;
+  expectedUnblockDate?: string;
 }
 
 export type FarmInitialHistoryEntryInput = Omit<
@@ -343,6 +415,8 @@ export interface FarmLedgerWorkspace {
   records: FarmRecord[];
   inboxItems: FarmInboxItem[];
   workItems: FarmWorkItem[];
+  blockerEpisodes: FarmBlockerEpisode[];
+  visits: FarmWorkVisit[];
   checklistItems: FarmWorkChecklistItem[];
   historyEntries: FarmHistoryEntry[];
 }

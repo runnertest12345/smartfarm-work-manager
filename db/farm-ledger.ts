@@ -1,6 +1,7 @@
 import type {
   AddFarmHistoryEntryInput,
   Farm,
+  FarmBlockerEpisode,
   FarmCreationResult,
   FarmHistoryChannel,
   FarmHistoryEntry,
@@ -17,10 +18,13 @@ import type {
   FarmRecord,
   FarmRecordInput,
   FarmRecordMutationResult,
+  FarmVisitStatus,
   FarmWorkItem,
   FarmWorkChecklistItem,
   FarmWorkItemInput,
   FarmWorkItemMutationResult,
+  FarmWorkVisit,
+  FarmWorkVisitInput,
   FarmWorkPriority,
   FarmWorkStatus,
   FarmWorkType,
@@ -97,7 +101,43 @@ interface FarmWorkItemRow {
   next_action: string;
   priority: FarmWorkPriority;
   review_date: string;
+  response_due_at: number;
+  responded_at: number;
+  blocked_at: number;
+  blocked_reason: string;
+  blocked_by: string;
+  expected_unblock_date: string;
+  completed_at: number;
   last_activity_at: number;
+  created_at: number;
+  updated_at: number;
+}
+
+interface FarmWorkVisitRow {
+  id: string;
+  work_item_id: string;
+  scheduled_at: number;
+  assigned_to: string;
+  status: FarmVisitStatus;
+  actual_started_at: number;
+  actual_ended_at: number;
+  preparation_note: string;
+  result: string;
+  next_visit_at: number;
+  recorded_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
+interface FarmBlockerEpisodeRow {
+  id: string;
+  work_item_id: string;
+  reason: string;
+  blocked_by: string;
+  expected_unblock_date: string;
+  opened_at: number;
+  closed_at: number;
+  resolution: string;
   created_at: number;
   updated_at: number;
 }
@@ -232,7 +272,47 @@ function mapWorkItem(row: FarmWorkItemRow): FarmWorkItem {
     nextAction: row.next_action,
     priority: row.priority,
     reviewDate: row.review_date,
+    responseDueAt: row.response_due_at ?? 0,
+    respondedAt: row.responded_at ?? 0,
+    blockedAt: row.blocked_at ?? 0,
+    blockedReason: row.blocked_reason ?? '',
+    blockedBy: row.blocked_by ?? '',
+    expectedUnblockDate: row.expected_unblock_date ?? '',
+    completedAt: row.completed_at ?? 0,
     lastActivityAt: row.last_activity_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapVisit(row: FarmWorkVisitRow): FarmWorkVisit {
+  return {
+    id: row.id,
+    workItemId: row.work_item_id,
+    scheduledAt: row.scheduled_at,
+    assignedTo: row.assigned_to,
+    status: row.status,
+    actualStartedAt: row.actual_started_at,
+    actualEndedAt: row.actual_ended_at,
+    preparationNote: row.preparation_note ?? '',
+    result: row.result,
+    nextVisitAt: row.next_visit_at,
+    recordedBy: row.recorded_by ?? row.assigned_to,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapBlockerEpisode(row: FarmBlockerEpisodeRow): FarmBlockerEpisode {
+  return {
+    id: row.id,
+    workItemId: row.work_item_id,
+    reason: row.reason,
+    blockedBy: row.blocked_by,
+    expectedUnblockDate: row.expected_unblock_date,
+    openedAt: row.opened_at,
+    closedAt: row.closed_at,
+    resolution: row.resolution,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -308,6 +388,13 @@ function auditArtifacts(
     nextAction: '',
     priority: 'medium',
     reviewDate: '',
+    responseDueAt: 0,
+    respondedAt: 0,
+    blockedAt: 0,
+    blockedReason: '',
+    blockedBy: '',
+    expectedUnblockDate: '',
+    completedAt: occurredAt,
     lastActivityAt: occurredAt,
     createdAt: occurredAt,
     updatedAt: occurredAt,
@@ -421,9 +508,50 @@ async function initializeFarmLedgerStore() {
         priority TEXT NOT NULL DEFAULT 'medium' CONSTRAINT chk_farm_work_items_priority
           CHECK (priority IN ('high', 'medium', 'low')),
         review_date TEXT NOT NULL DEFAULT '',
+        response_due_at INTEGER NOT NULL DEFAULT 0,
+        responded_at INTEGER NOT NULL DEFAULT 0,
+        blocked_at INTEGER NOT NULL DEFAULT 0,
+        blocked_reason TEXT NOT NULL DEFAULT '',
+        blocked_by TEXT NOT NULL DEFAULT '',
+        expected_unblock_date TEXT NOT NULL DEFAULT '',
+        completed_at INTEGER NOT NULL DEFAULT 0,
         last_activity_at INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
+      )
+    `),
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS farm_work_visits (
+        id TEXT PRIMARY KEY,
+        work_item_id TEXT NOT NULL REFERENCES farm_work_items(id) ON DELETE CASCADE,
+        scheduled_at INTEGER NOT NULL,
+        assigned_to TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'scheduled' CONSTRAINT chk_farm_work_visits_status
+          CHECK (status IN ('scheduled', 'completed', 'canceled')),
+        actual_started_at INTEGER NOT NULL DEFAULT 0,
+        actual_ended_at INTEGER NOT NULL DEFAULT 0,
+        preparation_note TEXT NOT NULL DEFAULT '',
+        result TEXT NOT NULL DEFAULT '',
+        next_visit_at INTEGER NOT NULL DEFAULT 0,
+        recorded_by TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `),
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS farm_blocker_episodes (
+        id TEXT PRIMARY KEY,
+        work_item_id TEXT NOT NULL REFERENCES farm_work_items(id) ON DELETE CASCADE,
+        reason TEXT NOT NULL,
+        blocked_by TEXT NOT NULL,
+        expected_unblock_date TEXT NOT NULL DEFAULT '',
+        opened_at INTEGER NOT NULL,
+        closed_at INTEGER NOT NULL DEFAULT 0,
+        resolution TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        CONSTRAINT chk_farm_blocker_episode_times
+          CHECK (closed_at = 0 OR closed_at >= opened_at)
       )
     `),
     db.prepare(`
@@ -458,6 +586,161 @@ async function initializeFarmLedgerStore() {
       )
     `),
     db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_waiting_requires_blocker_insert
+      BEFORE INSERT ON farm_work_items
+      FOR EACH ROW
+      WHEN NEW.status = 'waiting' AND (
+        trim(NEW.blocked_reason) = '' OR trim(NEW.blocked_by) = ''
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_BLOCKER_DETAILS_REQUIRED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_waiting_requires_blocker_update
+      BEFORE UPDATE OF status, blocked_reason, blocked_by ON farm_work_items
+      FOR EACH ROW
+      WHEN NEW.status = 'waiting' AND (
+        trim(NEW.blocked_reason) = '' OR trim(NEW.blocked_by) = ''
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_BLOCKER_DETAILS_REQUIRED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_visit_details_insert
+      BEFORE INSERT ON farm_work_visits
+      FOR EACH ROW
+      WHEN (
+        NEW.status = 'completed' AND (
+          NEW.actual_started_at = 0 OR NEW.actual_ended_at = 0 OR
+          NEW.actual_ended_at <= NEW.actual_started_at OR
+          NEW.actual_started_at > CAST(strftime('%s', 'now') AS INTEGER) * 1000 + 300000 OR
+          NEW.actual_ended_at > CAST(strftime('%s', 'now') AS INTEGER) * 1000 + 300000 OR
+          trim(NEW.result) = ''
+        )
+      ) OR (
+        NEW.status = 'canceled' AND (
+          trim(NEW.result) = '' OR NEW.actual_started_at != 0 OR NEW.actual_ended_at != 0
+        )
+      ) OR (
+        NEW.status = 'scheduled' AND (
+          NEW.actual_started_at != 0 OR NEW.actual_ended_at != 0 OR
+          trim(NEW.result) != '' OR NEW.next_visit_at != 0
+        )
+      ) OR trim(NEW.recorded_by) = '' OR (
+        NEW.next_visit_at != 0 AND NEW.next_visit_at <= CASE
+          WHEN NEW.status = 'completed' AND
+            NEW.actual_ended_at > CAST(strftime('%s', 'now') AS INTEGER) * 1000
+          THEN NEW.actual_ended_at
+          ELSE CAST(strftime('%s', 'now') AS INTEGER) * 1000
+        END
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_VISIT_DETAILS_REQUIRED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_visit_details_update
+      BEFORE UPDATE OF status, actual_started_at, actual_ended_at, result,
+        next_visit_at, recorded_by
+      ON farm_work_visits
+      FOR EACH ROW
+      WHEN (
+        NEW.status = 'completed' AND (
+          NEW.actual_started_at = 0 OR NEW.actual_ended_at = 0 OR
+          NEW.actual_ended_at <= NEW.actual_started_at OR
+          NEW.actual_started_at > CAST(strftime('%s', 'now') AS INTEGER) * 1000 + 300000 OR
+          NEW.actual_ended_at > CAST(strftime('%s', 'now') AS INTEGER) * 1000 + 300000 OR
+          trim(NEW.result) = ''
+        )
+      ) OR (
+        NEW.status = 'canceled' AND (
+          trim(NEW.result) = '' OR NEW.actual_started_at != 0 OR NEW.actual_ended_at != 0
+        )
+      ) OR (
+        NEW.status = 'scheduled' AND (
+          NEW.actual_started_at != 0 OR NEW.actual_ended_at != 0 OR
+          trim(NEW.result) != '' OR NEW.next_visit_at != 0
+        )
+      ) OR trim(NEW.recorded_by) = '' OR (
+        NEW.next_visit_at != 0 AND NEW.next_visit_at <= CASE
+          WHEN NEW.status = 'completed' AND
+            NEW.actual_ended_at > CAST(strftime('%s', 'now') AS INTEGER) * 1000
+          THEN NEW.actual_ended_at
+          ELSE CAST(strftime('%s', 'now') AS INTEGER) * 1000
+        END
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_VISIT_DETAILS_REQUIRED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_completed_work_visit_insert_lock
+      BEFORE INSERT ON farm_work_visits
+      FOR EACH ROW
+      WHEN EXISTS (
+        SELECT 1 FROM farm_work_items
+        WHERE id = NEW.work_item_id AND status = 'completed'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_WORK_COMPLETED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_visit_terminal_lock
+      BEFORE UPDATE ON farm_work_visits
+      FOR EACH ROW
+      WHEN OLD.status IN ('completed', 'canceled')
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_VISIT_LOCKED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_work_completed_time_insert
+      BEFORE INSERT ON farm_work_items
+      FOR EACH ROW
+      WHEN (NEW.status = 'completed' AND NEW.completed_at = 0) OR
+        (NEW.status != 'completed' AND NEW.completed_at != 0)
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_COMPLETED_TIME_REQUIRED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_work_completed_time_update
+      BEFORE UPDATE OF status, completed_at ON farm_work_items
+      FOR EACH ROW
+      WHEN (NEW.status = 'completed' AND NEW.completed_at = 0) OR
+        (NEW.status != 'completed' AND NEW.completed_at != 0)
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_COMPLETED_TIME_REQUIRED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_waiting_requires_open_episode
+      BEFORE UPDATE OF status ON farm_work_items
+      FOR EACH ROW
+      WHEN NEW.status = 'waiting' AND NOT EXISTS (
+        SELECT 1 FROM farm_blocker_episodes
+        WHERE work_item_id = NEW.id AND closed_at = 0
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_BLOCKER_EPISODE_REQUIRED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_nonwaiting_rejects_open_episode
+      BEFORE UPDATE OF status ON farm_work_items
+      FOR EACH ROW
+      WHEN NEW.status != 'waiting' AND EXISTS (
+        SELECT 1 FROM farm_blocker_episodes
+        WHERE work_item_id = NEW.id AND closed_at = 0
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_BLOCKER_EPISODE_OPEN');
+      END
+    `),
+    db.prepare(`
       CREATE TRIGGER IF NOT EXISTS trg_farm_work_complete_requires_checklist
       BEFORE UPDATE OF status ON farm_work_items
       FOR EACH ROW
@@ -467,6 +750,18 @@ async function initializeFarmLedgerStore() {
       )
       BEGIN
         SELECT RAISE(ABORT, 'FARM_CHECKLIST_INCOMPLETE');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_work_complete_requires_visits
+      BEFORE UPDATE OF status ON farm_work_items
+      FOR EACH ROW
+      WHEN NEW.status = 'completed' AND EXISTS (
+        SELECT 1 FROM farm_work_visits
+        WHERE work_item_id = NEW.id AND status = 'scheduled'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_VISIT_PENDING');
       END
     `),
     db.prepare(`
@@ -560,7 +855,28 @@ async function initializeFarmLedgerStore() {
       `CREATE INDEX IF NOT EXISTS idx_farm_work_items_review_priority ON farm_work_items(status, review_date, priority)`,
     ),
     db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_work_items_response_risk ON farm_work_items(status, responded_at, response_due_at)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_work_items_blocked ON farm_work_items(status, blocked_at)`,
+    ),
+    db.prepare(
       `CREATE INDEX IF NOT EXISTS idx_farm_work_checklist_order ON farm_work_checklist_items(work_item_id, sort_order, created_at)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_work_visits_work_schedule ON farm_work_visits(work_item_id, scheduled_at)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_work_visits_status_schedule ON farm_work_visits(status, scheduled_at)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_blocker_episodes_work_opened ON farm_blocker_episodes(work_item_id, opened_at)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_blocker_episodes_open ON farm_blocker_episodes(closed_at, opened_at)`,
+    ),
+    db.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_farm_blocker_episodes_one_open ON farm_blocker_episodes(work_item_id) WHERE closed_at = 0`,
     ),
     db.prepare(
       `CREATE INDEX IF NOT EXISTS idx_farm_inbox_status_received ON farm_inbox_items(status, received_at)`,
@@ -881,10 +1197,33 @@ async function initializeFarmLedgerStore() {
           : index === 4
             ? dateFromToday(2)
             : '',
+    responseDueAt:
+      seed[5] +
+      (index === 2 || index === 4 ? day : index === 3 ? 3 * day : 7 * day),
+    respondedAt: index === 2 || index === 4 ? 0 : seed[5],
+    blockedAt: index === 3 ? seed[5] : 0,
+    blockedReason: index === 3 ? '농가의 구독 갱신 의사 회신 대기' : '',
+    blockedBy: index === 3 ? '농가 담당자' : '',
+    expectedUnblockDate: index === 3 ? dateFromToday(3) : '',
+    completedAt: seed[2] === 'completed' ? seed[5] : 0,
     lastActivityAt: seed[5],
     createdAt: seed[5],
     updatedAt: seed[5],
   }));
+  const blockerEpisodes: FarmBlockerEpisode[] = workItems
+    .filter((item) => item.status === 'waiting')
+    .map((item) => ({
+      id: `sf-blocker-${item.id}`,
+      workItemId: item.id,
+      reason: item.blockedReason,
+      blockedBy: item.blockedBy,
+      expectedUnblockDate: item.expectedUnblockDate,
+      openedAt: item.blockedAt,
+      closedAt: 0,
+      resolution: '',
+      createdAt: item.blockedAt,
+      updatedAt: item.blockedAt,
+    }));
 
   const historyContents = [
     [
@@ -1030,8 +1369,9 @@ async function initializeFarmLedgerStore() {
       INSERT OR IGNORE INTO farm_work_items (
         id, farm_record_id, work_type, title, status, owner, due_date, description,
         expected_outcome, next_action, priority, review_date,
-        last_activity_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        response_due_at, responded_at, blocked_at, blocked_reason, blocked_by,
+        expected_unblock_date, completed_at, last_activity_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
         .bind(
           item.id,
@@ -1046,9 +1386,37 @@ async function initializeFarmLedgerStore() {
           item.nextAction,
           item.priority,
           item.reviewDate,
+          item.responseDueAt,
+          item.respondedAt,
+          item.blockedAt,
+          item.blockedReason,
+          item.blockedBy,
+          item.expectedUnblockDate,
+          item.completedAt,
           item.lastActivityAt,
           item.createdAt,
           item.updatedAt,
+        ),
+    ),
+    ...blockerEpisodes.map((episode) =>
+      db
+        .prepare(`
+      INSERT OR IGNORE INTO farm_blocker_episodes (
+        id, work_item_id, reason, blocked_by, expected_unblock_date,
+        opened_at, closed_at, resolution, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+        .bind(
+          episode.id,
+          episode.workItemId,
+          episode.reason,
+          episode.blockedBy,
+          episode.expectedUnblockDate,
+          episode.openedAt,
+          episode.closedAt,
+          episode.resolution,
+          episode.createdAt,
+          episode.updatedAt,
         ),
     ),
     ...historyEntries.map((entry) =>
@@ -1096,6 +1464,8 @@ export async function listFarmLedgerWorkspace(): Promise<FarmLedgerWorkspace> {
     recordResult,
     inboxResult,
     workItemResult,
+    blockerEpisodeResult,
+    visitResult,
     checklistResult,
     historyResult,
   ] = await Promise.all([
@@ -1145,7 +1515,9 @@ export async function listFarmLedgerWorkspace(): Promise<FarmLedgerWorkspace> {
       .prepare(`
       SELECT wi.id, wi.farm_record_id, fr.farm_id, wi.work_type, wi.title, wi.status,
              wi.owner, wi.due_date, wi.description, wi.expected_outcome, wi.next_action,
-             wi.priority, wi.review_date, wi.last_activity_at,
+              wi.priority, wi.review_date, wi.response_due_at, wi.responded_at,
+              wi.blocked_at, wi.blocked_reason, wi.blocked_by, wi.expected_unblock_date,
+              wi.completed_at, wi.last_activity_at,
              wi.created_at, wi.updated_at
       FROM farm_work_items wi
       INNER JOIN farm_records fr ON fr.id = wi.farm_record_id
@@ -1153,6 +1525,25 @@ export async function listFarmLedgerWorkspace(): Promise<FarmLedgerWorkspace> {
       LIMIT 10000
     `)
       .all<FarmWorkItemRow>(),
+    db
+      .prepare(`
+      SELECT id, work_item_id, reason, blocked_by, expected_unblock_date,
+             opened_at, closed_at, resolution, created_at, updated_at
+      FROM farm_blocker_episodes
+      ORDER BY opened_at DESC, created_at DESC
+      LIMIT 30000
+    `)
+      .all<FarmBlockerEpisodeRow>(),
+    db
+      .prepare(`
+      SELECT id, work_item_id, scheduled_at, assigned_to, status,
+             actual_started_at, actual_ended_at, preparation_note, result,
+             next_visit_at, recorded_by, created_at, updated_at
+      FROM farm_work_visits
+      ORDER BY scheduled_at DESC, created_at DESC
+      LIMIT 30000
+    `)
+      .all<FarmWorkVisitRow>(),
     db
       .prepare(`
       SELECT id, work_item_id, content, is_completed, sort_order, completed_by,
@@ -1179,6 +1570,8 @@ export async function listFarmLedgerWorkspace(): Promise<FarmLedgerWorkspace> {
     records: recordResult.results.map(mapRecord),
     inboxItems: inboxResult.results.map(mapInboxItem),
     workItems: workItemResult.results.map(mapWorkItem),
+    blockerEpisodes: blockerEpisodeResult.results.map(mapBlockerEpisode),
+    visits: visitResult.results.map(mapVisit),
     checklistItems: checklistResult.results.map(mapChecklistItem),
     historyEntries: historyResult.results.map(mapHistoryEntry),
   };
@@ -1366,9 +1759,9 @@ export async function createFarmWithRecord(
       .prepare(`
       INSERT INTO farm_work_items (
         id, farm_record_id, work_type, title, status, owner, due_date, description,
-        expected_outcome, next_action, priority, review_date,
+        expected_outcome, next_action, priority, review_date, completed_at,
         last_activity_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
       .bind(
         workItem.id,
@@ -1383,6 +1776,7 @@ export async function createFarmWithRecord(
         workItem.nextAction,
         workItem.priority,
         workItem.reviewDate,
+        workItem.completedAt,
         workItem.lastActivityAt,
         workItem.createdAt,
         workItem.updatedAt,
@@ -1495,9 +1889,9 @@ export async function createFarmRecord(
       .prepare(`
       INSERT INTO farm_work_items (
         id, farm_record_id, work_type, title, status, owner, due_date, description,
-        expected_outcome, next_action, priority, review_date,
+        expected_outcome, next_action, priority, review_date, completed_at,
         last_activity_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
       .bind(
         workItem.id,
@@ -1512,6 +1906,7 @@ export async function createFarmRecord(
         workItem.nextAction,
         workItem.priority,
         workItem.reviewDate,
+        workItem.completedAt,
         workItem.lastActivityAt,
         workItem.createdAt,
         workItem.updatedAt,
@@ -1738,9 +2133,9 @@ export async function updateFarmRecord(
       .prepare(`
       INSERT INTO farm_work_items (
         id, farm_record_id, work_type, title, status, owner, due_date, description,
-        expected_outcome, next_action, priority, review_date,
+        expected_outcome, next_action, priority, review_date, completed_at,
         last_activity_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
       .bind(
         workItem.id,
@@ -1755,6 +2150,7 @@ export async function updateFarmRecord(
         workItem.nextAction,
         workItem.priority,
         workItem.reviewDate,
+        workItem.completedAt,
         workItem.lastActivityAt,
         workItem.createdAt,
         workItem.updatedAt,
@@ -1826,11 +2222,22 @@ export async function createFarmWorkItem(
   }
 
   const now = Date.now();
+  const initialActionAt = sourceInbox ? now : initialHistory.occurredAt;
   const workItem: FarmWorkItem = {
     id: crypto.randomUUID(),
     ...input,
     nextAction: input.status === 'completed' ? '' : input.nextAction,
     reviewDate: input.status === 'completed' ? '' : input.reviewDate,
+    respondedAt:
+      input.status === 'completed' || initialHistory.actionContent.trim()
+        ? initialActionAt
+        : 0,
+    blockedAt: input.status === 'waiting' ? initialActionAt : 0,
+    blockedReason: input.status === 'waiting' ? input.blockedReason : '',
+    blockedBy: input.status === 'waiting' ? input.blockedBy : '',
+    expectedUnblockDate:
+      input.status === 'waiting' ? input.expectedUnblockDate : '',
+    completedAt: input.status === 'completed' ? initialActionAt : 0,
     farmId: record.farm_id,
     lastActivityAt: sourceInbox ? now : initialHistory.occurredAt,
     createdAt: now,
@@ -1883,6 +2290,21 @@ export async function createFarmWorkItem(
       updatedAt: now,
     }),
   );
+  const blockerEpisode: FarmBlockerEpisode | null =
+    workItem.status === 'waiting'
+      ? {
+          id: crypto.randomUUID(),
+          workItemId: workItem.id,
+          reason: workItem.blockedReason,
+          blockedBy: workItem.blockedBy,
+          expectedUnblockDate: workItem.expectedUnblockDate,
+          openedAt: workItem.blockedAt,
+          closedAt: 0,
+          resolution: '',
+          createdAt: now,
+          updatedAt: now,
+        }
+      : null;
 
   await db.batch([
     db
@@ -1890,8 +2312,9 @@ export async function createFarmWorkItem(
       INSERT INTO farm_work_items (
         id, farm_record_id, work_type, title, status, owner, due_date, description,
         expected_outcome, next_action, priority, review_date,
-        last_activity_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        response_due_at, responded_at, blocked_at, blocked_reason, blocked_by,
+        expected_unblock_date, completed_at, last_activity_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
       .bind(
         workItem.id,
@@ -1906,10 +2329,40 @@ export async function createFarmWorkItem(
         workItem.nextAction,
         workItem.priority,
         workItem.reviewDate,
+        workItem.responseDueAt,
+        workItem.respondedAt,
+        workItem.blockedAt,
+        workItem.blockedReason,
+        workItem.blockedBy,
+        workItem.expectedUnblockDate,
+        workItem.completedAt,
         workItem.lastActivityAt,
         workItem.createdAt,
         workItem.updatedAt,
       ),
+    ...(blockerEpisode
+      ? [
+          db
+            .prepare(`
+              INSERT INTO farm_blocker_episodes (
+                id, work_item_id, reason, blocked_by, expected_unblock_date,
+                opened_at, closed_at, resolution, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `)
+            .bind(
+              blockerEpisode.id,
+              blockerEpisode.workItemId,
+              blockerEpisode.reason,
+              blockerEpisode.blockedBy,
+              blockerEpisode.expectedUnblockDate,
+              blockerEpisode.openedAt,
+              blockerEpisode.closedAt,
+              blockerEpisode.resolution,
+              blockerEpisode.createdAt,
+              blockerEpisode.updatedAt,
+            ),
+        ]
+      : []),
     db
       .prepare(`
       INSERT INTO farm_history_entries (
@@ -2088,6 +2541,244 @@ export async function updateFarmInboxStatus(
   return inboxItem;
 }
 
+export async function saveFarmWorkVisit(input: FarmWorkVisitInput): Promise<{
+  visit: FarmWorkVisit;
+  historyEntry: FarmHistoryEntry;
+  followUpVisit: FarmWorkVisit | null;
+}> {
+  await ensureFarmLedgerStore();
+  const db = getD1();
+  const work = await db
+    .prepare(`
+      SELECT wi.id, wi.status, wi.farm_record_id, fr.farm_id
+      FROM farm_work_items wi
+      INNER JOIN farm_records fr ON fr.id = wi.farm_record_id
+      WHERE wi.id = ?
+    `)
+    .bind(input.workItemId)
+    .first<{
+      id: string;
+      status: FarmWorkStatus;
+      farm_record_id: string;
+      farm_id: string;
+    }>();
+  if (!work) throw new Error('FARM_WORK_ITEM_NOT_FOUND');
+  if (work.status === 'completed') throw new Error('FARM_WORK_COMPLETED');
+
+  const existingVisit = input.id
+    ? await db
+        .prepare(`
+          SELECT id, status, created_at
+          FROM farm_work_visits
+          WHERE id = ? AND work_item_id = ?
+        `)
+        .bind(input.id, input.workItemId)
+        .first<{
+          id: string;
+          status: FarmVisitStatus;
+          created_at: number;
+        }>()
+    : null;
+  if (input.id && !existingVisit) throw new Error('FARM_VISIT_NOT_FOUND');
+  if (
+    existingVisit &&
+    (existingVisit.status === 'completed' ||
+      existingVisit.status === 'canceled')
+  ) {
+    throw new Error('FARM_VISIT_LOCKED');
+  }
+
+  const now = Date.now();
+  const visit: FarmWorkVisit = {
+    id: input.id || crypto.randomUUID(),
+    workItemId: input.workItemId,
+    scheduledAt: input.scheduledAt,
+    assignedTo: input.assignedTo,
+    status: input.status,
+    actualStartedAt: input.actualStartedAt,
+    actualEndedAt: input.actualEndedAt,
+    preparationNote: input.preparationNote,
+    result: input.result,
+    nextVisitAt: input.nextVisitAt,
+    recordedBy: input.recordedBy,
+    createdAt: existingVisit?.created_at ?? now,
+    updatedAt: now,
+  };
+  const followUpVisit: FarmWorkVisit | null =
+    visit.status !== 'scheduled' && visit.nextVisitAt > 0
+      ? {
+          id: crypto.randomUUID(),
+          workItemId: visit.workItemId,
+          scheduledAt: visit.nextVisitAt,
+          assignedTo: visit.assignedTo,
+          status: 'scheduled',
+          actualStartedAt: 0,
+          actualEndedAt: 0,
+          preparationNote: '이전 방문 결과에 따라 등록된 후속 방문입니다.',
+          result: '',
+          nextVisitAt: 0,
+          recordedBy: visit.recordedBy,
+          createdAt: now,
+          updatedAt: now,
+        }
+      : null;
+
+  const scheduledLabel = new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(visit.scheduledAt));
+  const followUpLabel = followUpVisit
+    ? ` · 후속 방문 ${new Intl.DateTimeFormat('ko-KR', {
+        timeZone: 'Asia/Seoul',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(new Date(followUpVisit.scheduledAt))}`
+    : '';
+  const actionContent =
+    visit.status === 'completed'
+      ? `현장 방문 완료: ${scheduledLabel} · ${visit.result}${followUpLabel}`
+      : visit.status === 'canceled'
+        ? `현장 방문 취소: ${scheduledLabel} · ${visit.result}${followUpLabel}`
+        : `${input.id ? '현장 방문 일정 변경' : '현장 방문 일정 등록'}: ${scheduledLabel} · ${visit.assignedTo}`;
+  const historyEntry: FarmHistoryEntry = {
+    id: crypto.randomUUID(),
+    workItemId: visit.workItemId,
+    channel: 'system',
+    sender: '',
+    receivedContent: '',
+    actionContent,
+    amount: 0,
+    recorder: visit.recordedBy,
+    occurredAt: visit.status === 'completed' ? visit.actualEndedAt : now,
+    referenceUrl: '',
+    createdAt: now,
+  };
+
+  const visitStatement = input.id
+    ? db
+        .prepare(`
+          UPDATE farm_work_visits
+          SET scheduled_at = ?, assigned_to = ?, status = ?,
+              actual_started_at = ?, actual_ended_at = ?, preparation_note = ?,
+              result = ?, next_visit_at = ?, recorded_by = ?, updated_at = ?
+          WHERE id = ? AND work_item_id = ?
+        `)
+        .bind(
+          visit.scheduledAt,
+          visit.assignedTo,
+          visit.status,
+          visit.actualStartedAt,
+          visit.actualEndedAt,
+          visit.preparationNote,
+          visit.result,
+          visit.nextVisitAt,
+          visit.recordedBy,
+          visit.updatedAt,
+          visit.id,
+          visit.workItemId,
+        )
+    : db
+        .prepare(`
+          INSERT INTO farm_work_visits (
+            id, work_item_id, scheduled_at, assigned_to, status,
+            actual_started_at, actual_ended_at, preparation_note, result,
+            next_visit_at, recorded_by, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .bind(
+          visit.id,
+          visit.workItemId,
+          visit.scheduledAt,
+          visit.assignedTo,
+          visit.status,
+          visit.actualStartedAt,
+          visit.actualEndedAt,
+          visit.preparationNote,
+          visit.result,
+          visit.nextVisitAt,
+          visit.recordedBy,
+          visit.createdAt,
+          visit.updatedAt,
+        );
+
+  await db.batch([
+    visitStatement,
+    ...(followUpVisit
+      ? [
+          db
+            .prepare(`
+              INSERT INTO farm_work_visits (
+                id, work_item_id, scheduled_at, assigned_to, status,
+                actual_started_at, actual_ended_at, preparation_note, result,
+                next_visit_at, recorded_by, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `)
+            .bind(
+              followUpVisit.id,
+              followUpVisit.workItemId,
+              followUpVisit.scheduledAt,
+              followUpVisit.assignedTo,
+              followUpVisit.status,
+              followUpVisit.actualStartedAt,
+              followUpVisit.actualEndedAt,
+              followUpVisit.preparationNote,
+              followUpVisit.result,
+              followUpVisit.nextVisitAt,
+              followUpVisit.recordedBy,
+              followUpVisit.createdAt,
+              followUpVisit.updatedAt,
+            ),
+        ]
+      : []),
+    db
+      .prepare(`
+        INSERT INTO farm_history_entries (
+          id, work_item_id, channel, sender, received_content, action_content,
+          amount, recorder, occurred_at, reference_url, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .bind(
+        historyEntry.id,
+        historyEntry.workItemId,
+        historyEntry.channel,
+        historyEntry.sender,
+        historyEntry.receivedContent,
+        historyEntry.actionContent,
+        historyEntry.amount,
+        historyEntry.recorder,
+        historyEntry.occurredAt,
+        historyEntry.referenceUrl,
+        historyEntry.createdAt,
+      ),
+    db
+      .prepare(`
+        UPDATE farm_work_items
+        SET last_activity_at = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .bind(now, now, visit.workItemId),
+    db
+      .prepare(`
+        UPDATE farm_records
+        SET last_activity_at = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .bind(now, now, work.farm_record_id),
+    db
+      .prepare('UPDATE farms SET updated_at = ? WHERE id = ?')
+      .bind(now, work.farm_id),
+  ]);
+
+  return { visit, historyEntry, followUpVisit };
+}
+
 export async function toggleFarmChecklistItem(
   workItemId: string,
   checklistItemId: string,
@@ -2192,7 +2883,9 @@ export async function addFarmHistoryEntry(
     .prepare(`
     SELECT wi.id, wi.farm_record_id, fr.farm_id, wi.work_type, wi.title, wi.status,
            wi.owner, wi.due_date, wi.description, wi.expected_outcome, wi.next_action,
-           wi.priority, wi.review_date, wi.last_activity_at,
+           wi.priority, wi.review_date, wi.response_due_at, wi.responded_at,
+           wi.blocked_at, wi.blocked_reason, wi.blocked_by, wi.expected_unblock_date,
+           wi.completed_at, wi.last_activity_at,
            wi.created_at, wi.updated_at
     FROM farm_work_items wi
     INNER JOIN farm_records fr ON fr.id = wi.farm_record_id
@@ -2204,16 +2897,29 @@ export async function addFarmHistoryEntry(
 
   const existing = mapWorkItem(row);
   if (input.newStatus === 'completed' && existing.status !== 'completed') {
-    const incompleteChecklist = await db
-      .prepare(`
-        SELECT COUNT(*) AS count
-        FROM farm_work_checklist_items
-        WHERE work_item_id = ? AND is_completed = 0
-      `)
-      .bind(input.workItemId)
-      .first<{ count: number }>();
+    const [incompleteChecklist, pendingVisits] = await Promise.all([
+      db
+        .prepare(`
+          SELECT COUNT(*) AS count
+          FROM farm_work_checklist_items
+          WHERE work_item_id = ? AND is_completed = 0
+        `)
+        .bind(input.workItemId)
+        .first<{ count: number }>(),
+      db
+        .prepare(`
+          SELECT COUNT(*) AS count
+          FROM farm_work_visits
+          WHERE work_item_id = ? AND status = 'scheduled'
+        `)
+        .bind(input.workItemId)
+        .first<{ count: number }>(),
+    ]);
     if ((incompleteChecklist?.count ?? 0) > 0) {
       throw new Error('FARM_CHECKLIST_INCOMPLETE');
+    }
+    if ((pendingVisits?.count ?? 0) > 0) {
+      throw new Error('FARM_VISIT_PENDING');
     }
   }
   const now = Date.now();
@@ -2225,9 +2931,40 @@ export async function addFarmHistoryEntry(
     owner,
     dueDate,
     expectedOutcome,
+    responseDueAt,
+    markResponded,
+    blockedReason,
+    blockedBy,
+    expectedUnblockDate,
     ...historyInput
   } = input;
   const resolvedStatus = newStatus ?? existing.status;
+  if (
+    existing.status === 'waiting' &&
+    resolvedStatus !== 'waiting' &&
+    !historyInput.actionContent.trim()
+  ) {
+    throw new Error('FARM_BLOCKER_RESOLUTION_REQUIRED');
+  }
+  if (
+    existing.status === 'waiting' &&
+    resolvedStatus !== 'waiting' &&
+    input.occurredAt < existing.blockedAt
+  ) {
+    throw new Error('FARM_BLOCKER_TIME_INVALID');
+  }
+  if (
+    (existing.respondedAt || markResponded || resolvedStatus === 'completed') &&
+    responseDueAt !== undefined &&
+    responseDueAt !== existing.responseDueAt
+  ) {
+    throw new Error('FARM_RESPONSE_TARGET_LOCKED');
+  }
+  const resolvedRespondedAt = existing.respondedAt
+    ? existing.respondedAt
+    : markResponded || resolvedStatus === 'completed'
+      ? input.occurredAt
+      : 0;
   const workItem: FarmWorkItem = {
     ...existing,
     status: resolvedStatus,
@@ -2239,6 +2976,26 @@ export async function addFarmHistoryEntry(
     reviewDate:
       resolvedStatus === 'completed' ? '' : (reviewDate ?? existing.reviewDate),
     priority: priority ?? existing.priority,
+    responseDueAt: existing.respondedAt
+      ? existing.responseDueAt
+      : (responseDueAt ?? existing.responseDueAt),
+    respondedAt: resolvedRespondedAt,
+    blockedAt:
+      resolvedStatus === 'waiting' ? existing.blockedAt || input.occurredAt : 0,
+    blockedReason:
+      resolvedStatus === 'waiting'
+        ? (blockedReason ?? existing.blockedReason)
+        : '',
+    blockedBy:
+      resolvedStatus === 'waiting' ? (blockedBy ?? existing.blockedBy) : '',
+    expectedUnblockDate:
+      resolvedStatus === 'waiting'
+        ? (expectedUnblockDate ?? existing.expectedUnblockDate)
+        : '',
+    completedAt:
+      resolvedStatus === 'completed'
+        ? existing.completedAt || input.occurredAt
+        : 0,
     lastActivityAt: Math.max(existing.lastActivityAt, input.occurredAt),
     updatedAt: now,
   };
@@ -2250,6 +3007,13 @@ export async function addFarmHistoryEntry(
     workItem.nextAction !== existing.nextAction ? '다음 행동' : '',
     workItem.reviewDate !== existing.reviewDate ? '검토일' : '',
     workItem.priority !== existing.priority ? '우선순위' : '',
+    workItem.responseDueAt !== existing.responseDueAt ? '최초 대응 목표' : '',
+    workItem.respondedAt !== existing.respondedAt ? '최초 대응 완료' : '',
+    workItem.blockedReason !== existing.blockedReason ? '막힘 사유' : '',
+    workItem.blockedBy !== existing.blockedBy ? '해제 주체' : '',
+    workItem.expectedUnblockDate !== existing.expectedUnblockDate
+      ? '예상 해제일'
+      : '',
   ].filter(Boolean);
   const isPlanningOnly =
     !historyInput.receivedContent.trim() && !historyInput.actionContent.trim();
@@ -2265,6 +3029,53 @@ export async function addFarmHistoryEntry(
       : historyInput.actionContent,
     createdAt: now,
   };
+  const blockerStatement =
+    existing.status !== 'waiting' && resolvedStatus === 'waiting'
+      ? db
+          .prepare(`
+            INSERT INTO farm_blocker_episodes (
+              id, work_item_id, reason, blocked_by, expected_unblock_date,
+              opened_at, closed_at, resolution, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, '', ?, ?)
+          `)
+          .bind(
+            crypto.randomUUID(),
+            workItem.id,
+            workItem.blockedReason,
+            workItem.blockedBy,
+            workItem.expectedUnblockDate,
+            workItem.blockedAt,
+            now,
+            now,
+          )
+      : existing.status === 'waiting' && resolvedStatus === 'waiting'
+        ? db
+            .prepare(`
+              UPDATE farm_blocker_episodes
+              SET reason = ?, blocked_by = ?, expected_unblock_date = ?, updated_at = ?
+              WHERE work_item_id = ? AND closed_at = 0
+            `)
+            .bind(
+              workItem.blockedReason,
+              workItem.blockedBy,
+              workItem.expectedUnblockDate,
+              now,
+              workItem.id,
+            )
+        : existing.status === 'waiting' && resolvedStatus !== 'waiting'
+          ? db
+              .prepare(`
+                UPDATE farm_blocker_episodes
+                SET closed_at = ?, resolution = ?, updated_at = ?
+                WHERE work_item_id = ? AND closed_at = 0
+              `)
+              .bind(
+                input.occurredAt,
+                historyInput.actionContent,
+                now,
+                workItem.id,
+              )
+          : null;
 
   await db.batch([
     db
@@ -2287,12 +3098,15 @@ export async function addFarmHistoryEntry(
         historyEntry.referenceUrl,
         historyEntry.createdAt,
       ),
+    ...(blockerStatement ? [blockerStatement] : []),
     db
       .prepare(`
       UPDATE farm_work_items
       SET status = ?, owner = ?, due_date = ?, expected_outcome = ?,
           next_action = ?, priority = ?, review_date = ?,
-          last_activity_at = ?, updated_at = ?
+          response_due_at = ?, responded_at = ?, blocked_at = ?,
+          blocked_reason = ?, blocked_by = ?, expected_unblock_date = ?,
+          completed_at = ?, last_activity_at = ?, updated_at = ?
       WHERE id = ?
     `)
       .bind(
@@ -2303,6 +3117,13 @@ export async function addFarmHistoryEntry(
         workItem.nextAction,
         workItem.priority,
         workItem.reviewDate,
+        workItem.responseDueAt,
+        workItem.respondedAt,
+        workItem.blockedAt,
+        workItem.blockedReason,
+        workItem.blockedBy,
+        workItem.expectedUnblockDate,
+        workItem.completedAt,
         workItem.lastActivityAt,
         workItem.updatedAt,
         workItem.id,
