@@ -1,5 +1,5 @@
-import { BusinessDashboard } from './business-dashboard';
+import { FarmLedgerDashboard } from './farm-ledger-dashboard';
 
 export default function Home() {
-  return <BusinessDashboard />;
+  return <FarmLedgerDashboard />;
 }
