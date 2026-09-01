@@ -1,5 +1,5 @@
-import { TaskDashboard } from './task-dashboard';
+import { BusinessDashboard } from './business-dashboard';
 
 export default function Home() {
-  return <TaskDashboard />;
+  return <BusinessDashboard />;
 }

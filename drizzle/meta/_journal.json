@@ -8,6 +8,13 @@
       "when": 1788236254741,
       "tag": "0000_typical_mephistopheles",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1788238125792,
+      "tag": "0001_real_doctor_octopus",
+      "breakpoints": true
     }
   ]
 }
