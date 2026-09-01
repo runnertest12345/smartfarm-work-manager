@@ -12,13 +12,22 @@ import type {
   FarmInput,
   FarmLedgerWorkspace,
   FarmProject,
+  FarmProjectDocument,
+  FarmProjectDocumentCategory,
+  FarmProjectDocumentInput,
+  FarmProjectDocumentStatus,
   FarmProjectInput,
+  FarmProjectUpdate,
+  FarmProjectUpdateInput,
+  FarmProjectUpdateKind,
   FarmProjectStatus,
+  FarmProjectStage,
   FarmProjectType,
   FarmRecord,
   FarmRecordInput,
   FarmRecordMutationResult,
   FarmVisitStatus,
+  FarmSettlementStatus,
   FarmWorkItem,
   FarmWorkChecklistItem,
   FarmWorkItemInput,
@@ -41,6 +50,61 @@ interface FarmProjectRow {
   status: FarmProjectStatus;
   description: string;
   target_farm_count: number;
+  manager: string;
+  start_date: string;
+  end_date: string;
+  current_stage: FarmProjectStage;
+  settlement_status: FarmSettlementStatus;
+  settlement_due_date: string;
+  contract_amount: number;
+  settlement_claim_amount: number;
+  settlement_approved_amount: number;
+  settlement_paid_amount: number;
+  settled_at: string;
+  settlement_owner: string;
+  settlement_evidence_url: string;
+  settlement_note: string;
+  created_at: number;
+  updated_at: number;
+}
+
+interface FarmProjectDocumentRow {
+  id: string;
+  project_id: string;
+  title: string;
+  category: FarmProjectDocumentCategory;
+  is_required: number;
+  status: FarmProjectDocumentStatus;
+  owner: string;
+  current_handler: string;
+  due_date: string;
+  submitted_at: string;
+  approved_at: string;
+  reference_url: string;
+  revision: number;
+  note: string;
+  created_at: number;
+  updated_at: number;
+}
+
+interface FarmProjectUpdateRow {
+  id: string;
+  project_id: string;
+  kind: FarmProjectUpdateKind;
+  title: string;
+  channel: FarmHistoryChannel;
+  sender: string;
+  received_content: string;
+  action_content: string;
+  recorder: string;
+  occurred_at: number;
+  reference_url: string;
+  blocked_reason: string;
+  blocked_by: string;
+  expected_unblock_date: string;
+  resolved_at: number;
+  resolution: string;
+  resolved_by: string;
   created_at: number;
   updated_at: number;
 }
@@ -206,9 +270,134 @@ function mapProject(row: FarmProjectRow): FarmProject {
     status: row.status,
     description: row.description,
     targetFarmCount: row.target_farm_count,
+    manager: row.manager ?? '',
+    startDate: row.start_date ?? '',
+    endDate: row.end_date ?? '',
+    currentStage: row.current_stage ?? 'agreement',
+    settlementStatus: row.settlement_status ?? 'not_started',
+    settlementDueDate: row.settlement_due_date ?? '',
+    contractAmount: row.contract_amount ?? 0,
+    settlementClaimAmount: row.settlement_claim_amount ?? 0,
+    settlementApprovedAmount: row.settlement_approved_amount ?? 0,
+    settlementPaidAmount: row.settlement_paid_amount ?? 0,
+    settledAt: row.settled_at ?? '',
+    settlementOwner: row.settlement_owner ?? '',
+    settlementEvidenceUrl: row.settlement_evidence_url ?? '',
+    settlementNote: row.settlement_note ?? '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function mapProjectDocument(row: FarmProjectDocumentRow): FarmProjectDocument {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    title: row.title,
+    category: row.category,
+    isRequired: Boolean(row.is_required),
+    status: row.status,
+    owner: row.owner,
+    currentHandler: row.current_handler,
+    dueDate: row.due_date,
+    submittedAt: row.submitted_at,
+    approvedAt: row.approved_at,
+    referenceUrl: row.reference_url,
+    revision: row.revision,
+    note: row.note,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapProjectUpdate(row: FarmProjectUpdateRow): FarmProjectUpdate {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    kind: row.kind,
+    title: row.title,
+    channel: row.channel,
+    sender: row.sender,
+    receivedContent: row.received_content,
+    actionContent: row.action_content,
+    recorder: row.recorder,
+    occurredAt: row.occurred_at,
+    referenceUrl: row.reference_url,
+    blockedReason: row.blocked_reason,
+    blockedBy: row.blocked_by,
+    expectedUnblockDate: row.expected_unblock_date,
+    resolvedAt: row.resolved_at,
+    resolution: row.resolution,
+    resolvedBy: row.resolved_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function systemProjectUpdate(
+  projectId: string,
+  title: string,
+  actionContent: string,
+  recorder: string,
+  occurredAt: number,
+): FarmProjectUpdate {
+  return {
+    id: crypto.randomUUID(),
+    projectId,
+    kind: 'system',
+    title,
+    channel: 'system',
+    sender: '',
+    receivedContent: '',
+    actionContent,
+    recorder: recorder || '담당자 미지정',
+    occurredAt,
+    referenceUrl: '',
+    blockedReason: '',
+    blockedBy: '',
+    expectedUnblockDate: '',
+    resolvedAt: 0,
+    resolution: '',
+    resolvedBy: '',
+    createdAt: occurredAt,
+    updatedAt: occurredAt,
+  };
+}
+
+function insertProjectUpdateStatement(
+  db: D1Database,
+  update: FarmProjectUpdate,
+) {
+  return db
+    .prepare(`
+      INSERT INTO farm_project_updates (
+        id, project_id, kind, title, channel, sender, received_content,
+        action_content, recorder, occurred_at, reference_url, blocked_reason,
+        blocked_by, expected_unblock_date, resolved_at, resolution,
+        resolved_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .bind(
+      update.id,
+      update.projectId,
+      update.kind,
+      update.title,
+      update.channel,
+      update.sender,
+      update.receivedContent,
+      update.actionContent,
+      update.recorder,
+      update.occurredAt,
+      update.referenceUrl,
+      update.blockedReason,
+      update.blockedBy,
+      update.expectedUnblockDate,
+      update.resolvedAt,
+      update.resolution,
+      update.resolvedBy,
+      update.createdAt,
+      update.updatedAt,
+    );
 }
 
 function mapFarm(row: FarmRow): Farm {
@@ -439,9 +628,109 @@ async function initializeFarmLedgerStore() {
         description TEXT NOT NULL DEFAULT '',
         target_farm_count INTEGER NOT NULL DEFAULT 0
           CONSTRAINT chk_smartfarm_projects_target_count CHECK (target_farm_count BETWEEN 0 AND 100000),
+        manager TEXT NOT NULL DEFAULT '',
+        start_date TEXT NOT NULL DEFAULT '',
+        end_date TEXT NOT NULL DEFAULT '',
+        current_stage TEXT NOT NULL DEFAULT 'agreement'
+          CONSTRAINT chk_smartfarm_projects_stage
+          CHECK (current_stage IN ('agreement', 'farm_selection', 'installation', 'verification', 'operation', 'settlement', 'closed')),
+        settlement_status TEXT NOT NULL DEFAULT 'not_started'
+          CONSTRAINT chk_smartfarm_projects_settlement_status
+          CHECK (settlement_status IN ('not_started', 'collecting', 'submitted', 'revision', 'approved', 'paid', 'closed')),
+        settlement_due_date TEXT NOT NULL DEFAULT '',
+        contract_amount INTEGER NOT NULL DEFAULT 0,
+        settlement_claim_amount INTEGER NOT NULL DEFAULT 0,
+        settlement_approved_amount INTEGER NOT NULL DEFAULT 0,
+        settlement_paid_amount INTEGER NOT NULL DEFAULT 0,
+        settled_at TEXT NOT NULL DEFAULT '',
+        settlement_owner TEXT NOT NULL DEFAULT '',
+        settlement_evidence_url TEXT NOT NULL DEFAULT '',
+        settlement_note TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        CONSTRAINT chk_smartfarm_projects_amounts CHECK (
+          contract_amount BETWEEN 0 AND 100000000000 AND
+          settlement_claim_amount BETWEEN 0 AND 100000000000 AND
+          settlement_approved_amount BETWEEN 0 AND 100000000000 AND
+          settlement_paid_amount BETWEEN 0 AND 100000000000 AND
+          settlement_paid_amount <= settlement_approved_amount
+        )
+      )
+    `),
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS farm_project_documents (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES smartfarm_projects(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        category TEXT NOT NULL CONSTRAINT chk_farm_project_documents_category
+          CHECK (category IN ('agreement', 'farm', 'installation', 'inspection', 'settlement', 'other')),
+        is_required INTEGER NOT NULL DEFAULT 1
+          CONSTRAINT chk_farm_project_documents_required CHECK (is_required IN (0, 1)),
+        status TEXT NOT NULL DEFAULT 'not_started'
+          CONSTRAINT chk_farm_project_documents_status
+          CHECK (status IN ('not_started', 'preparing', 'submitted', 'reviewing', 'revision', 'approved', 'rejected')),
+        owner TEXT NOT NULL DEFAULT '',
+        current_handler TEXT NOT NULL DEFAULT '',
+        due_date TEXT NOT NULL DEFAULT '',
+        submitted_at TEXT NOT NULL DEFAULT '',
+        approved_at TEXT NOT NULL DEFAULT '',
+        reference_url TEXT NOT NULL DEFAULT '',
+        revision INTEGER NOT NULL DEFAULT 1
+          CONSTRAINT chk_farm_project_documents_revision CHECK (revision BETWEEN 1 AND 1000),
+        note TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
+    `),
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS farm_project_updates (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES smartfarm_projects(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CONSTRAINT chk_farm_project_updates_kind
+          CHECK (kind IN ('communication', 'decision', 'blocker', 'system')),
+        title TEXT NOT NULL,
+        channel TEXT NOT NULL CONSTRAINT chk_farm_project_updates_channel
+          CHECK (channel IN ('email', 'kakao', 'verbal', 'phone', 'meeting', 'system', 'other')),
+        sender TEXT NOT NULL DEFAULT '',
+        received_content TEXT NOT NULL DEFAULT '',
+        action_content TEXT NOT NULL DEFAULT '',
+        recorder TEXT NOT NULL,
+        occurred_at INTEGER NOT NULL,
+        reference_url TEXT NOT NULL DEFAULT '',
+        blocked_reason TEXT NOT NULL DEFAULT '',
+        blocked_by TEXT NOT NULL DEFAULT '',
+        expected_unblock_date TEXT NOT NULL DEFAULT '',
+        resolved_at INTEGER NOT NULL DEFAULT 0,
+        resolution TEXT NOT NULL DEFAULT '',
+        resolved_by TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        CONSTRAINT chk_farm_project_updates_resolution CHECK (
+          resolved_at = 0 OR (
+            kind = 'blocker' AND resolved_at >= occurred_at AND
+            trim(resolution) != '' AND trim(resolved_by) != ''
+          )
+        )
+      )
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_smartfarm_project_amounts_insert
+      BEFORE INSERT ON smartfarm_projects
+      FOR EACH ROW
+      WHEN NEW.settlement_paid_amount > NEW.settlement_approved_amount
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_SETTLEMENT_AMOUNTS_INVALID');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_smartfarm_project_amounts_update
+      BEFORE UPDATE OF settlement_approved_amount, settlement_paid_amount
+      ON smartfarm_projects
+      FOR EACH ROW
+      WHEN NEW.settlement_paid_amount > NEW.settlement_approved_amount
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_SETTLEMENT_AMOUNTS_INVALID');
+      END
     `),
     db.prepare(`
       CREATE TABLE IF NOT EXISTS farms (
@@ -490,6 +779,31 @@ async function initializeFarmLedgerStore() {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_records_project_unique_insert
+      BEFORE INSERT ON farm_records
+      FOR EACH ROW
+      WHEN EXISTS (
+        SELECT 1 FROM farm_records
+        WHERE farm_id = NEW.farm_id AND project_id = NEW.project_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_RECORD_PROJECT_EXISTS');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_records_project_unique_update
+      BEFORE UPDATE OF farm_id, project_id ON farm_records
+      FOR EACH ROW
+      WHEN (NEW.farm_id != OLD.farm_id OR NEW.project_id != OLD.project_id)
+      AND EXISTS (
+        SELECT 1 FROM farm_records
+        WHERE farm_id = NEW.farm_id AND project_id = NEW.project_id AND id != OLD.id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_RECORD_PROJECT_EXISTS');
+      END
     `),
     db.prepare(`
       CREATE TABLE IF NOT EXISTS farm_work_items (
@@ -828,6 +1142,21 @@ async function initializeFarmLedgerStore() {
       `CREATE INDEX IF NOT EXISTS idx_smartfarm_projects_status_year ON smartfarm_projects(status, year)`,
     ),
     db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_smartfarm_projects_stage_settlement ON smartfarm_projects(current_stage, settlement_status)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_project_documents_project_status ON farm_project_documents(project_id, status)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_project_documents_due ON farm_project_documents(status, due_date)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_project_updates_project_occurred ON farm_project_updates(project_id, occurred_at)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_project_updates_open_blockers ON farm_project_updates(project_id, occurred_at) WHERE kind = 'blocker' AND resolved_at = 0`,
+    ),
+    db.prepare(
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_farms_farm_code ON farms(farm_code)`,
     ),
     db.prepare(
@@ -887,6 +1216,208 @@ async function initializeFarmLedgerStore() {
     db.prepare(
       `CREATE INDEX IF NOT EXISTS idx_farm_history_occurred ON farm_history_entries(occurred_at)`,
     ),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_smartfarm_project_state_insert
+      BEFORE INSERT ON smartfarm_projects
+      FOR EACH ROW
+      WHEN (NEW.status = 'completed' AND NEW.current_stage != 'closed')
+        OR (NEW.status != 'completed' AND NEW.current_stage = 'closed')
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_STAGE_STATUS_INVALID');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_smartfarm_project_completed_insert
+      BEFORE INSERT ON smartfarm_projects
+      FOR EACH ROW
+      WHEN NEW.status = 'completed'
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_COMPLETION_REQUIREMENTS_MISSING');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_smartfarm_project_state_update
+      BEFORE UPDATE OF status, current_stage ON smartfarm_projects
+      FOR EACH ROW
+      WHEN (NEW.status = 'completed' AND NEW.current_stage != 'closed')
+        OR (NEW.status != 'completed' AND NEW.current_stage = 'closed')
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_STAGE_STATUS_INVALID');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_smartfarm_project_completion_update
+      BEFORE UPDATE OF status ON smartfarm_projects
+      FOR EACH ROW
+      WHEN OLD.status != 'completed' AND NEW.status = 'completed' AND (
+        NEW.current_stage != 'closed' OR
+        NEW.settlement_status NOT IN ('paid', 'closed') OR
+        trim(NEW.settled_at) = '' OR
+        NOT EXISTS (
+          SELECT 1 FROM farm_project_documents
+          WHERE project_id = NEW.id AND is_required = 1
+        ) OR
+        EXISTS (
+          SELECT 1 FROM farm_project_documents
+          WHERE project_id = NEW.id AND is_required = 1 AND status != 'approved'
+        ) OR
+        EXISTS (
+          SELECT 1 FROM farm_project_updates
+          WHERE project_id = NEW.id AND kind = 'blocker' AND resolved_at = 0
+        ) OR
+        EXISTS (
+          SELECT 1 FROM farm_work_items wi
+          INNER JOIN farm_records fr ON fr.id = wi.farm_record_id
+          WHERE fr.project_id = NEW.id AND wi.status != 'completed'
+        ) OR
+        (
+          NEW.target_farm_count > 0 AND
+          (SELECT COUNT(DISTINCT farm_id) FROM farm_records WHERE project_id = NEW.id) < NEW.target_farm_count
+        )
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_COMPLETION_REQUIREMENTS_MISSING');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_smartfarm_project_completed_fields_update
+      BEFORE UPDATE OF target_farm_count, start_date, end_date,
+        settlement_status, settlement_due_date, contract_amount,
+        settlement_claim_amount, settlement_approved_amount,
+        settlement_paid_amount, settled_at, settlement_evidence_url
+      ON smartfarm_projects
+      FOR EACH ROW
+      WHEN OLD.status = 'completed' AND NEW.status = 'completed' AND (
+        NEW.target_farm_count != OLD.target_farm_count OR
+        NEW.start_date != OLD.start_date OR NEW.end_date != OLD.end_date OR
+        NEW.settlement_status != OLD.settlement_status OR
+        NEW.settlement_due_date != OLD.settlement_due_date OR
+        NEW.contract_amount != OLD.contract_amount OR
+        NEW.settlement_claim_amount != OLD.settlement_claim_amount OR
+        NEW.settlement_approved_amount != OLD.settlement_approved_amount OR
+        NEW.settlement_paid_amount != OLD.settlement_paid_amount OR
+        NEW.settled_at != OLD.settled_at OR
+        NEW.settlement_evidence_url != OLD.settlement_evidence_url
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_COMPLETED_LOCKED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_project_document_completed_insert
+      BEFORE INSERT ON farm_project_documents
+      FOR EACH ROW
+      WHEN EXISTS (
+        SELECT 1 FROM smartfarm_projects
+        WHERE id = NEW.project_id AND status = 'completed'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_COMPLETED_LOCKED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_project_document_completed_update
+      BEFORE UPDATE ON farm_project_documents
+      FOR EACH ROW
+      WHEN EXISTS (
+        SELECT 1 FROM smartfarm_projects
+        WHERE id = NEW.project_id AND status = 'completed'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_COMPLETED_LOCKED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_project_document_completed_delete
+      BEFORE DELETE ON farm_project_documents
+      FOR EACH ROW
+      WHEN EXISTS (
+        SELECT 1 FROM smartfarm_projects
+        WHERE id = OLD.project_id AND status = 'completed'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_COMPLETED_LOCKED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_record_completed_project_insert
+      BEFORE INSERT ON farm_records
+      FOR EACH ROW
+      WHEN EXISTS (
+        SELECT 1 FROM smartfarm_projects
+        WHERE id = NEW.project_id AND status = 'completed'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_COMPLETED_LOCKED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_record_completed_project_update
+      BEFORE UPDATE OF project_id ON farm_records
+      FOR EACH ROW
+      WHEN NEW.project_id != OLD.project_id AND (
+        EXISTS (
+          SELECT 1 FROM smartfarm_projects
+          WHERE id = OLD.project_id AND status = 'completed'
+        ) OR EXISTS (
+          SELECT 1 FROM smartfarm_projects
+          WHERE id = NEW.project_id AND status = 'completed'
+        )
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_COMPLETED_LOCKED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_record_completed_project_delete
+      BEFORE DELETE ON farm_records
+      FOR EACH ROW
+      WHEN EXISTS (
+        SELECT 1 FROM smartfarm_projects
+        WHERE id = OLD.project_id AND status = 'completed'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_COMPLETED_LOCKED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_work_completed_project_insert
+      BEFORE INSERT ON farm_work_items
+      FOR EACH ROW
+      WHEN NEW.status != 'completed' AND EXISTS (
+        SELECT 1 FROM farm_records fr
+        INNER JOIN smartfarm_projects p ON p.id = fr.project_id
+        WHERE fr.id = NEW.farm_record_id AND p.status = 'completed'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_COMPLETED_LOCKED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_work_completed_project_reopen
+      BEFORE UPDATE OF status ON farm_work_items
+      FOR EACH ROW
+      WHEN OLD.status = 'completed' AND NEW.status != 'completed' AND EXISTS (
+        SELECT 1 FROM farm_records fr
+        INNER JOIN smartfarm_projects p ON p.id = fr.project_id
+        WHERE fr.id = NEW.farm_record_id AND p.status = 'completed'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_COMPLETED_LOCKED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_project_blocker_completed_insert
+      BEFORE INSERT ON farm_project_updates
+      FOR EACH ROW
+      WHEN NEW.kind = 'blocker' AND EXISTS (
+        SELECT 1 FROM smartfarm_projects
+        WHERE id = NEW.project_id AND status = 'completed'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_PROJECT_COMPLETED_LOCKED');
+      END
+    `),
     db.prepare('PRAGMA optimize'),
   ]);
 
@@ -910,6 +1441,20 @@ async function initializeFarmLedgerStore() {
       description:
         '과수 농가의 환경·관수 데이터를 수집하고 생산 모델을 적용합니다.',
       targetFarmCount: 12,
+      manager: '사업운영팀',
+      startDate: dateFromToday(-150),
+      endDate: dateFromToday(120),
+      currentStage: 'installation',
+      settlementStatus: 'collecting',
+      settlementDueDate: dateFromToday(150),
+      contractAmount: 180000000,
+      settlementClaimAmount: 0,
+      settlementApprovedAmount: 0,
+      settlementPaidAmount: 0,
+      settledAt: '',
+      settlementOwner: '경영지원팀',
+      settlementEvidenceUrl: '',
+      settlementNote: '설치 완료 농가의 검수서류를 순차 수집합니다.',
       createdAt: now - 120 * day,
       updatedAt: now - 2 * hour,
     },
@@ -922,6 +1467,20 @@ async function initializeFarmLedgerStore() {
       status: 'active',
       description: '수분스트레스 측정과 자동관수 제어를 실증합니다.',
       targetFarmCount: 8,
+      manager: '연구개발팀',
+      startDate: dateFromToday(-110),
+      endDate: dateFromToday(180),
+      currentStage: 'verification',
+      settlementStatus: 'not_started',
+      settlementDueDate: dateFromToday(210),
+      contractAmount: 120000000,
+      settlementClaimAmount: 0,
+      settlementApprovedAmount: 0,
+      settlementPaidAmount: 0,
+      settledAt: '',
+      settlementOwner: '연구행정팀',
+      settlementEvidenceUrl: '',
+      settlementNote: '',
       createdAt: now - 90 * day,
       updatedAt: now - 5 * hour,
     },
@@ -931,9 +1490,24 @@ async function initializeFarmLedgerStore() {
       projectType: 'general',
       year: 2024,
       institution: '농촌진흥청',
-      status: 'completed',
+      status: 'on_hold',
       description: '노지 과수 농가의 관수·기상 장비를 설치한 사업입니다.',
       targetFarmCount: 20,
+      manager: '사업운영팀',
+      startDate: dateFromToday(-620),
+      endDate: dateFromToday(-260),
+      currentStage: 'settlement',
+      settlementStatus: 'closed',
+      settlementDueDate: dateFromToday(-220),
+      contractAmount: 250000000,
+      settlementClaimAmount: 250000000,
+      settlementApprovedAmount: 250000000,
+      settlementPaidAmount: 250000000,
+      settledAt: dateFromToday(-190),
+      settlementOwner: '경영지원팀',
+      settlementEvidenceUrl: '',
+      settlementNote:
+        '정산 입금은 확인했고 필수서류·참여농가 근거를 재확인 중입니다.',
       createdAt: now - 500 * day,
       updatedAt: now - 20 * day,
     },
@@ -943,12 +1517,36 @@ async function initializeFarmLedgerStore() {
       projectType: 'general',
       year: 2023,
       institution: '지방자치단체',
-      status: 'completed',
+      status: 'on_hold',
       description: '시설원예 농가에 환경계측과 제어 장비를 보급했습니다.',
       targetFarmCount: 10,
+      manager: '시설사업팀',
+      startDate: dateFromToday(-920),
+      endDate: dateFromToday(-580),
+      currentStage: 'settlement',
+      settlementStatus: 'closed',
+      settlementDueDate: dateFromToday(-540),
+      contractAmount: 160000000,
+      settlementClaimAmount: 160000000,
+      settlementApprovedAmount: 160000000,
+      settlementPaidAmount: 160000000,
+      settledAt: dateFromToday(-510),
+      settlementOwner: '경영지원팀',
+      settlementEvidenceUrl: '',
+      settlementNote:
+        '정산 입금은 확인했고 필수서류·참여농가 근거를 재확인 중입니다.',
       createdAt: now - 800 * day,
       updatedAt: now - 60 * day,
     },
+  ];
+  const seedDocumentTemplates: Array<
+    Pick<FarmProjectDocumentInput, 'title' | 'category'>
+  > = [
+    { title: '협약서·계약서', category: 'agreement' },
+    { title: '참여농가 확정 명단', category: 'farm' },
+    { title: '설치·시운전 확인서', category: 'installation' },
+    { title: '검수·교육 확인서', category: 'inspection' },
+    { title: '정산보고서·증빙', category: 'settlement' },
   ];
 
   const farms: Farm[] = [
@@ -1285,8 +1883,12 @@ async function initializeFarmLedgerStore() {
         .prepare(`
       INSERT OR IGNORE INTO smartfarm_projects (
         id, name, project_type, year, institution, status, description,
-        target_farm_count, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        target_farm_count, manager, start_date, end_date, current_stage,
+        settlement_status, settlement_due_date, contract_amount,
+        settlement_claim_amount, settlement_approved_amount,
+        settlement_paid_amount, settled_at, settlement_owner,
+        settlement_evidence_url, settlement_note, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
         .bind(
           project.id,
@@ -1297,9 +1899,65 @@ async function initializeFarmLedgerStore() {
           project.status,
           project.description,
           project.targetFarmCount,
+          project.manager,
+          project.startDate,
+          project.endDate,
+          project.currentStage,
+          project.settlementStatus,
+          project.settlementDueDate,
+          project.contractAmount,
+          project.settlementClaimAmount,
+          project.settlementApprovedAmount,
+          project.settlementPaidAmount,
+          project.settledAt,
+          project.settlementOwner,
+          project.settlementEvidenceUrl,
+          project.settlementNote,
           project.createdAt,
           project.updatedAt,
         ),
+    ),
+    ...projects.flatMap((project) =>
+      seedDocumentTemplates.map((template) => {
+        const approved = project.status === 'completed';
+        const owner =
+          template.category === 'settlement'
+            ? project.settlementOwner || project.manager
+            : project.manager;
+        return db
+          .prepare(`
+            INSERT OR IGNORE INTO farm_project_documents (
+              id, project_id, title, category, is_required, status, owner,
+              current_handler, due_date, submitted_at, approved_at,
+              reference_url, revision, note, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, '', ?, ?, '', 1, '', ?, ?)
+          `)
+          .bind(
+            `${project.id}:doc:${template.category}`,
+            project.id,
+            template.title,
+            template.category,
+            approved ? 'approved' : 'not_started',
+            owner,
+            owner,
+            approved ? project.endDate : '',
+            approved ? project.settledAt || project.endDate : '',
+            project.createdAt,
+            project.updatedAt,
+          );
+      }),
+    ),
+    ...projects.map((project) =>
+      insertProjectUpdateStatement(
+        db,
+        systemProjectUpdate(
+          project.id,
+          '프로젝트 등록',
+          `${project.name} 프로젝트를 등록했습니다.`,
+          project.manager,
+          project.createdAt,
+        ),
+      ),
     ),
     ...farms.map((farm) =>
       db
@@ -1455,11 +2113,48 @@ export async function ensureFarmLedgerStore() {
   await initialization;
 }
 
+function assertProjectStateConsistency(input: FarmProjectInput) {
+  if (
+    (input.status === 'completed' && input.currentStage !== 'closed') ||
+    (input.status !== 'completed' && input.currentStage === 'closed')
+  ) {
+    throw new Error('FARM_PROJECT_STAGE_STATUS_INVALID');
+  }
+}
+
+function projectChangeSummary(existing: FarmProject, input: FarmProjectInput) {
+  const changed: string[] = [];
+  if (existing.currentStage !== input.currentStage) changed.push('진행 단계');
+  if (existing.status !== input.status) changed.push('사업 상태');
+  if (existing.settlementStatus !== input.settlementStatus)
+    changed.push('정산 상태');
+  if (
+    existing.settlementClaimAmount !== input.settlementClaimAmount ||
+    existing.settlementApprovedAmount !== input.settlementApprovedAmount ||
+    existing.settlementPaidAmount !== input.settlementPaidAmount
+  ) {
+    changed.push('정산 금액');
+  }
+  if (
+    existing.targetFarmCount !== input.targetFarmCount ||
+    existing.manager !== input.manager ||
+    existing.startDate !== input.startDate ||
+    existing.endDate !== input.endDate
+  ) {
+    changed.push('운영 기본정보');
+  }
+  return changed.length
+    ? `${changed.join(', ')}을(를) 수정했습니다.`
+    : '프로젝트 정보를 다시 확인하고 저장했습니다.';
+}
+
 export async function listFarmLedgerWorkspace(): Promise<FarmLedgerWorkspace> {
   await ensureFarmLedgerStore();
   const db = getD1();
   const [
     projectResult,
+    projectDocumentResult,
+    projectUpdateResult,
     farmResult,
     recordResult,
     inboxResult,
@@ -1472,12 +2167,37 @@ export async function listFarmLedgerWorkspace(): Promise<FarmLedgerWorkspace> {
     db
       .prepare(`
       SELECT id, name, project_type, year, institution, status, description,
-             target_farm_count, created_at, updated_at
+             target_farm_count, manager, start_date, end_date, current_stage,
+             settlement_status, settlement_due_date, contract_amount,
+             settlement_claim_amount, settlement_approved_amount,
+             settlement_paid_amount, settled_at, settlement_owner,
+             settlement_evidence_url, settlement_note, created_at, updated_at
       FROM smartfarm_projects
       ORDER BY year DESC, name ASC
       LIMIT 5000
     `)
       .all<FarmProjectRow>(),
+    db
+      .prepare(`
+      SELECT id, project_id, title, category, is_required, status, owner,
+             current_handler, due_date, submitted_at, approved_at,
+             reference_url, revision, note, created_at, updated_at
+      FROM farm_project_documents
+      ORDER BY project_id ASC, due_date ASC, created_at ASC
+      LIMIT 30000
+    `)
+      .all<FarmProjectDocumentRow>(),
+    db
+      .prepare(`
+      SELECT id, project_id, kind, title, channel, sender, received_content,
+             action_content, recorder, occurred_at, reference_url,
+             blocked_reason, blocked_by, expected_unblock_date, resolved_at,
+             resolution, resolved_by, created_at, updated_at
+      FROM farm_project_updates
+      ORDER BY occurred_at DESC, created_at DESC
+      LIMIT 30000
+    `)
+      .all<FarmProjectUpdateRow>(),
     db
       .prepare(`
       SELECT id, farm_code, name, phone, address, region, business_number,
@@ -1566,6 +2286,8 @@ export async function listFarmLedgerWorkspace(): Promise<FarmLedgerWorkspace> {
 
   return {
     projects: projectResult.results.map(mapProject),
+    projectDocuments: projectDocumentResult.results.map(mapProjectDocument),
+    projectUpdates: projectUpdateResult.results.map(mapProjectUpdate),
     farms: farmResult.results.map(mapFarm),
     records: recordResult.results.map(mapRecord),
     inboxItems: inboxResult.results.map(mapInboxItem),
@@ -1581,6 +2303,10 @@ export async function createFarmProject(
   input: FarmProjectInput,
 ): Promise<FarmProject> {
   await ensureFarmLedgerStore();
+  assertProjectStateConsistency(input);
+  if (input.status === 'completed') {
+    throw new Error('FARM_PROJECT_COMPLETION_REQUIREMENTS_MISSING');
+  }
   const now = Date.now();
   const project: FarmProject = {
     id: crypto.randomUUID(),
@@ -1588,27 +2314,510 @@ export async function createFarmProject(
     createdAt: now,
     updatedAt: now,
   };
-  await getD1()
-    .prepare(`
+  const db = getD1();
+  const auditUpdate = systemProjectUpdate(
+    project.id,
+    '프로젝트 등록',
+    `${project.name} 프로젝트를 등록했습니다.`,
+    project.manager,
+    now,
+  );
+  const templates: Array<Pick<FarmProjectDocumentInput, 'title' | 'category'>> =
+    [
+      { title: '협약서·계약서', category: 'agreement' },
+      { title: '참여농가 확정 명단', category: 'farm' },
+      { title: '설치·시운전 확인서', category: 'installation' },
+      { title: '검수·교육 확인서', category: 'inspection' },
+      { title: '정산보고서·증빙', category: 'settlement' },
+    ];
+  await db.batch([
+    db
+      .prepare(`
     INSERT INTO smartfarm_projects (
       id, name, project_type, year, institution, status, description,
-      target_farm_count, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      target_farm_count, manager, start_date, end_date, current_stage,
+      settlement_status, settlement_due_date, contract_amount,
+      settlement_claim_amount, settlement_approved_amount,
+      settlement_paid_amount, settled_at, settlement_owner,
+      settlement_evidence_url, settlement_note, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
+      .bind(
+        project.id,
+        project.name,
+        project.projectType,
+        project.year,
+        project.institution,
+        project.status,
+        project.description,
+        project.targetFarmCount,
+        project.manager,
+        project.startDate,
+        project.endDate,
+        project.currentStage,
+        project.settlementStatus,
+        project.settlementDueDate,
+        project.contractAmount,
+        project.settlementClaimAmount,
+        project.settlementApprovedAmount,
+        project.settlementPaidAmount,
+        project.settledAt,
+        project.settlementOwner,
+        project.settlementEvidenceUrl,
+        project.settlementNote,
+        project.createdAt,
+        project.updatedAt,
+      ),
+    ...templates.map((template) =>
+      db
+        .prepare(`
+        INSERT INTO farm_project_documents (
+          id, project_id, title, category, is_required, status, owner,
+          current_handler, due_date, submitted_at, approved_at,
+          reference_url, revision, note, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 1, 'not_started', ?, ?, '', '', '', '', 1, '', ?, ?)
+      `)
+        .bind(
+          crypto.randomUUID(),
+          project.id,
+          template.title,
+          template.category,
+          template.category === 'settlement'
+            ? project.settlementOwner || project.manager
+            : project.manager,
+          template.category === 'settlement'
+            ? project.settlementOwner || project.manager
+            : project.manager,
+          now,
+          now,
+        ),
+    ),
+    insertProjectUpdateStatement(db, auditUpdate),
+  ]);
+  return project;
+}
+
+export async function updateFarmProject(
+  projectId: string,
+  input: FarmProjectInput,
+): Promise<FarmProject> {
+  await ensureFarmLedgerStore();
+  assertProjectStateConsistency(input);
+  const db = getD1();
+  const existing = await db
+    .prepare(`
+      SELECT id, name, project_type, year, institution, status, description,
+             target_farm_count, manager, start_date, end_date, current_stage,
+             settlement_status, settlement_due_date, contract_amount,
+             settlement_claim_amount, settlement_approved_amount,
+             settlement_paid_amount, settled_at, settlement_owner,
+             settlement_evidence_url, settlement_note, created_at, updated_at
+      FROM smartfarm_projects
+      WHERE id = ?
+    `)
+    .bind(projectId)
+    .first<FarmProjectRow>();
+  if (!existing) throw new Error('SMARTFARM_PROJECT_NOT_FOUND');
+
+  const existingProject = mapProject(existing);
+  if (
+    existingProject.status === 'completed' &&
+    input.status === 'completed' &&
+    (existingProject.targetFarmCount !== input.targetFarmCount ||
+      existingProject.startDate !== input.startDate ||
+      existingProject.endDate !== input.endDate ||
+      existingProject.settlementStatus !== input.settlementStatus ||
+      existingProject.settlementDueDate !== input.settlementDueDate ||
+      existingProject.contractAmount !== input.contractAmount ||
+      existingProject.settlementClaimAmount !== input.settlementClaimAmount ||
+      existingProject.settlementApprovedAmount !==
+        input.settlementApprovedAmount ||
+      existingProject.settlementPaidAmount !== input.settlementPaidAmount ||
+      existingProject.settledAt !== input.settledAt ||
+      existingProject.settlementEvidenceUrl !== input.settlementEvidenceUrl)
+  ) {
+    throw new Error('FARM_PROJECT_COMPLETED_LOCKED');
+  }
+  if (existingProject.status !== 'completed' && input.status === 'completed') {
+    const [documentStats, blockerStats, openWorkStats, farmStats] =
+      await Promise.all([
+        db
+          .prepare(`
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN status != 'approved' THEN 1 ELSE 0 END) AS incomplete
+            FROM farm_project_documents
+            WHERE project_id = ? AND is_required = 1
+          `)
+          .bind(projectId)
+          .first<{ total: number; incomplete: number | null }>(),
+        db
+          .prepare(`
+            SELECT COUNT(*) AS count
+            FROM farm_project_updates
+            WHERE project_id = ? AND kind = 'blocker' AND resolved_at = 0
+          `)
+          .bind(projectId)
+          .first<{ count: number }>(),
+        db
+          .prepare(`
+            SELECT COUNT(*) AS count
+            FROM farm_work_items wi
+            INNER JOIN farm_records fr ON fr.id = wi.farm_record_id
+            WHERE fr.project_id = ? AND wi.status != 'completed'
+          `)
+          .bind(projectId)
+          .first<{ count: number }>(),
+        db
+          .prepare(
+            'SELECT COUNT(DISTINCT farm_id) AS count FROM farm_records WHERE project_id = ?',
+          )
+          .bind(projectId)
+          .first<{ count: number }>(),
+      ]);
+    const completionMissing =
+      !documentStats ||
+      documentStats.total === 0 ||
+      Number(documentStats.incomplete ?? 0) > 0 ||
+      !['paid', 'closed'].includes(input.settlementStatus) ||
+      Number(blockerStats?.count ?? 0) > 0 ||
+      Number(openWorkStats?.count ?? 0) > 0 ||
+      (input.targetFarmCount > 0 &&
+        Number(farmStats?.count ?? 0) < input.targetFarmCount);
+    if (completionMissing) {
+      throw new Error('FARM_PROJECT_COMPLETION_REQUIREMENTS_MISSING');
+    }
+  }
+
+  const updatedAt = Date.now();
+  const auditUpdate = systemProjectUpdate(
+    projectId,
+    '프로젝트 정보 수정',
+    projectChangeSummary(existingProject, input),
+    input.manager,
+    updatedAt,
+  );
+  await db.batch([
+    db
+      .prepare(`
+      UPDATE smartfarm_projects SET
+        name = ?, project_type = ?, year = ?, institution = ?, status = ?,
+        description = ?, target_farm_count = ?, manager = ?, start_date = ?,
+        end_date = ?, current_stage = ?, settlement_status = ?,
+        settlement_due_date = ?, contract_amount = ?,
+        settlement_claim_amount = ?, settlement_approved_amount = ?,
+        settlement_paid_amount = ?, settled_at = ?, settlement_owner = ?,
+        settlement_evidence_url = ?, settlement_note = ?, updated_at = ?
+      WHERE id = ?
+    `)
+      .bind(
+        input.name,
+        input.projectType,
+        input.year,
+        input.institution,
+        input.status,
+        input.description,
+        input.targetFarmCount,
+        input.manager,
+        input.startDate,
+        input.endDate,
+        input.currentStage,
+        input.settlementStatus,
+        input.settlementDueDate,
+        input.contractAmount,
+        input.settlementClaimAmount,
+        input.settlementApprovedAmount,
+        input.settlementPaidAmount,
+        input.settledAt,
+        input.settlementOwner,
+        input.settlementEvidenceUrl,
+        input.settlementNote,
+        updatedAt,
+        projectId,
+      ),
+    insertProjectUpdateStatement(db, auditUpdate),
+  ]);
+
+  return {
+    id: projectId,
+    ...input,
+    createdAt: existing.created_at,
+    updatedAt,
+  };
+}
+
+export async function createFarmProjectDocument(
+  projectId: string,
+  input: FarmProjectDocumentInput,
+): Promise<FarmProjectDocument> {
+  await ensureFarmLedgerStore();
+  const db = getD1();
+  const project = await db
+    .prepare('SELECT id, manager, status FROM smartfarm_projects WHERE id = ?')
+    .bind(projectId)
+    .first<{ id: string; manager: string; status: FarmProjectStatus }>();
+  if (!project) throw new Error('SMARTFARM_PROJECT_NOT_FOUND');
+  if (project.status === 'completed') {
+    throw new Error('FARM_PROJECT_COMPLETED_LOCKED');
+  }
+  const now = Date.now();
+  const document: FarmProjectDocument = {
+    id: crypto.randomUUID(),
+    projectId,
+    ...input,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const auditUpdate = systemProjectUpdate(
+    projectId,
+    '제출서류 등록',
+    `${document.title} 서류를 등록했습니다.`,
+    document.owner || project.manager,
+    now,
+  );
+  await db.batch([
+    db
+      .prepare(`
+        INSERT INTO farm_project_documents (
+          id, project_id, title, category, is_required, status, owner,
+          current_handler, due_date, submitted_at, approved_at,
+          reference_url, revision, note, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .bind(
+        document.id,
+        document.projectId,
+        document.title,
+        document.category,
+        document.isRequired ? 1 : 0,
+        document.status,
+        document.owner,
+        document.currentHandler,
+        document.dueDate,
+        document.submittedAt,
+        document.approvedAt,
+        document.referenceUrl,
+        document.revision,
+        document.note,
+        document.createdAt,
+        document.updatedAt,
+      ),
+    db
+      .prepare('UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?')
+      .bind(now, projectId),
+    insertProjectUpdateStatement(db, auditUpdate),
+  ]);
+  return document;
+}
+
+export async function updateFarmProjectDocument(
+  documentId: string,
+  input: FarmProjectDocumentInput,
+): Promise<FarmProjectDocument> {
+  await ensureFarmLedgerStore();
+  const db = getD1();
+  const existing = await db
+    .prepare(`
+      SELECT d.id, d.project_id, d.title, d.category, d.is_required, d.status,
+             d.owner, d.current_handler, d.due_date, d.submitted_at,
+             d.approved_at, d.reference_url, d.revision, d.note,
+             d.created_at, d.updated_at, p.status AS project_status
+      FROM farm_project_documents d
+      INNER JOIN smartfarm_projects p ON p.id = d.project_id
+      WHERE d.id = ?
+    `)
+    .bind(documentId)
+    .first<FarmProjectDocumentRow & { project_status: FarmProjectStatus }>();
+  if (!existing) throw new Error('FARM_PROJECT_DOCUMENT_NOT_FOUND');
+  if (existing.project_status === 'completed') {
+    throw new Error('FARM_PROJECT_COMPLETED_LOCKED');
+  }
+  const statusRank: Record<FarmProjectDocumentStatus, number> = {
+    not_started: 0,
+    preparing: 1,
+    submitted: 2,
+    reviewing: 3,
+    revision: 4,
+    rejected: 4,
+    approved: 5,
+  };
+  if (
+    input.revision < existing.revision ||
+    (statusRank[input.status] < statusRank[existing.status] &&
+      input.revision <= existing.revision)
+  ) {
+    throw new Error('FARM_PROJECT_DOCUMENT_REVISION_INVALID');
+  }
+  const isNewRevision = input.revision > existing.revision;
+  if (
+    !isNewRevision &&
+    ((existing.submitted_at && !input.submittedAt) ||
+      (existing.approved_at && !input.approvedAt) ||
+      (existing.reference_url && !input.referenceUrl))
+  ) {
+    throw new Error('FARM_PROJECT_DOCUMENT_EVIDENCE_LOCKED');
+  }
+  const updatedAt = Date.now();
+  const changes = [
+    existing.status !== input.status ? '상태' : '',
+    existing.revision !== input.revision ? '개정번호' : '',
+    existing.current_handler !== input.currentHandler ? '현재 처리자' : '',
+    existing.due_date !== input.dueDate ? '제출기한' : '',
+  ].filter(Boolean);
+  const auditUpdate = systemProjectUpdate(
+    existing.project_id,
+    '제출서류 수정',
+    `${input.title}: ${changes.length ? `${changes.join(', ')}을(를) 수정했습니다.` : '서류 정보를 다시 확인하고 저장했습니다.'} 이전 상태 ${existing.status}, 개정 ${existing.revision}, 제출일 ${existing.submitted_at || '없음'}, 승인일 ${existing.approved_at || '없음'}.`,
+    input.owner || input.currentHandler,
+    updatedAt,
+  );
+  auditUpdate.referenceUrl = existing.reference_url;
+  await db.batch([
+    db
+      .prepare(`
+        UPDATE farm_project_documents SET
+          title = ?, category = ?, is_required = ?, status = ?, owner = ?,
+          current_handler = ?, due_date = ?, submitted_at = ?, approved_at = ?,
+          reference_url = ?, revision = ?, note = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .bind(
+        input.title,
+        input.category,
+        input.isRequired ? 1 : 0,
+        input.status,
+        input.owner,
+        input.currentHandler,
+        input.dueDate,
+        input.submittedAt,
+        input.approvedAt,
+        input.referenceUrl,
+        input.revision,
+        input.note,
+        updatedAt,
+        documentId,
+      ),
+    db
+      .prepare('UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?')
+      .bind(updatedAt, existing.project_id),
+    insertProjectUpdateStatement(db, auditUpdate),
+  ]);
+  return {
+    id: existing.id,
+    projectId: existing.project_id,
+    ...input,
+    createdAt: existing.created_at,
+    updatedAt,
+  };
+}
+
+export async function createFarmProjectUpdate(
+  projectId: string,
+  input: FarmProjectUpdateInput,
+): Promise<FarmProjectUpdate> {
+  await ensureFarmLedgerStore();
+  const db = getD1();
+  const project = await db
+    .prepare('SELECT id, status FROM smartfarm_projects WHERE id = ?')
+    .bind(projectId)
+    .first<{ id: string; status: FarmProjectStatus }>();
+  if (!project) throw new Error('SMARTFARM_PROJECT_NOT_FOUND');
+  if (project.status === 'completed' && input.kind === 'blocker')
+    throw new Error('FARM_PROJECT_COMPLETED_LOCKED');
+  if (
+    input.kind === 'blocker' &&
+    (!input.blockedReason.trim() || !input.blockedBy.trim())
+  ) {
+    throw new Error('FARM_PROJECT_BLOCKER_DETAILS_REQUIRED');
+  }
+  const now = Date.now();
+  const update: FarmProjectUpdate = {
+    id: crypto.randomUUID(),
+    projectId,
+    ...input,
+    blockedReason: input.kind === 'blocker' ? input.blockedReason : '',
+    blockedBy: input.kind === 'blocker' ? input.blockedBy : '',
+    expectedUnblockDate:
+      input.kind === 'blocker' ? input.expectedUnblockDate : '',
+    resolvedAt: 0,
+    resolution: '',
+    resolvedBy: '',
+    createdAt: now,
+    updatedAt: now,
+  };
+  await db.batch([
+    insertProjectUpdateStatement(db, update),
+    db
+      .prepare('UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?')
+      .bind(Math.max(now, update.occurredAt), projectId),
+  ]);
+  return update;
+}
+
+export async function resolveFarmProjectBlocker(
+  updateId: string,
+  resolution: string,
+  resolvedBy: string,
+): Promise<FarmProjectUpdate> {
+  await ensureFarmLedgerStore();
+  const db = getD1();
+  const existing = await db
+    .prepare(`
+      SELECT id, project_id, kind, title, channel, sender, received_content,
+             action_content, recorder, occurred_at, reference_url,
+             blocked_reason, blocked_by, expected_unblock_date, resolved_at,
+             resolution, resolved_by, created_at, updated_at
+      FROM farm_project_updates
+      WHERE id = ?
+    `)
+    .bind(updateId)
+    .first<FarmProjectUpdateRow>();
+  if (!existing) throw new Error('FARM_PROJECT_UPDATE_NOT_FOUND');
+  if (existing.kind !== 'blocker')
+    throw new Error('FARM_PROJECT_BLOCKER_REQUIRED');
+  if (existing.resolved_at)
+    throw new Error('FARM_PROJECT_BLOCKER_ALREADY_RESOLVED');
+  if (!resolution.trim() || !resolvedBy.trim())
+    throw new Error('FARM_PROJECT_BLOCKER_RESOLUTION_REQUIRED');
+  const resolvedAt = Date.now();
+  if (resolvedAt < existing.occurred_at)
+    throw new Error('FARM_PROJECT_BLOCKER_TIME_INVALID');
+  const updateResult = await db
+    .prepare(`
+        UPDATE farm_project_updates SET
+          resolved_at = ?, resolution = ?, resolved_by = ?, updated_at = ?
+        WHERE id = ? AND resolved_at = 0
+      `)
     .bind(
-      project.id,
-      project.name,
-      project.projectType,
-      project.year,
-      project.institution,
-      project.status,
-      project.description,
-      project.targetFarmCount,
-      project.createdAt,
-      project.updatedAt,
+      resolvedAt,
+      resolution.trim(),
+      resolvedBy.trim(),
+      resolvedAt,
+      updateId,
     )
     .run();
-  return project;
+  if ((updateResult.meta.changes ?? 0) !== 1)
+    throw new Error('FARM_PROJECT_BLOCKER_ALREADY_RESOLVED');
+  const resolutionUpdate = systemProjectUpdate(
+    existing.project_id,
+    `${existing.title} 해결`,
+    resolution.trim(),
+    resolvedBy.trim(),
+    resolvedAt,
+  );
+  resolutionUpdate.referenceUrl = existing.reference_url;
+  await db.batch([
+    db
+      .prepare('UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?')
+      .bind(resolvedAt, existing.project_id),
+    insertProjectUpdateStatement(db, resolutionUpdate),
+  ]);
+  return {
+    ...mapProjectUpdate(existing),
+    resolvedAt,
+    resolution: resolution.trim(),
+    resolvedBy: resolvedBy.trim(),
+    updatedAt: resolvedAt,
+  };
 }
 
 export async function createFarm(input: FarmInput): Promise<Farm> {
@@ -1661,15 +2870,17 @@ export async function createFarmWithRecord(
   const db = getD1();
   const [project, duplicate] = await Promise.all([
     db
-      .prepare('SELECT id, name FROM smartfarm_projects WHERE id = ?')
+      .prepare('SELECT id, name, status FROM smartfarm_projects WHERE id = ?')
       .bind(recordInput.projectId)
-      .first<{ id: string; name: string }>(),
+      .first<{ id: string; name: string; status: FarmProjectStatus }>(),
     db
       .prepare('SELECT id FROM farms WHERE farm_code = ?')
       .bind(farmInput.farmCode)
       .first<{ id: string }>(),
   ]);
   if (!project) throw new Error('SMARTFARM_PROJECT_NOT_FOUND');
+  if (project.status === 'completed')
+    throw new Error('FARM_PROJECT_COMPLETED_LOCKED');
   if (duplicate) throw new Error('FARM_CODE_EXISTS');
 
   const now = Date.now();
@@ -1816,18 +3027,27 @@ export async function createFarmRecord(
 ): Promise<FarmRecordMutationResult> {
   await ensureFarmLedgerStore();
   const db = getD1();
-  const [farm, project] = await Promise.all([
+  const [farm, project, duplicate] = await Promise.all([
     db
       .prepare('SELECT id, name FROM farms WHERE id = ?')
       .bind(farmId)
       .first<{ id: string; name: string }>(),
     db
-      .prepare('SELECT id, name FROM smartfarm_projects WHERE id = ?')
+      .prepare('SELECT id, name, status FROM smartfarm_projects WHERE id = ?')
       .bind(input.projectId)
-      .first<{ id: string; name: string }>(),
+      .first<{ id: string; name: string; status: FarmProjectStatus }>(),
+    db
+      .prepare(
+        'SELECT id FROM farm_records WHERE farm_id = ? AND project_id = ? LIMIT 1',
+      )
+      .bind(farmId, input.projectId)
+      .first<{ id: string }>(),
   ]);
   if (!farm) throw new Error('FARM_NOT_FOUND');
   if (!project) throw new Error('SMARTFARM_PROJECT_NOT_FOUND');
+  if (project.status === 'completed')
+    throw new Error('FARM_PROJECT_COMPLETED_LOCKED');
+  if (duplicate) throw new Error('FARM_RECORD_PROJECT_EXISTS');
 
   const now = Date.now();
   const record: FarmRecord = {
@@ -2047,12 +3267,33 @@ export async function updateFarmRecord(
       .bind(recordId)
       .first<FarmRecordRow>(),
     db
-      .prepare('SELECT id FROM smartfarm_projects WHERE id = ?')
+      .prepare('SELECT id, status FROM smartfarm_projects WHERE id = ?')
       .bind(input.projectId)
-      .first<{ id: string }>(),
+      .first<{ id: string; status: FarmProjectStatus }>(),
   ]);
   if (!existingRow) throw new Error('FARM_RECORD_NOT_FOUND');
   if (!project) throw new Error('SMARTFARM_PROJECT_NOT_FOUND');
+  if (existingRow.project_id !== input.projectId) {
+    const previousProject = await db
+      .prepare('SELECT status FROM smartfarm_projects WHERE id = ?')
+      .bind(existingRow.project_id)
+      .first<{ status: FarmProjectStatus }>();
+    if (
+      project.status === 'completed' ||
+      previousProject?.status === 'completed'
+    ) {
+      throw new Error('FARM_PROJECT_COMPLETED_LOCKED');
+    }
+    const duplicate = await db
+      .prepare(`
+        SELECT id FROM farm_records
+        WHERE farm_id = ? AND project_id = ? AND id != ?
+        LIMIT 1
+      `)
+      .bind(existingRow.farm_id, input.projectId, recordId)
+      .first<{ id: string }>();
+    if (duplicate) throw new Error('FARM_RECORD_PROJECT_EXISTS');
+  }
 
   const existing = mapRecord(existingRow);
   const now = Date.now();
@@ -2194,9 +3435,18 @@ export async function createFarmWorkItem(
   const db = getD1();
   const [record, sourceInbox] = await Promise.all([
     db
-      .prepare('SELECT id, farm_id FROM farm_records WHERE id = ?')
+      .prepare(`
+        SELECT fr.id, fr.farm_id, p.status AS project_status
+        FROM farm_records fr
+        INNER JOIN smartfarm_projects p ON p.id = fr.project_id
+        WHERE fr.id = ?
+      `)
       .bind(input.farmRecordId)
-      .first<{ id: string; farm_id: string }>(),
+      .first<{
+        id: string;
+        farm_id: string;
+        project_status: FarmProjectStatus;
+      }>(),
     sourceInboxId
       ? db
           .prepare(`
@@ -2212,6 +3462,8 @@ export async function createFarmWorkItem(
       : Promise.resolve(null),
   ]);
   if (!record) throw new Error('FARM_RECORD_NOT_FOUND');
+  if (record.project_status === 'completed')
+    throw new Error('FARM_PROJECT_COMPLETED_LOCKED');
   if (sourceInboxId && !sourceInbox)
     throw new Error('FARM_INBOX_ITEM_NOT_FOUND');
   if (sourceInbox && sourceInbox.status !== 'unprocessed') {
@@ -2886,16 +4138,24 @@ export async function addFarmHistoryEntry(
            wi.priority, wi.review_date, wi.response_due_at, wi.responded_at,
            wi.blocked_at, wi.blocked_reason, wi.blocked_by, wi.expected_unblock_date,
            wi.completed_at, wi.last_activity_at,
-           wi.created_at, wi.updated_at
+           wi.created_at, wi.updated_at, p.status AS project_status
     FROM farm_work_items wi
     INNER JOIN farm_records fr ON fr.id = wi.farm_record_id
+    INNER JOIN smartfarm_projects p ON p.id = fr.project_id
     WHERE wi.id = ?
   `)
     .bind(input.workItemId)
-    .first<FarmWorkItemRow>();
+    .first<FarmWorkItemRow & { project_status: FarmProjectStatus }>();
   if (!row) throw new Error('FARM_WORK_ITEM_NOT_FOUND');
 
   const existing = mapWorkItem(row);
+  if (
+    row.project_status === 'completed' &&
+    input.newStatus !== undefined &&
+    input.newStatus !== 'completed'
+  ) {
+    throw new Error('FARM_PROJECT_COMPLETED_LOCKED');
+  }
   if (input.newStatus === 'completed' && existing.status !== 'completed') {
     const [incompleteChecklist, pendingVisits] = await Promise.all([
       db

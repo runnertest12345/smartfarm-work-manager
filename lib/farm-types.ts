@@ -8,6 +8,59 @@ export const FARM_PROJECT_STATUSES = [
 ] as const;
 export type FarmProjectStatus = (typeof FARM_PROJECT_STATUSES)[number];
 
+export const FARM_PROJECT_STAGES = [
+  'agreement',
+  'farm_selection',
+  'installation',
+  'verification',
+  'operation',
+  'settlement',
+  'closed',
+] as const;
+export type FarmProjectStage = (typeof FARM_PROJECT_STAGES)[number];
+
+export const FARM_SETTLEMENT_STATUSES = [
+  'not_started',
+  'collecting',
+  'submitted',
+  'revision',
+  'approved',
+  'paid',
+  'closed',
+] as const;
+export type FarmSettlementStatus = (typeof FARM_SETTLEMENT_STATUSES)[number];
+
+export const FARM_PROJECT_DOCUMENT_CATEGORIES = [
+  'agreement',
+  'farm',
+  'installation',
+  'inspection',
+  'settlement',
+  'other',
+] as const;
+export type FarmProjectDocumentCategory =
+  (typeof FARM_PROJECT_DOCUMENT_CATEGORIES)[number];
+
+export const FARM_PROJECT_DOCUMENT_STATUSES = [
+  'not_started',
+  'preparing',
+  'submitted',
+  'reviewing',
+  'revision',
+  'approved',
+  'rejected',
+] as const;
+export type FarmProjectDocumentStatus =
+  (typeof FARM_PROJECT_DOCUMENT_STATUSES)[number];
+
+export const FARM_PROJECT_UPDATE_KINDS = [
+  'communication',
+  'decision',
+  'blocker',
+  'system',
+] as const;
+export type FarmProjectUpdateKind = (typeof FARM_PROJECT_UPDATE_KINDS)[number];
+
 export const SUBSCRIPTION_STATUSES = [
   'active',
   'expired',
@@ -73,6 +126,64 @@ export const FARM_PROJECT_STATUS_LABELS: Record<FarmProjectStatus, string> = {
   on_hold: '보류',
 };
 
+export const FARM_PROJECT_STAGE_LABELS: Record<FarmProjectStage, string> = {
+  agreement: '협약·계약',
+  farm_selection: '참여농가 확정',
+  installation: '설치·시운전',
+  verification: '검수·교육',
+  operation: '운영·구독',
+  settlement: '정산·서류',
+  closed: '사업 마감',
+};
+
+export const FARM_SETTLEMENT_STATUS_LABELS: Record<
+  FarmSettlementStatus,
+  string
+> = {
+  not_started: '미착수',
+  collecting: '자료 수집',
+  submitted: '정산 제출',
+  revision: '보완 중',
+  approved: '승인',
+  paid: '입금 완료',
+  closed: '정산 마감',
+};
+
+export const FARM_PROJECT_DOCUMENT_CATEGORY_LABELS: Record<
+  FarmProjectDocumentCategory,
+  string
+> = {
+  agreement: '협약·계약',
+  farm: '농가 관련',
+  installation: '설치·납품',
+  inspection: '검수·교육',
+  settlement: '정산',
+  other: '기타',
+};
+
+export const FARM_PROJECT_DOCUMENT_STATUS_LABELS: Record<
+  FarmProjectDocumentStatus,
+  string
+> = {
+  not_started: '미작성',
+  preparing: '작성 중',
+  submitted: '제출 완료',
+  reviewing: '검토 중',
+  revision: '보완 요청',
+  approved: '승인',
+  rejected: '반려',
+};
+
+export const FARM_PROJECT_UPDATE_KIND_LABELS: Record<
+  FarmProjectUpdateKind,
+  string
+> = {
+  communication: '수신·연락',
+  decision: '결정·변경',
+  blocker: '프로젝트 막힘',
+  system: '시스템 기록',
+};
+
 export const SUBSCRIPTION_STATUS_LABELS: Record<SubscriptionStatus, string> = {
   active: '사용중',
   expired: '만료',
@@ -133,6 +244,20 @@ export interface FarmProject {
   status: FarmProjectStatus;
   description: string;
   targetFarmCount: number;
+  manager: string;
+  startDate: string;
+  endDate: string;
+  currentStage: FarmProjectStage;
+  settlementStatus: FarmSettlementStatus;
+  settlementDueDate: string;
+  contractAmount: number;
+  settlementClaimAmount: number;
+  settlementApprovedAmount: number;
+  settlementPaidAmount: number;
+  settledAt: string;
+  settlementOwner: string;
+  settlementEvidenceUrl: string;
+  settlementNote: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -145,6 +270,91 @@ export interface FarmProjectInput {
   status: FarmProjectStatus;
   description: string;
   targetFarmCount: number;
+  manager: string;
+  startDate: string;
+  endDate: string;
+  currentStage: FarmProjectStage;
+  settlementStatus: FarmSettlementStatus;
+  settlementDueDate: string;
+  contractAmount: number;
+  settlementClaimAmount: number;
+  settlementApprovedAmount: number;
+  settlementPaidAmount: number;
+  settledAt: string;
+  settlementOwner: string;
+  settlementEvidenceUrl: string;
+  settlementNote: string;
+}
+
+export interface FarmProjectDocument {
+  id: string;
+  projectId: string;
+  title: string;
+  category: FarmProjectDocumentCategory;
+  isRequired: boolean;
+  status: FarmProjectDocumentStatus;
+  owner: string;
+  currentHandler: string;
+  dueDate: string;
+  submittedAt: string;
+  approvedAt: string;
+  referenceUrl: string;
+  revision: number;
+  note: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface FarmProjectDocumentInput {
+  title: string;
+  category: FarmProjectDocumentCategory;
+  isRequired: boolean;
+  status: FarmProjectDocumentStatus;
+  owner: string;
+  currentHandler: string;
+  dueDate: string;
+  submittedAt: string;
+  approvedAt: string;
+  referenceUrl: string;
+  revision: number;
+  note: string;
+}
+
+export interface FarmProjectUpdate {
+  id: string;
+  projectId: string;
+  kind: FarmProjectUpdateKind;
+  title: string;
+  channel: FarmHistoryChannel;
+  sender: string;
+  receivedContent: string;
+  actionContent: string;
+  recorder: string;
+  occurredAt: number;
+  referenceUrl: string;
+  blockedReason: string;
+  blockedBy: string;
+  expectedUnblockDate: string;
+  resolvedAt: number;
+  resolution: string;
+  resolvedBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface FarmProjectUpdateInput {
+  kind: Exclude<FarmProjectUpdateKind, 'system'>;
+  title: string;
+  channel: FarmHistoryChannel;
+  sender: string;
+  receivedContent: string;
+  actionContent: string;
+  recorder: string;
+  occurredAt: number;
+  referenceUrl: string;
+  blockedReason: string;
+  blockedBy: string;
+  expectedUnblockDate: string;
 }
 
 export interface Farm {
@@ -411,6 +621,8 @@ export interface FarmCreationResult extends FarmRecordMutationResult {
 
 export interface FarmLedgerWorkspace {
   projects: FarmProject[];
+  projectDocuments: FarmProjectDocument[];
+  projectUpdates: FarmProjectUpdate[];
   farms: Farm[];
   records: FarmRecord[];
   inboxItems: FarmInboxItem[];

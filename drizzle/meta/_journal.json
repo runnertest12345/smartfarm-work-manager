@@ -43,6 +43,20 @@
       "when": 1788250663289,
       "tag": "0005_silky_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788253169309,
+      "tag": "0006_curved_mephistopheles",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1788255370259,
+      "tag": "0007_eager_calypso",
+      "breakpoints": true
     }
   ]
 }

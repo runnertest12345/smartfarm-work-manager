@@ -89,8 +89,13 @@ import { Toaster, toast } from '@/components/ui/toast';
 import {
   FARM_HISTORY_CHANNEL_LABELS,
   FARM_INBOX_STATUS_LABELS,
+  FARM_PROJECT_DOCUMENT_CATEGORY_LABELS,
+  FARM_PROJECT_DOCUMENT_STATUS_LABELS,
+  FARM_PROJECT_STAGE_LABELS,
   FARM_PROJECT_STATUS_LABELS,
   FARM_PROJECT_TYPE_LABELS,
+  FARM_PROJECT_UPDATE_KIND_LABELS,
+  FARM_SETTLEMENT_STATUS_LABELS,
   FARM_VISIT_STATUS_LABELS,
   FARM_WORK_STATUS_LABELS,
   FARM_WORK_PRIORITY_LABELS,
@@ -102,8 +107,17 @@ import {
   type FarmInput,
   type FarmLedgerWorkspace,
   type FarmProjectInput,
+  type FarmProject,
+  type FarmProjectDocument,
+  type FarmProjectDocumentCategory,
+  type FarmProjectDocumentInput,
+  type FarmProjectDocumentStatus,
+  type FarmProjectUpdate,
+  type FarmProjectUpdateKind,
   type FarmProjectStatus,
+  type FarmProjectStage,
   type FarmProjectType,
+  type FarmSettlementStatus,
   type FarmRecord,
   type FarmRecordInput,
   type FarmVisitStatus,
@@ -128,6 +142,9 @@ type DialogKind =
   | 'record_add'
   | 'record_edit'
   | 'project'
+  | 'project_document'
+  | 'project_update'
+  | 'project_blocker_resolve'
   | 'work_item'
   | 'inbox'
   | 'inbox_route'
@@ -148,6 +165,28 @@ const FARM_LOG_CHANNEL_LABELS = FARM_HISTORY_CHANNEL_LABELS;
 
 interface FarmForm extends FarmInput, FarmRecordInput {
   recorder: string;
+}
+
+type ProjectDocumentForm = FarmProjectDocumentInput;
+
+interface ProjectUpdateForm {
+  kind: Exclude<FarmProjectUpdateKind, 'system'>;
+  title: string;
+  channel: HistoryChannel;
+  sender: string;
+  receivedContent: string;
+  actionContent: string;
+  recorder: string;
+  occurredAt: string;
+  referenceUrl: string;
+  blockedReason: string;
+  blockedBy: string;
+  expectedUnblockDate: string;
+}
+
+interface ProjectBlockerResolutionForm {
+  resolution: string;
+  resolvedBy: string;
 }
 
 interface HistoryDraft {
@@ -228,6 +267,8 @@ interface QualityIssue {
 
 const emptyWorkspace: FarmLedgerWorkspace = {
   projects: [],
+  projectDocuments: [],
+  projectUpdates: [],
   farms: [],
   records: [],
   inboxItems: [],
@@ -483,6 +524,54 @@ function emptyProjectForm(): FarmProjectInput {
     status: 'active',
     description: '',
     targetFarmCount: 0,
+    manager: '',
+    startDate: localDateString(),
+    endDate: dateWithOffset(180),
+    currentStage: 'agreement',
+    settlementStatus: 'not_started',
+    settlementDueDate: dateWithOffset(210),
+    contractAmount: 0,
+    settlementClaimAmount: 0,
+    settlementApprovedAmount: 0,
+    settlementPaidAmount: 0,
+    settledAt: '',
+    settlementOwner: '',
+    settlementEvidenceUrl: '',
+    settlementNote: '',
+  };
+}
+
+function emptyProjectDocumentForm(owner = ''): ProjectDocumentForm {
+  return {
+    title: '',
+    category: 'agreement',
+    isRequired: true,
+    status: 'not_started',
+    owner,
+    currentHandler: owner,
+    dueDate: '',
+    submittedAt: '',
+    approvedAt: '',
+    referenceUrl: '',
+    revision: 1,
+    note: '',
+  };
+}
+
+function emptyProjectUpdateForm(owner = ''): ProjectUpdateForm {
+  return {
+    kind: 'communication',
+    title: '',
+    channel: 'email',
+    sender: '',
+    receivedContent: '',
+    actionContent: '',
+    recorder: owner,
+    occurredAt: localDateTimeValue(),
+    referenceUrl: '',
+    blockedReason: '',
+    blockedBy: '',
+    expectedUnblockDate: '',
   };
 }
 
@@ -686,6 +775,29 @@ function installProgress(record: FarmRecord) {
   return { complete: stages.filter(Boolean).length, total: stages.length };
 }
 
+function averageRates(...values: Array<number | null>) {
+  const usable = values.filter((value): value is number => value !== null);
+  return usable.length
+    ? Math.round(usable.reduce((sum, value) => sum + value, 0) / usable.length)
+    : null;
+}
+
+function documentCategoryProgress(
+  documents: FarmProjectDocument[],
+  category: FarmProjectDocumentCategory,
+) {
+  const items = documents.filter(
+    (document) => document.category === category && document.isRequired,
+  );
+  return items.length
+    ? Math.round(
+        (items.filter((document) => document.status === 'approved').length /
+          items.length) *
+          100,
+      )
+    : null;
+}
+
 async function readResponse(response: Response) {
   return (await response.json().catch(() => ({}))) as Record<
     string,
@@ -702,6 +814,10 @@ export function FarmLedgerDashboard() {
   const [riskNow, setRiskNow] = useState(() => Date.now());
   const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
+  const [projectSearch, setProjectSearch] = useState('');
+  const [projectRiskFilter, setProjectRiskFilter] = useState<
+    'all' | 'blocked' | 'documents' | 'subscription' | 'settlement'
+  >('all');
   const [projectFilter, setProjectFilter] = useState('all');
   const [subscriptionFilter, setSubscriptionFilter] = useState<
     'all' | SubscriptionStatus
@@ -717,11 +833,22 @@ export function FarmLedgerDashboard() {
     'all' | FarmProjectType
   >('all');
   const [selectedFarmId, setSelectedFarmId] = useState('');
+  const [selectedProjectId, setSelectedProjectId] = useState('');
   const [selectedWorkItemId, setSelectedWorkItemId] = useState('');
+  const [editingProjectId, setEditingProjectId] = useState('');
+  const [editingProjectDocumentId, setEditingProjectDocumentId] = useState('');
+  const [resolvingProjectUpdateId, setResolvingProjectUpdateId] = useState('');
   const [editingRecordId, setEditingRecordId] = useState('');
   const [dialog, setDialog] = useState<DialogKind>(null);
   const [projectForm, setProjectForm] =
     useState<FarmProjectInput>(emptyProjectForm);
+  const [projectDocumentForm, setProjectDocumentForm] =
+    useState<ProjectDocumentForm>(() => emptyProjectDocumentForm());
+  const [projectUpdateForm, setProjectUpdateForm] = useState<ProjectUpdateForm>(
+    () => emptyProjectUpdateForm(),
+  );
+  const [projectBlockerResolutionForm, setProjectBlockerResolutionForm] =
+    useState<ProjectBlockerResolutionForm>({ resolution: '', resolvedBy: '' });
   const [farmForm, setFarmForm] = useState<FarmForm>(() => emptyFarmForm(''));
   const [workItemForm, setWorkItemForm] = useState<WorkItemForm>(() =>
     emptyWorkItemForm(),
@@ -751,6 +878,9 @@ export function FarmLedgerDashboard() {
       )) as unknown as FarmLedgerWorkspace & { error?: string };
       if (
         !response.ok ||
+        !Array.isArray(data.projects) ||
+        !Array.isArray(data.projectDocuments) ||
+        !Array.isArray(data.projectUpdates) ||
         !Array.isArray(data.farms) ||
         !Array.isArray(data.inboxItems) ||
         !Array.isArray(data.workItems) ||
@@ -762,6 +892,9 @@ export function FarmLedgerDashboard() {
         throw new Error(data.error || '관리대장을 불러오지 못했습니다.');
       }
       setWorkspace(data);
+      setSelectedProjectId((current) =>
+        data.projects.some((project) => project.id === current) ? current : '',
+      );
       setSelectedFarmId((current) =>
         data.farms.some((farm) => farm.id === current) ? current : '',
       );
@@ -880,7 +1013,30 @@ export function FarmLedgerDashboard() {
       new Map(workspace.workItems.map((workItem) => [workItem.id, workItem])),
     [workspace.workItems],
   );
+  const documentsByProject = useMemo(() => {
+    const map = new Map<string, FarmProjectDocument[]>();
+    for (const document of workspace.projectDocuments) {
+      map.set(document.projectId, [
+        ...(map.get(document.projectId) ?? []),
+        document,
+      ]);
+    }
+    return map;
+  }, [workspace.projectDocuments]);
+  const updatesByProject = useMemo(() => {
+    const map = new Map<string, FarmProjectUpdate[]>();
+    for (const update of workspace.projectUpdates) {
+      map.set(update.projectId, [...(map.get(update.projectId) ?? []), update]);
+    }
+    for (const updates of map.values()) {
+      updates.sort(
+        (a, b) => b.occurredAt - a.occurredAt || b.createdAt - a.createdAt,
+      );
+    }
+    return map;
+  }, [workspace.projectUpdates]);
 
+  const selectedProject = projectById.get(selectedProjectId) ?? null;
   const selectedFarm = farmById.get(selectedFarmId) ?? null;
   const selectedRecords = selectedFarm
     ? (recordsByFarm.get(selectedFarm.id) ?? [])
@@ -905,6 +1061,171 @@ export function FarmLedgerDashboard() {
   function projectForWorkItem(workItem: FarmWorkItem) {
     const record = recordById.get(workItem.farmRecordId);
     return record ? (projectById.get(record.projectId) ?? null) : null;
+  }
+
+  function projectSnapshot(project: FarmProject) {
+    const allRecords = workspace.records.filter(
+      (record) => record.projectId === project.id,
+    );
+    const uniqueRecordsByFarm = new Map<string, FarmRecord>();
+    for (const record of allRecords) {
+      const current = uniqueRecordsByFarm.get(record.farmId);
+      if (!current || record.lastActivityAt > current.lastActivityAt)
+        uniqueRecordsByFarm.set(record.farmId, record);
+    }
+    const records = [...uniqueRecordsByFarm.values()];
+    const recordIds = new Set(allRecords.map((record) => record.id));
+    const workItems = workspace.workItems.filter((item) =>
+      recordIds.has(item.farmRecordId),
+    );
+    const workItemIds = new Set(workItems.map((item) => item.id));
+    const documents = documentsByProject.get(project.id) ?? [];
+    const projectUpdates = updatesByProject.get(project.id) ?? [];
+    const openProjectBlockers = projectUpdates.filter(
+      (update) => update.kind === 'blocker' && !update.resolvedAt,
+    );
+    const requiredDocuments = documents.filter(
+      (document) => document.isRequired,
+    );
+    const submittedDocuments = requiredDocuments.filter((document) =>
+      Boolean(document.submittedAt),
+    );
+    const approvedDocuments = requiredDocuments.filter(
+      (document) => document.status === 'approved',
+    );
+    const documentRisks = documents.filter((document) => {
+      const due = daysUntil(document.dueDate);
+      return (
+        document.status === 'revision' ||
+        document.status === 'rejected' ||
+        (document.isRequired &&
+          document.status !== 'approved' &&
+          due !== null &&
+          due < 0)
+      );
+    });
+    const blockedItems = workItems.filter((item) => item.status === 'waiting');
+    const activeSubscriptions = records.filter((record) => {
+      const days = daysUntil(record.currentSubscriptionExpiresAt);
+      return (
+        record.subscriptionStatus === 'active' && days !== null && days >= 0
+      );
+    });
+    const expiringSoon = activeSubscriptions.filter((record) => {
+      const days = daysUntil(record.currentSubscriptionExpiresAt);
+      return days !== null && days <= 90;
+    });
+    const expiredSubscriptions = records.filter((record) => {
+      const days = daysUntil(record.currentSubscriptionExpiresAt);
+      return (
+        record.subscriptionStatus === 'expired' || (days !== null && days < 0)
+      );
+    });
+    const missingSubscriptionExpiry = records.filter(
+      (record) =>
+        record.subscriptionStatus === 'active' &&
+        !record.currentSubscriptionExpiresAt,
+    );
+    const rate = (complete: number, total: number) =>
+      total ? Math.round((complete / total) * 100) : null;
+    const farmCoverage = project.targetFarmCount
+      ? Math.min(
+          100,
+          Math.round((records.length / project.targetFarmCount) * 100),
+        )
+      : null;
+    const productionRate = rate(
+      records.filter((record) => record.productionSetupDate).length,
+      records.length,
+    );
+    const installationRate = rate(
+      records.filter((record) => record.installationDate).length,
+      records.length,
+    );
+    const commissioningRate = rate(
+      records.filter((record) => record.commissioningDate).length,
+      records.length,
+    );
+    const educationRate = rate(
+      records.filter((record) => record.educationDate).length,
+      records.length,
+    );
+    const documentRate = rate(
+      approvedDocuments.length,
+      requiredDocuments.length,
+    );
+    const settlementProgress: Record<FarmSettlementStatus, number> = {
+      not_started: 0,
+      collecting: 20,
+      submitted: 50,
+      revision: 40,
+      approved: 75,
+      paid: 100,
+      closed: 100,
+    };
+    const evidenceRates = [
+      farmCoverage ?? 0,
+      productionRate ?? 0,
+      installationRate ?? 0,
+      commissioningRate ?? 0,
+      educationRate ?? 0,
+      documentRate ?? 0,
+      settlementProgress[project.settlementStatus],
+    ];
+    const overallProgress = Math.round(
+      evidenceRates.reduce((sum, value) => sum + value, 0) /
+        evidenceRates.length,
+    );
+    const projectFarmHistory = workspace.historyEntries
+      .filter((entry) => workItemIds.has(entry.workItemId))
+      .sort((a, b) => b.occurredAt - a.occurredAt);
+    const recentHistory = projectFarmHistory.slice(0, 8);
+    const recentActivity = [...projectUpdates, ...projectFarmHistory]
+      .sort((a, b) => b.occurredAt - a.occurredAt)
+      .slice(0, 12);
+    const latestReceivedActivity = [...projectUpdates, ...projectFarmHistory]
+      .sort((a, b) => b.occurredAt - a.occurredAt)
+      .find((entry) => entry.receivedContent.trim());
+    const latestActionActivity = [...projectUpdates, ...projectFarmHistory]
+      .sort((a, b) => b.occurredAt - a.occurredAt)
+      .find((entry) => entry.actionContent.trim());
+    const latestActivityAt = Math.max(
+      project.updatedAt,
+      ...workItems.map((item) => item.lastActivityAt),
+      ...projectFarmHistory.map((entry) => entry.occurredAt),
+      ...projectUpdates.map((update) => update.occurredAt),
+      ...documents.map((document) => document.updatedAt),
+    );
+
+    return {
+      records,
+      workItems,
+      documents,
+      projectUpdates,
+      openProjectBlockers,
+      requiredDocuments,
+      submittedDocuments,
+      approvedDocuments,
+      documentRisks,
+      blockedItems,
+      activeSubscriptions,
+      expiringSoon,
+      expiredSubscriptions,
+      missingSubscriptionExpiry,
+      farmCoverage,
+      productionRate,
+      installationRate,
+      commissioningRate,
+      educationRate,
+      documentRate,
+      settlementProgress: settlementProgress[project.settlementStatus],
+      overallProgress,
+      recentHistory,
+      recentActivity,
+      latestReceivedActivity,
+      latestActionActivity,
+      latestActivityAt,
+    };
   }
 
   function latestEntryWith(
@@ -1374,6 +1695,28 @@ export function FarmLedgerDashboard() {
         });
       }
     }
+    const participationGroups = new Map<string, FarmRecord[]>();
+    for (const record of workspace.records) {
+      const key = `${record.farmId}:${record.projectId}`;
+      participationGroups.set(key, [
+        ...(participationGroups.get(key) ?? []),
+        record,
+      ]);
+    }
+    for (const records of participationGroups.values()) {
+      if (records.length < 2) continue;
+      const record = records[0];
+      const farm = farmById.get(record.farmId);
+      const project = projectById.get(record.projectId);
+      issues.push({
+        id: `participation-${record.farmId}-${record.projectId}`,
+        farmId: record.farmId,
+        category: 'duplicate',
+        title: '같은 프로젝트에 농가 중복 등록',
+        description: `${farm?.name ?? '농가'}가 ${project?.name ?? '프로젝트'}에 ${records.length}번 연결되어 있습니다. 참여 정보를 확인해 주세요.`,
+        severity: 'high',
+      });
+    }
     for (const record of workspace.records) {
       const farm = farmById.get(record.farmId);
       if (!record.installationDate) {
@@ -1475,7 +1818,7 @@ export function FarmLedgerDashboard() {
     },
     {
       id: 'projects',
-      label: '사업 관리',
+      label: '프로젝트 관리',
       icon: BriefcaseBusiness,
       count: workspace.projects.length,
     },
@@ -1590,9 +1933,92 @@ export function FarmLedgerDashboard() {
   }
 
   function openProjectDialog() {
+    setEditingProjectId('');
     setProjectForm(emptyProjectForm());
     setFormError('');
     setDialog('project');
+  }
+
+  function openProjectEditDialog(project: FarmProject) {
+    setEditingProjectId(project.id);
+    setProjectForm({
+      name: project.name,
+      projectType: project.projectType,
+      year: project.year,
+      institution: project.institution,
+      status: project.status,
+      description: project.description,
+      targetFarmCount: project.targetFarmCount,
+      manager: project.manager,
+      startDate: project.startDate,
+      endDate: project.endDate,
+      currentStage: project.currentStage,
+      settlementStatus: project.settlementStatus,
+      settlementDueDate: project.settlementDueDate,
+      contractAmount: project.contractAmount,
+      settlementClaimAmount: project.settlementClaimAmount,
+      settlementApprovedAmount: project.settlementApprovedAmount,
+      settlementPaidAmount: project.settlementPaidAmount,
+      settledAt: project.settledAt,
+      settlementOwner: project.settlementOwner,
+      settlementEvidenceUrl: project.settlementEvidenceUrl,
+      settlementNote: project.settlementNote,
+    });
+    setFormError('');
+    setDialog('project');
+  }
+
+  function openProjectDocumentDialog(
+    project: FarmProject,
+    document?: FarmProjectDocument,
+  ) {
+    setSelectedProjectId(project.id);
+    setEditingProjectDocumentId(document?.id ?? '');
+    setProjectDocumentForm(
+      document
+        ? {
+            title: document.title,
+            category: document.category,
+            isRequired: document.isRequired,
+            status: document.status,
+            owner: document.owner,
+            currentHandler: document.currentHandler,
+            dueDate: document.dueDate,
+            submittedAt: document.submittedAt,
+            approvedAt: document.approvedAt,
+            referenceUrl: document.referenceUrl,
+            revision: document.revision,
+            note: document.note,
+          }
+        : emptyProjectDocumentForm(project.manager),
+    );
+    setFormError('');
+    setDialog('project_document');
+  }
+
+  function openProjectUpdateDialog(
+    project: FarmProject,
+    kind: ProjectUpdateForm['kind'] = 'communication',
+  ) {
+    setSelectedProjectId(project.id);
+    setProjectUpdateForm({
+      ...emptyProjectUpdateForm(project.manager),
+      kind,
+      channel: kind === 'decision' ? 'meeting' : 'email',
+    });
+    setFormError('');
+    setDialog('project_update');
+  }
+
+  function openProjectBlockerResolveDialog(update: FarmProjectUpdate) {
+    setSelectedProjectId(update.projectId);
+    setResolvingProjectUpdateId(update.id);
+    setProjectBlockerResolutionForm({
+      resolution: '',
+      resolvedBy: projectById.get(update.projectId)?.manager || update.recorder,
+    });
+    setFormError('');
+    setDialog('project_blocker_resolve');
   }
 
   function openWorkItemDialog(farmRecordId = '') {
@@ -1927,23 +2353,145 @@ export function FarmLedgerDashboard() {
     setFormError('');
     try {
       const response = await fetch('/api/farm-ledger', {
-        method: 'POST',
+        method: editingProjectId ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: 'project', project: projectForm }),
+        body: JSON.stringify({
+          kind: 'project',
+          projectId: editingProjectId,
+          project: projectForm,
+        }),
       });
       const data = await readResponse(response);
       if (!response.ok || !data.project)
-        throw new Error(data.error || '사업을 등록하지 못했습니다.');
+        throw new Error(data.error || '사업을 저장하지 못했습니다.');
+      const saved = data.project as FarmProject;
       await loadWorkspace(true);
+      setSelectedProjectId(saved.id);
       setDialog(null);
       toast.add({
-        title: '사업을 등록했습니다',
+        title: editingProjectId
+          ? '사업 정보를 수정했습니다'
+          : '사업을 등록했습니다',
         description: projectForm.name,
         type: 'success',
       });
     } catch (error) {
       setFormError(
-        error instanceof Error ? error.message : '사업을 등록하지 못했습니다.',
+        error instanceof Error ? error.message : '사업을 저장하지 못했습니다.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitProjectDocument(event: FormSubmitEvent) {
+    event.preventDefault();
+    if (!selectedProject) return;
+    setSubmitting(true);
+    setFormError('');
+    try {
+      const response = await fetch('/api/farm-ledger', {
+        method: editingProjectDocumentId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'project_document',
+          projectId: selectedProject.id,
+          documentId: editingProjectDocumentId,
+          document: projectDocumentForm,
+        }),
+      });
+      const data = await readResponse(response);
+      if (!response.ok || !data.document)
+        throw new Error(data.error || '제출서류를 저장하지 못했습니다.');
+      await loadWorkspace(true);
+      setDialog(null);
+      toast.add({
+        title: editingProjectDocumentId
+          ? '제출서류를 수정했습니다'
+          : '제출서류를 추가했습니다',
+        description: projectDocumentForm.title,
+        type: 'success',
+      });
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : '제출서류를 저장하지 못했습니다.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitProjectUpdate(event: FormSubmitEvent) {
+    event.preventDefault();
+    if (!selectedProject) return;
+    setSubmitting(true);
+    setFormError('');
+    try {
+      const response = await fetch('/api/farm-ledger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'project_update',
+          projectId: selectedProject.id,
+          update: {
+            ...projectUpdateForm,
+            occurredAt: new Date(projectUpdateForm.occurredAt).getTime(),
+          },
+        }),
+      });
+      const data = await readResponse(response);
+      if (!response.ok || !data.update)
+        throw new Error(data.error || '프로젝트 기록을 저장하지 못했습니다.');
+      await loadWorkspace(true);
+      setDialog(null);
+      toast.add({
+        title:
+          projectUpdateForm.kind === 'blocker'
+            ? '프로젝트 막힘을 등록했습니다'
+            : '프로젝트 기록을 저장했습니다',
+        description: projectUpdateForm.title,
+        type: 'success',
+      });
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : '프로젝트 기록을 저장하지 못했습니다.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitProjectBlockerResolution(event: FormSubmitEvent) {
+    event.preventDefault();
+    if (!resolvingProjectUpdateId) return;
+    setSubmitting(true);
+    setFormError('');
+    try {
+      const response = await fetch('/api/farm-ledger', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'project_blocker_resolve',
+          updateId: resolvingProjectUpdateId,
+          ...projectBlockerResolutionForm,
+        }),
+      });
+      const data = await readResponse(response);
+      if (!response.ok || !data.update)
+        throw new Error(data.error || '막힘을 해결 처리하지 못했습니다.');
+      await loadWorkspace(true);
+      setDialog(null);
+      setResolvingProjectUpdateId('');
+      toast.add({ title: '프로젝트 막힘을 해결했습니다', type: 'success' });
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : '막힘을 해결 처리하지 못했습니다.',
       );
     } finally {
       setSubmitting(false);
@@ -2436,6 +2984,144 @@ export function FarmLedgerDashboard() {
       </button>
     );
   }
+
+  const projectSnapshots = new Map(
+    workspace.projects.map((project) => [project.id, projectSnapshot(project)]),
+  );
+  const projectHasSettlementRisk = (project: FarmProject) => {
+    const due = daysUntil(project.settlementDueDate);
+    return (
+      project.settlementStatus === 'revision' ||
+      (!['paid', 'closed'].includes(project.settlementStatus) &&
+        due !== null &&
+        due < 0)
+    );
+  };
+  const projectRiskCount = (project: FarmProject) => {
+    const snapshot = projectSnapshots.get(project.id);
+    if (!snapshot) return 0;
+    return (
+      snapshot.openProjectBlockers.length +
+      snapshot.blockedItems.length +
+      snapshot.documentRisks.length +
+      snapshot.expiringSoon.length +
+      snapshot.expiredSubscriptions.length +
+      snapshot.missingSubscriptionExpiry.length +
+      (projectHasSettlementRisk(project) ? 1 : 0)
+    );
+  };
+  const normalizedProjectSearch = projectSearch.trim().toLocaleLowerCase();
+  const filteredProjects = workspace.projects
+    .filter((project) => {
+      const snapshot = projectSnapshots.get(project.id);
+      const matchesSearch =
+        !normalizedProjectSearch ||
+        [
+          project.name,
+          project.institution,
+          project.manager,
+          String(project.year),
+        ]
+          .join(' ')
+          .toLocaleLowerCase()
+          .includes(normalizedProjectSearch);
+      if (!matchesSearch || !snapshot) return false;
+      if (projectRiskFilter === 'blocked')
+        return (
+          snapshot.openProjectBlockers.length + snapshot.blockedItems.length > 0
+        );
+      if (projectRiskFilter === 'documents')
+        return snapshot.documentRisks.length > 0;
+      if (projectRiskFilter === 'subscription')
+        return (
+          snapshot.expiringSoon.length +
+            snapshot.expiredSubscriptions.length +
+            snapshot.missingSubscriptionExpiry.length >
+          0
+        );
+      if (projectRiskFilter === 'settlement')
+        return projectHasSettlementRisk(project);
+      return true;
+    })
+    .sort(
+      (a, b) =>
+        projectRiskCount(b) - projectRiskCount(a) || b.updatedAt - a.updatedAt,
+    );
+  const selectedProjectSnapshot = selectedProject
+    ? (projectSnapshots.get(selectedProject.id) ?? null)
+    : null;
+  const selectedProjectStageCards: Array<{
+    label: string;
+    progress: number | null;
+    evidence: string;
+  }> =
+    selectedProject && selectedProjectSnapshot
+      ? [
+          {
+            label: '협약·계약',
+            progress: documentCategoryProgress(
+              selectedProjectSnapshot.documents,
+              'agreement',
+            ),
+            evidence: '협약·계약 서류 승인 기준',
+          },
+          {
+            label: '참여농가 확정',
+            progress: selectedProjectSnapshot.farmCoverage,
+            evidence: selectedProject.targetFarmCount
+              ? `${selectedProjectSnapshot.records.length}/${selectedProject.targetFarmCount}곳`
+              : '목표 농가 수 미입력',
+          },
+          {
+            label: '설치·시운전',
+            progress: averageRates(
+              selectedProjectSnapshot.productionRate,
+              selectedProjectSnapshot.installationRate,
+              selectedProjectSnapshot.commissioningRate,
+            ),
+            evidence: `제작 ${selectedProjectSnapshot.productionRate ?? '-'}% · 설치 ${selectedProjectSnapshot.installationRate ?? '-'}% · 시운전 ${selectedProjectSnapshot.commissioningRate ?? '-'}%`,
+          },
+          {
+            label: '검수·교육',
+            progress: averageRates(
+              selectedProjectSnapshot.commissioningRate,
+              selectedProjectSnapshot.educationRate,
+            ),
+            evidence: `시운전 ${selectedProjectSnapshot.commissioningRate ?? '-'}% · 교육 ${selectedProjectSnapshot.educationRate ?? '-'}%`,
+          },
+          {
+            label: '운영·구독',
+            progress: selectedProjectSnapshot.records.length
+              ? Math.round(
+                  (selectedProjectSnapshot.activeSubscriptions.length /
+                    selectedProjectSnapshot.records.length) *
+                    100,
+                )
+              : null,
+            evidence: `유효 구독 ${selectedProjectSnapshot.activeSubscriptions.length}/${selectedProjectSnapshot.records.length}곳`,
+          },
+          {
+            label: '정산·서류',
+            progress: averageRates(
+              selectedProjectSnapshot.documentRate,
+              selectedProjectSnapshot.settlementProgress,
+            ),
+            evidence: `서류 승인 ${selectedProjectSnapshot.approvedDocuments.length}/${selectedProjectSnapshot.requiredDocuments.length} · 정산 ${FARM_SETTLEMENT_STATUS_LABELS[selectedProject.settlementStatus]}`,
+          },
+          {
+            label: '사업 마감',
+            progress: selectedProject.status === 'completed' ? 100 : 0,
+            evidence:
+              selectedProject.status === 'completed'
+                ? '사업 완료 처리됨'
+                : '필수서류·정산·막힘 확인 필요',
+          },
+        ]
+      : [];
+  const selectedProjectLatestReceived =
+    selectedProjectSnapshot?.latestReceivedActivity;
+  const selectedProjectLatestAction =
+    selectedProjectSnapshot?.latestActionActivity;
 
   return (
     <Toaster toastManager={toast} timeout={4500}>
@@ -4014,13 +4700,14 @@ export function FarmLedgerDashboard() {
                       <div className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
                         <div>
                           <p className="text-sm font-medium text-[#647568]">
-                            사업 중심 조회
+                            프로젝트 중심 조회
                           </p>
                           <h1 className="mt-1 text-[28px] font-bold">
-                            사업 관리
+                            프로젝트 통합관리
                           </h1>
                           <p className="mt-2 text-sm text-[#77847b]">
-                            사업별 참여 농가와 진행 업무를 확인합니다.
+                            진행 단계, 막힘, 참여 농가, 구독, 서류와 정산을
+                            한곳에서 확인합니다.
                           </p>
                         </div>
                         <Button
@@ -4028,117 +4715,227 @@ export function FarmLedgerDashboard() {
                           className="bg-[#2f7b59] hover:bg-[#286b4d]"
                         >
                           <Plus />
-                          사업 추가
+                          프로젝트 추가
                         </Button>
                       </div>
+                      <div className="mb-5 grid gap-3 rounded-2xl border border-[#dfe6dd] bg-white p-3 sm:grid-cols-[1fr_220px]">
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#879088]" />
+                          <Input
+                            value={projectSearch}
+                            onChange={(event) =>
+                              setProjectSearch(event.target.value)
+                            }
+                            placeholder="프로젝트명, 기관, 담당자, 연도 검색"
+                            className="pl-9"
+                            aria-label="프로젝트 검색"
+                          />
+                        </div>
+                        <Select
+                          value={projectRiskFilter}
+                          onValueChange={(value) =>
+                            setProjectRiskFilter(
+                              value as typeof projectRiskFilter,
+                            )
+                          }
+                        >
+                          <SelectTrigger className="h-10 w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">모든 프로젝트</SelectItem>
+                            <SelectItem value="blocked">막힘 있음</SelectItem>
+                            <SelectItem value="documents">서류 위험</SelectItem>
+                            <SelectItem value="subscription">
+                              구독 위험
+                            </SelectItem>
+                            <SelectItem value="settlement">
+                              정산 위험
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
                       <div className="grid gap-4 xl:grid-cols-2">
-                        {workspace.projects.map((project) => {
-                          const records = workspace.records.filter(
-                            (record) => record.projectId === project.id,
-                          );
-                          const ids = new Set(
-                            records.map((record) => record.id),
-                          );
-                          const items = workspace.workItems.filter((item) =>
-                            ids.has(item.farmRecordId),
-                          );
-                          const openCount = items.filter(
-                            (item) => item.status !== 'completed',
-                          ).length;
-                          const done = records.reduce(
-                            (sum, record) =>
-                              sum + installProgress(record).complete,
-                            0,
-                          );
-                          const progress = records.length
-                            ? Math.round((done / (records.length * 4)) * 100)
-                            : 0;
+                        {filteredProjects.map((project) => {
+                          const projectCardSnapshot = projectSnapshots.get(
+                            project.id,
+                          )!;
                           return (
-                            <Card
+                            <button
+                              type="button"
                               key={project.id}
-                              className="border-0 bg-white shadow-sm ring-[#dfe6dd]"
+                              aria-label={`${project.name} 통합 현황 보기`}
+                              onClick={() => setSelectedProjectId(project.id)}
+                              className="w-full rounded-2xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4f9a70] focus-visible:ring-offset-2"
                             >
-                              <CardContent className="px-5 py-1">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <div className="mb-2 flex flex-wrap gap-2">
-                                      <Badge variant="outline">
-                                        {project.year}
-                                      </Badge>
-                                      <Badge variant="outline">
-                                        {
-                                          FARM_PROJECT_TYPE_LABELS[
-                                            project.projectType
-                                          ]
-                                        }
-                                      </Badge>
-                                      <Badge variant="outline">
-                                        {
-                                          FARM_PROJECT_STATUS_LABELS[
-                                            project.status
-                                          ]
-                                        }
-                                      </Badge>
+                              <Card className="h-full cursor-pointer border-0 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+                                <CardContent className="px-5 py-1">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <div className="mb-2 flex flex-wrap gap-2">
+                                        <Badge variant="outline">
+                                          {project.year}
+                                        </Badge>
+                                        <Badge variant="outline">
+                                          {
+                                            FARM_PROJECT_TYPE_LABELS[
+                                              project.projectType
+                                            ]
+                                          }
+                                        </Badge>
+                                        <Badge variant="outline">
+                                          {
+                                            FARM_PROJECT_STATUS_LABELS[
+                                              project.status
+                                            ]
+                                          }
+                                        </Badge>
+                                      </div>
+                                      <h2 className="truncate text-lg font-bold">
+                                        {project.name}
+                                      </h2>
+                                      <p className="mt-1 text-sm text-[#748178]">
+                                        {project.institution}
+                                      </p>
                                     </div>
-                                    <h2 className="truncate text-lg font-bold">
-                                      {project.name}
-                                    </h2>
-                                    <p className="mt-1 text-sm text-[#748178]">
-                                      {project.institution}
-                                    </p>
+                                    <div className="grid size-12 place-items-center rounded-2xl bg-[#e8f3e5] text-[#4c7c48]">
+                                      <BriefcaseBusiness className="size-5" />
+                                    </div>
                                   </div>
-                                  <div className="grid size-12 place-items-center rounded-2xl bg-[#e8f3e5] text-[#4c7c48]">
-                                    <BriefcaseBusiness className="size-5" />
+                                  <p className="mt-4 line-clamp-2 text-sm leading-6 text-[#66736b]">
+                                    {project.description ||
+                                      '사업 설명이 없습니다.'}
+                                  </p>
+                                  <div className="mt-5 grid grid-cols-4 gap-3">
+                                    <div>
+                                      <p className="text-[11px] text-[#89938c]">
+                                        농가
+                                      </p>
+                                      <p className="mt-1 font-bold">
+                                        {projectCardSnapshot.records.length}곳
+                                      </p>
+                                    </div>
+                                    <div>
+                                      <p className="text-[11px] text-[#89938c]">
+                                        목표
+                                      </p>
+                                      <p className="mt-1 font-bold">
+                                        {project.targetFarmCount || '-'}곳
+                                      </p>
+                                    </div>
+                                    <div>
+                                      <p className="text-[11px] text-[#89938c]">
+                                        진행 업무
+                                      </p>
+                                      <p className="mt-1 font-bold">
+                                        {
+                                          projectCardSnapshot.workItems.filter(
+                                            (item) =>
+                                              item.status !== 'completed',
+                                          ).length
+                                        }
+                                        건
+                                      </p>
+                                    </div>
+                                    <div>
+                                      <p className="text-[11px] text-[#89938c]">
+                                        증빙 진행
+                                      </p>
+                                      <p className="mt-1 font-bold">
+                                        {projectCardSnapshot.overallProgress}%
+                                      </p>
+                                    </div>
                                   </div>
-                                </div>
-                                <p className="mt-4 line-clamp-2 text-sm leading-6 text-[#66736b]">
-                                  {project.description ||
-                                    '사업 설명이 없습니다.'}
-                                </p>
-                                <div className="mt-5 grid grid-cols-4 gap-3">
-                                  <div>
-                                    <p className="text-[11px] text-[#89938c]">
-                                      농가
-                                    </p>
-                                    <p className="mt-1 font-bold">
-                                      {records.length}곳
-                                    </p>
+                                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#edf1ec]">
+                                    <div
+                                      className="h-full rounded-full bg-[#62b982]"
+                                      style={{
+                                        width: `${projectCardSnapshot.overallProgress}%`,
+                                      }}
+                                    />
                                   </div>
-                                  <div>
-                                    <p className="text-[11px] text-[#89938c]">
-                                      목표
-                                    </p>
-                                    <p className="mt-1 font-bold">
-                                      {project.targetFarmCount || '-'}곳
-                                    </p>
+                                  <div className="mt-4 flex flex-wrap gap-2">
+                                    <Badge
+                                      variant="outline"
+                                      className={
+                                        projectCardSnapshot.openProjectBlockers
+                                          .length ||
+                                        projectCardSnapshot.blockedItems
+                                          .length ||
+                                        projectCardSnapshot.documentRisks.length
+                                          ? 'border-[#efc8bb] bg-[#fff1ec] text-[#a94f32]'
+                                          : 'border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]'
+                                      }
+                                    >
+                                      막힘{' '}
+                                      {projectCardSnapshot.openProjectBlockers
+                                        .length +
+                                        projectCardSnapshot.blockedItems
+                                          .length +
+                                        projectCardSnapshot.documentRisks
+                                          .length}
+                                      건
+                                    </Badge>
+                                    <Badge variant="outline">
+                                      구독{' '}
+                                      {
+                                        projectCardSnapshot.activeSubscriptions
+                                          .length
+                                      }
+                                      /{projectCardSnapshot.records.length}
+                                    </Badge>
+                                    <Badge variant="outline">
+                                      서류{' '}
+                                      {
+                                        projectCardSnapshot.submittedDocuments
+                                          .length
+                                      }
+                                      /
+                                      {
+                                        projectCardSnapshot.requiredDocuments
+                                          .length
+                                      }{' '}
+                                      제출
+                                    </Badge>
+                                    <Badge variant="outline">
+                                      {
+                                        FARM_SETTLEMENT_STATUS_LABELS[
+                                          project.settlementStatus
+                                        ]
+                                      }
+                                    </Badge>
                                   </div>
-                                  <div>
-                                    <p className="text-[11px] text-[#89938c]">
-                                      진행 업무
-                                    </p>
-                                    <p className="mt-1 font-bold">
-                                      {openCount}건
-                                    </p>
+                                  <div className="mt-4 flex items-center justify-between border-t border-[#edf1ec] pt-3 text-xs font-semibold text-[#3d7455]">
+                                    <span>
+                                      현재 단계 ·{' '}
+                                      {
+                                        FARM_PROJECT_STAGE_LABELS[
+                                          project.currentStage
+                                        ]
+                                      }
+                                    </span>
+                                    <span>통합 현황 보기 →</span>
                                   </div>
-                                  <div>
-                                    <p className="text-[11px] text-[#89938c]">
-                                      설치
-                                    </p>
-                                    <p className="mt-1 font-bold">
-                                      {progress}%
-                                    </p>
-                                  </div>
-                                </div>
-                                <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#edf1ec]">
-                                  <div
-                                    className="h-full rounded-full bg-[#62b982]"
-                                    style={{ width: `${progress}%` }}
-                                  />
-                                </div>
-                              </CardContent>
-                            </Card>
+                                </CardContent>
+                              </Card>
+                            </button>
                           );
                         })}
+                        {!filteredProjects.length && (
+                          <div className="rounded-2xl border border-dashed border-[#d7dfd5] bg-white py-14 text-center xl:col-span-2">
+                            <BriefcaseBusiness className="mx-auto size-8 text-[#97a29a]" />
+                            <p className="mt-3 font-semibold">
+                              {workspace.projects.length
+                                ? '검색·위험 조건에 맞는 프로젝트가 없습니다.'
+                                : '아직 등록된 프로젝트가 없습니다.'}
+                            </p>
+                            <p className="mt-1 text-sm text-[#89938c]">
+                              {workspace.projects.length
+                                ? '검색어나 위험 필터를 바꿔 보세요.'
+                                : '프로젝트를 먼저 만들면 농가·구독·서류·정산을 연결할 수 있습니다.'}
+                            </p>
+                          </div>
+                        )}
                       </div>
                     </section>
                   )}
@@ -4844,6 +5641,692 @@ export function FarmLedgerDashboard() {
             </div>
           </section>
         </div>
+
+        <Sheet
+          open={Boolean(selectedProject)}
+          onOpenChange={(open) => {
+            if (!open) setSelectedProjectId('');
+          }}
+        >
+          <SheetContent
+            side="right"
+            className="w-full gap-0 overflow-y-auto p-0 sm:max-w-[980px]"
+          >
+            {selectedProject && selectedProjectSnapshot && (
+              <>
+                <SheetHeader className="border-b border-[#e2e8e1] px-6 py-5 pr-14">
+                  <div className="mb-2 flex flex-wrap gap-2">
+                    <Badge variant="outline">{selectedProject.year}</Badge>
+                    <Badge variant="outline">
+                      {FARM_PROJECT_TYPE_LABELS[selectedProject.projectType]}
+                    </Badge>
+                    <Badge
+                      variant="outline"
+                      className="border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]"
+                    >
+                      {FARM_PROJECT_STAGE_LABELS[selectedProject.currentStage]}
+                    </Badge>
+                    <Badge variant="outline">
+                      {FARM_PROJECT_STATUS_LABELS[selectedProject.status]}
+                    </Badge>
+                  </div>
+                  <SheetTitle className="text-left text-xl">
+                    {selectedProject.name}
+                  </SheetTitle>
+                  <SheetDescription className="text-left">
+                    {selectedProject.institution} · 담당{' '}
+                    {selectedProject.manager || '미지정'} ·{' '}
+                    {selectedProject.startDate || '시작일 미입력'} ~{' '}
+                    {selectedProject.endDate || '종료일 미입력'}
+                  </SheetDescription>
+                  <div className="flex flex-wrap gap-2 pt-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openProjectUpdateDialog(selectedProject)}
+                    >
+                      <MessageSquareText /> 프로젝트 기록 추가
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openProjectEditDialog(selectedProject)}
+                    >
+                      <Pencil /> 사업·정산 수정
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => openProjectDocumentDialog(selectedProject)}
+                      disabled={selectedProject.status === 'completed'}
+                      className="bg-[#2f7b59] hover:bg-[#286b4d]"
+                    >
+                      <Plus /> 제출서류 추가
+                    </Button>
+                  </div>
+                </SheetHeader>
+
+                <div className="space-y-6 bg-[#f5f7f3] px-4 py-5 sm:px-6">
+                  <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    {[
+                      {
+                        label: '증빙기반 진행률',
+                        value: `${selectedProjectSnapshot.overallProgress}%`,
+                        note: `현재 ${FARM_PROJECT_STAGE_LABELS[selectedProject.currentStage]}`,
+                        icon: TrendingUp,
+                      },
+                      {
+                        label: '참여 농가',
+                        value: `${selectedProjectSnapshot.records.length}/${selectedProject.targetFarmCount || '-'}곳`,
+                        note:
+                          selectedProjectSnapshot.farmCoverage === null
+                            ? '목표 농가 수를 입력해 주세요'
+                            : `목표 대비 ${selectedProjectSnapshot.farmCoverage}%`,
+                        icon: Warehouse,
+                      },
+                      {
+                        label: '현재 막힘',
+                        value: `${selectedProjectSnapshot.openProjectBlockers.length + selectedProjectSnapshot.blockedItems.length + selectedProjectSnapshot.documentRisks.length}건`,
+                        note: selectedProjectSnapshot.openProjectBlockers.length
+                          ? `프로젝트 막힘 ${selectedProjectSnapshot.openProjectBlockers.length}건`
+                          : selectedProjectSnapshot.blockedItems.length
+                            ? `농가 업무 막힘 ${selectedProjectSnapshot.blockedItems.length}건`
+                            : selectedProjectSnapshot.documentRisks.length
+                              ? `서류 위험 ${selectedProjectSnapshot.documentRisks.length}건`
+                              : '현재 막힌 항목 없음',
+                        icon: CircleAlert,
+                      },
+                      {
+                        label: '유효 구독률',
+                        value: selectedProjectSnapshot.records.length
+                          ? `${Math.round((selectedProjectSnapshot.activeSubscriptions.length / selectedProjectSnapshot.records.length) * 100)}%`
+                          : '-',
+                        note: `90일 내 만료 ${selectedProjectSnapshot.expiringSoon.length}곳 · 만료 ${selectedProjectSnapshot.expiredSubscriptions.length}곳`,
+                        icon: CalendarClock,
+                      },
+                      {
+                        label: '필수 제출서류',
+                        value: `${selectedProjectSnapshot.submittedDocuments.length}/${selectedProjectSnapshot.requiredDocuments.length}건`,
+                        note: `승인 ${selectedProjectSnapshot.approvedDocuments.length}건 · 위험 ${selectedProjectSnapshot.documentRisks.length}건`,
+                        icon: FileText,
+                      },
+                      {
+                        label: '정산',
+                        value:
+                          FARM_SETTLEMENT_STATUS_LABELS[
+                            selectedProject.settlementStatus
+                          ],
+                        note: selectedProject.settlementDueDate
+                          ? `${selectedProject.settlementDueDate} · ${dueLabel(selectedProject.settlementDueDate, ['paid', 'closed'].includes(selectedProject.settlementStatus))}`
+                          : '정산기한 미입력',
+                        icon: CreditCard,
+                      },
+                    ].map((item) => (
+                      <Card key={item.label} className="border-0 bg-white">
+                        <CardContent className="px-4 py-1">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs text-[#7f8a82]">
+                                {item.label}
+                              </p>
+                              <p className="mt-1 text-xl font-bold">
+                                {item.value}
+                              </p>
+                              <p className="mt-1 text-xs text-[#768179]">
+                                {item.note}
+                              </p>
+                            </div>
+                            <div className="grid size-9 place-items-center rounded-xl bg-[#edf5ec] text-[#4b8057]">
+                              <item.icon className="size-4" />
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </section>
+
+                  <section className="rounded-2xl bg-white p-5 shadow-sm">
+                    <div className="mb-4 flex items-center justify-between">
+                      <div>
+                        <h3 className="font-bold">사업 진행 단계</h3>
+                        <p className="mt-1 text-xs text-[#7d8981]">
+                          저장된 날짜·농가·서류·정산을 근거로 계산합니다.
+                        </p>
+                      </div>
+                      <span className="text-xs text-[#89938c]">
+                        최근 활동{' '}
+                        {formatTimestamp(
+                          selectedProjectSnapshot.latestActivityAt,
+                        )}
+                      </span>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      {selectedProjectStageCards.map((stage) => (
+                        <div
+                          key={stage.label}
+                          className="rounded-xl border border-[#e2e8e1] p-3"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-sm font-semibold">
+                              {stage.label}
+                            </p>
+                            <span className="text-sm font-bold text-[#347454]">
+                              {stage.progress === null
+                                ? '미설정'
+                                : `${stage.progress}%`}
+                            </span>
+                          </div>
+                          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#edf1ec]">
+                            <div
+                              className="h-full rounded-full bg-[#62b982]"
+                              style={{
+                                width: `${stage.progress ?? 0}%`,
+                              }}
+                            />
+                          </div>
+                          <p className="mt-2 text-[11px] leading-5 text-[#7d8981]">
+                            {stage.evidence}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="rounded-2xl bg-white p-5 shadow-sm">
+                    <h3 className="font-bold">현재 막힌 곳</h3>
+                    <p className="mt-1 text-xs text-[#7d8981]">
+                      프로젝트 직접 막힘, 농가 업무와 기한초과·보완·반려 서류를
+                      함께 봅니다.
+                    </p>
+                    {selectedProjectSnapshot.openProjectBlockers.length ||
+                    selectedProjectSnapshot.blockedItems.length ||
+                    selectedProjectSnapshot.documentRisks.length ? (
+                      <div className="mt-4 space-y-2">
+                        {selectedProjectSnapshot.openProjectBlockers.map(
+                          (update) => (
+                            <div
+                              key={update.id}
+                              className="flex flex-col justify-between gap-3 rounded-xl border border-[#efc8bb] bg-[#fff1ec] p-3 sm:flex-row sm:items-start"
+                            >
+                              <div>
+                                <p className="text-sm font-semibold">
+                                  프로젝트 · {update.title}
+                                </p>
+                                <p className="mt-1 text-xs leading-5 text-[#8b5e45]">
+                                  {update.blockedReason} · 해결 주체{' '}
+                                  {update.blockedBy}
+                                </p>
+                                <p className="mt-1 text-[11px] text-[#94715d]">
+                                  막힌 지 {elapsedDays(update.occurredAt)}일 ·
+                                  예상 해제{' '}
+                                  {update.expectedUnblockDate || '미정'}
+                                </p>
+                              </div>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  openProjectBlockerResolveDialog(update)
+                                }
+                              >
+                                <Check /> 해결 처리
+                              </Button>
+                            </div>
+                          ),
+                        )}
+                        {selectedProjectSnapshot.blockedItems.map((item) => {
+                          const farm = farmById.get(item.farmId);
+                          return (
+                            <button
+                              type="button"
+                              key={item.id}
+                              onClick={() => {
+                                setSelectedProjectId('');
+                                setSelectedWorkItemId(item.id);
+                                setSelectedFarmId(item.farmId);
+                              }}
+                              className="flex w-full items-start justify-between gap-3 rounded-xl border border-[#efd8c8] bg-[#fff8f3] p-3 text-left hover:bg-[#fff3eb]"
+                            >
+                              <div>
+                                <p className="text-sm font-semibold">
+                                  {farm?.name ?? '농가'} · {item.title}
+                                </p>
+                                <p className="mt-1 text-xs leading-5 text-[#8b5e45]">
+                                  {item.blockedReason || '막힘 사유 미입력'} ·
+                                  해결 주체 {item.blockedBy || '미입력'}
+                                </p>
+                                <p className="mt-1 text-[11px] text-[#94715d]">
+                                  막힌 지 {elapsedDays(item.blockedAt)}일 · 예상
+                                  해제 {item.expectedUnblockDate || '미정'}
+                                </p>
+                              </div>
+                              <ArrowRight className="mt-1 size-4 shrink-0" />
+                            </button>
+                          );
+                        })}
+                        {selectedProjectSnapshot.documentRisks.map(
+                          (document) => (
+                            <button
+                              type="button"
+                              key={document.id}
+                              onClick={() =>
+                                openProjectDocumentDialog(
+                                  selectedProject,
+                                  document,
+                                )
+                              }
+                              className="flex w-full items-start justify-between gap-3 rounded-xl border border-[#ead9b8] bg-[#fffaf0] p-3 text-left hover:bg-[#fff6e4]"
+                            >
+                              <div>
+                                <p className="text-sm font-semibold">
+                                  제출서류 · {document.title}
+                                </p>
+                                <p className="mt-1 text-xs text-[#8b6d36]">
+                                  {
+                                    FARM_PROJECT_DOCUMENT_STATUS_LABELS[
+                                      document.status
+                                    ]
+                                  }{' '}
+                                  · 현재 처리자 {document.currentHandler}
+                                  {document.dueDate
+                                    ? ` · ${dueLabel(document.dueDate)}`
+                                    : ''}
+                                </p>
+                              </div>
+                              <Pencil className="mt-1 size-4 shrink-0" />
+                            </button>
+                          ),
+                        )}
+                      </div>
+                    ) : (
+                      <div className="mt-4 flex items-center gap-3 rounded-xl border border-[#cfe0d1] bg-[#f2f8f2] p-4 text-sm text-[#36714d]">
+                        <CheckCircle2 className="size-5" /> 현재 막힌 항목이
+                        없습니다.
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="rounded-2xl bg-white p-5 shadow-sm">
+                    <div className="flex items-end justify-between gap-3">
+                      <div>
+                        <h3 className="font-bold">참여 농가·구독</h3>
+                        <p className="mt-1 text-xs text-[#7d8981]">
+                          농가별 설치 단계와 실제 만료일 기준 구독 상태입니다.
+                        </p>
+                      </div>
+                      {selectedProjectSnapshot.missingSubscriptionExpiry
+                        .length > 0 && (
+                        <Badge
+                          variant="outline"
+                          className="border-[#ead9b8] bg-[#fff9ed] text-[#94601c]"
+                        >
+                          만료일 미입력{' '}
+                          {
+                            selectedProjectSnapshot.missingSubscriptionExpiry
+                              .length
+                          }
+                          곳
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="mt-4 overflow-x-auto rounded-xl border border-[#e3e8e2]">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>농가</TableHead>
+                            <TableHead>설치 단계</TableHead>
+                            <TableHead>구독</TableHead>
+                            <TableHead>만료일</TableHead>
+                            <TableHead className="text-right">
+                              남은 기간
+                            </TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {selectedProjectSnapshot.records.map((record) => {
+                            const farm = farmById.get(record.farmId);
+                            const install = installProgress(record);
+                            const days = daysUntil(
+                              record.currentSubscriptionExpiresAt,
+                            );
+                            return (
+                              <TableRow key={record.id}>
+                                <TableCell>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedProjectId('');
+                                      setSelectedFarmId(record.farmId);
+                                    }}
+                                    className="text-left font-semibold text-[#274f39] hover:underline focus-visible:rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4f9a70]"
+                                  >
+                                    {farm?.name ?? '농가 없음'}
+                                  </button>
+                                  <p className="mt-1 text-xs text-[#89938c]">
+                                    {record.crop || '작물 미입력'} ·{' '}
+                                    {record.productType || '제품 미입력'}
+                                  </p>
+                                </TableCell>
+                                <TableCell>
+                                  {install.complete}/{install.total} 완료
+                                </TableCell>
+                                <TableCell>
+                                  <Badge
+                                    variant="outline"
+                                    className={subscriptionClass(
+                                      days !== null && days < 0
+                                        ? 'expired'
+                                        : record.subscriptionStatus,
+                                    )}
+                                  >
+                                    {days !== null && days < 0
+                                      ? '만료'
+                                      : SUBSCRIPTION_STATUS_LABELS[
+                                          record.subscriptionStatus
+                                        ]}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell>
+                                  {record.currentSubscriptionExpiresAt ||
+                                    '미입력'}
+                                </TableCell>
+                                <TableCell className="text-right font-semibold">
+                                  {days === null
+                                    ? '-'
+                                    : days < 0
+                                      ? `${Math.abs(days)}일 지남`
+                                      : `D-${days}`}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                          {!selectedProjectSnapshot.records.length && (
+                            <TableRow>
+                              <TableCell
+                                colSpan={5}
+                                className="h-28 text-center text-[#89938c]"
+                              >
+                                이 사업에 연결된 농가가 없습니다.
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </section>
+
+                  <section className="grid gap-4 xl:grid-cols-2">
+                    <div className="rounded-2xl bg-white p-5 shadow-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="font-bold">제출서류 대장</h3>
+                          <p className="mt-1 text-xs text-[#7d8981]">
+                            책임자와 현재 처리자를 분리해 관리합니다.
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={selectedProject.status === 'completed'}
+                          onClick={() =>
+                            openProjectDocumentDialog(selectedProject)
+                          }
+                        >
+                          <Plus /> 추가
+                        </Button>
+                      </div>
+                      <div className="mt-4 space-y-2">
+                        {selectedProjectSnapshot.documents.map((document) => (
+                          <button
+                            type="button"
+                            key={document.id}
+                            disabled={selectedProject.status === 'completed'}
+                            onClick={() =>
+                              openProjectDocumentDialog(
+                                selectedProject,
+                                document,
+                              )
+                            }
+                            className="w-full rounded-xl border border-[#e2e8e1] p-3 text-left hover:bg-[#f7f9f6] disabled:cursor-not-allowed disabled:opacity-70"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="text-sm font-semibold">
+                                    {document.title}
+                                  </p>
+                                  {document.isRequired && (
+                                    <Badge variant="outline">필수</Badge>
+                                  )}
+                                </div>
+                                <p className="mt-1 text-xs text-[#7d8981]">
+                                  {
+                                    FARM_PROJECT_DOCUMENT_CATEGORY_LABELS[
+                                      document.category
+                                    ]
+                                  }{' '}
+                                  · 책임 {document.owner} · 현재{' '}
+                                  {document.currentHandler}
+                                </p>
+                              </div>
+                              <Badge variant="outline">
+                                {
+                                  FARM_PROJECT_DOCUMENT_STATUS_LABELS[
+                                    document.status
+                                  ]
+                                }
+                              </Badge>
+                            </div>
+                            <p className="mt-2 text-[11px] text-[#8a958d]">
+                              기한 {document.dueDate || '미입력'} · 개정{' '}
+                              {document.revision}차
+                            </p>
+                          </button>
+                        ))}
+                        {!selectedProjectSnapshot.documents.length && (
+                          <div className="rounded-xl border border-dashed border-[#d9dfd8] p-6 text-center text-sm text-[#89938c]">
+                            필수서류 목록이 아직 등록되지 않았습니다.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-white p-5 shadow-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="font-bold">최종 정산</h3>
+                          <p className="mt-1 text-xs text-[#7d8981]">
+                            현재 버전은 프로젝트별 최종정산 1건을 관리합니다.
+                          </p>
+                        </div>
+                        <Badge variant="outline">
+                          {
+                            FARM_SETTLEMENT_STATUS_LABELS[
+                              selectedProject.settlementStatus
+                            ]
+                          }
+                        </Badge>
+                      </div>
+                      <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                        {[
+                          ['계약금액', selectedProject.contractAmount],
+                          ['청구액', selectedProject.settlementClaimAmount],
+                          ['승인액', selectedProject.settlementApprovedAmount],
+                          ['입금액', selectedProject.settlementPaidAmount],
+                        ].map(([label, value]) => (
+                          <div
+                            key={String(label)}
+                            className="rounded-xl bg-[#f6f8f5] p-3"
+                          >
+                            <dt className="text-xs text-[#7d8981]">{label}</dt>
+                            <dd className="mt-1 font-bold">
+                              {formatMoney(Number(value))}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                      <div className="mt-4 space-y-2 rounded-xl border border-[#e2e8e1] p-3 text-sm">
+                        <p>
+                          <span className="text-[#7d8981]">담당자</span>{' '}
+                          <strong>
+                            {selectedProject.settlementOwner || '미지정'}
+                          </strong>
+                        </p>
+                        <p>
+                          <span className="text-[#7d8981]">정산기한</span>{' '}
+                          <strong>
+                            {selectedProject.settlementDueDate || '미입력'}
+                          </strong>
+                        </p>
+                        <p>
+                          <span className="text-[#7d8981]">입금·마감일</span>{' '}
+                          <strong>
+                            {selectedProject.settledAt || '미입력'}
+                          </strong>
+                        </p>
+                        {selectedProject.settlementEvidenceUrl && (
+                          <a
+                            href={selectedProject.settlementEvidenceUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 font-semibold text-[#39795b] hover:underline"
+                          >
+                            <ExternalLink className="size-3.5" /> 정산 증빙 열기
+                          </a>
+                        )}
+                        <p className="leading-6 text-[#657269]">
+                          {selectedProject.settlementNote ||
+                            '정산 메모가 없습니다.'}
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        className="mt-4 w-full"
+                        onClick={() => openProjectEditDialog(selectedProject)}
+                      >
+                        <Pencil /> 정산 정보 수정
+                      </Button>
+                    </div>
+                  </section>
+
+                  <section className="rounded-2xl bg-white p-5 shadow-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 className="font-bold">프로젝트 최근 히스토리</h3>
+                        <p className="mt-1 text-xs text-[#7d8981]">
+                          프로젝트 연락·결정·막힘과 농가 업무 기록을 시간순으로
+                          모읍니다.
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            openProjectUpdateDialog(selectedProject, 'blocker')
+                          }
+                          disabled={selectedProject.status === 'completed'}
+                        >
+                          <CircleAlert /> 막힘 추가
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            openProjectUpdateDialog(selectedProject)
+                          }
+                        >
+                          <Plus /> 기록 추가
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-xl bg-[#f8f4ed] p-4">
+                        <p className="text-xs font-semibold text-[#7d6844]">
+                          마지막 받은 내용
+                        </p>
+                        <p className="mt-2 text-sm leading-6">
+                          {selectedProjectLatestReceived?.receivedContent ||
+                            '받은 내용이 없습니다.'}
+                        </p>
+                      </div>
+                      <div className="rounded-xl bg-[#eef6f0] p-4">
+                        <p className="text-xs font-semibold text-[#477356]">
+                          마지막 처리 내용
+                        </p>
+                        <p className="mt-2 text-sm leading-6">
+                          {selectedProjectLatestAction?.actionContent ||
+                            '처리 내용이 없습니다.'}
+                        </p>
+                      </div>
+                    </div>
+                    {selectedProjectSnapshot.recentActivity.length > 0 && (
+                      <div className="mt-3 space-y-2">
+                        {selectedProjectSnapshot.recentActivity
+                          .slice(0, 8)
+                          .map((entry) => {
+                            const isProjectUpdate = 'kind' in entry;
+                            const item = isProjectUpdate
+                              ? null
+                              : workItemById.get(entry.workItemId);
+                            const farm = item
+                              ? farmById.get(item.farmId)
+                              : null;
+                            return (
+                              <div
+                                key={entry.id}
+                                className="flex items-start justify-between gap-3 border-t border-[#edf1ec] pt-3 text-sm"
+                              >
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="font-semibold">
+                                      {isProjectUpdate
+                                        ? entry.title
+                                        : `${farm?.name ?? '농가'} · ${item?.title ?? '업무'}`}
+                                    </p>
+                                    {isProjectUpdate && (
+                                      <Badge variant="outline">
+                                        {
+                                          FARM_PROJECT_UPDATE_KIND_LABELS[
+                                            entry.kind
+                                          ]
+                                        }
+                                      </Badge>
+                                    )}
+                                    {isProjectUpdate &&
+                                      entry.kind === 'blocker' &&
+                                      entry.resolvedAt > 0 && (
+                                        <Badge
+                                          variant="outline"
+                                          className="border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]"
+                                        >
+                                          해결 완료
+                                        </Badge>
+                                      )}
+                                  </div>
+                                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#738078]">
+                                    {isProjectUpdate && entry.resolution
+                                      ? `해결: ${entry.resolution}`
+                                      : entry.actionContent ||
+                                        entry.receivedContent ||
+                                        (isProjectUpdate
+                                          ? entry.blockedReason
+                                          : '기록 내용 없음')}
+                                  </p>
+                                </div>
+                                <span className="shrink-0 text-[11px] text-[#89938c]">
+                                  {formatTimestamp(entry.occurredAt, true)}
+                                </span>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    )}
+                  </section>
+                </div>
+              </>
+            )}
+          </SheetContent>
+        </Sheet>
 
         <Sheet
           open={Boolean(selectedFarm)}
@@ -5625,17 +7108,22 @@ export function FarmLedgerDashboard() {
             !submitting && setDialog(open ? 'project' : null)
           }
         >
-          <DialogContent className="max-h-[92vh] overflow-y-auto p-5 sm:max-w-[600px] sm:p-6">
+          <DialogContent className="max-h-[92vh] overflow-y-auto p-5 sm:max-w-[760px] sm:p-6">
             <DialogHeader>
-              <DialogTitle className="text-lg">스마트팜 사업 등록</DialogTitle>
+              <DialogTitle className="text-lg">
+                {editingProjectId
+                  ? '프로젝트·정산 정보 수정'
+                  : '스마트팜 사업 등록'}
+              </DialogTitle>
               <DialogDescription>
-                사업별 참여 농가와 진행 업무를 연결합니다.
+                현재 단계, 담당자, 사업기간과 최종정산 기준을 함께 관리합니다.
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={submitProject} className="mt-1 space-y-4">
               <Field>
-                <FieldLabel>사업명</FieldLabel>
+                <FieldLabel htmlFor="project-name">사업명</FieldLabel>
                 <Input
+                  id="project-name"
                   value={projectForm.name}
                   onChange={(event) =>
                     setProjectForm((current) => ({
@@ -5648,7 +7136,7 @@ export function FarmLedgerDashboard() {
               </Field>
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field>
-                  <FieldLabel>사업 유형</FieldLabel>
+                  <FieldLabel htmlFor="project-type">사업 유형</FieldLabel>
                   <Select
                     value={projectForm.projectType}
                     onValueChange={(value) =>
@@ -5658,7 +7146,7 @@ export function FarmLedgerDashboard() {
                       }))
                     }
                   >
-                    <SelectTrigger className="h-10 w-full">
+                    <SelectTrigger id="project-type" className="h-10 w-full">
                       <SelectValue>
                         {FARM_PROJECT_TYPE_LABELS[projectForm.projectType]}
                       </SelectValue>
@@ -5670,8 +7158,9 @@ export function FarmLedgerDashboard() {
                   </Select>
                 </Field>
                 <Field>
-                  <FieldLabel>기준 연도</FieldLabel>
+                  <FieldLabel htmlFor="project-year">기준 연도</FieldLabel>
                   <Input
+                    id="project-year"
                     type="number"
                     min={2000}
                     max={2100}
@@ -5685,8 +7174,11 @@ export function FarmLedgerDashboard() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel>주관기관</FieldLabel>
+                  <FieldLabel htmlFor="project-institution">
+                    주관기관
+                  </FieldLabel>
                   <Input
+                    id="project-institution"
                     value={projectForm.institution}
                     onChange={(event) =>
                       setProjectForm((current) => ({
@@ -5698,8 +7190,11 @@ export function FarmLedgerDashboard() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel>목표 농가 수</FieldLabel>
+                  <FieldLabel htmlFor="project-target-farms">
+                    목표 농가 수
+                  </FieldLabel>
                   <Input
+                    id="project-target-farms"
                     type="number"
                     min={0}
                     value={projectForm.targetFarmCount}
@@ -5712,17 +7207,26 @@ export function FarmLedgerDashboard() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel>사업 상태</FieldLabel>
+                  <FieldLabel htmlFor="project-status">사업 상태</FieldLabel>
                   <Select
                     value={projectForm.status}
                     onValueChange={(value) =>
-                      setProjectForm((current) => ({
-                        ...current,
-                        status: value as FarmProjectStatus,
-                      }))
+                      setProjectForm((current) => {
+                        const status = value as FarmProjectStatus;
+                        return {
+                          ...current,
+                          status,
+                          currentStage:
+                            status === 'completed'
+                              ? 'closed'
+                              : current.currentStage === 'closed'
+                                ? 'settlement'
+                                : current.currentStage,
+                        };
+                      })
                     }
                   >
-                    <SelectTrigger className="h-10 w-full">
+                    <SelectTrigger id="project-status" className="h-10 w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -5732,10 +7236,93 @@ export function FarmLedgerDashboard() {
                     </SelectContent>
                   </Select>
                 </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-manager">사업 담당자</FieldLabel>
+                  <Input
+                    id="project-manager"
+                    value={projectForm.manager}
+                    onChange={(event) =>
+                      setProjectForm((current) => ({
+                        ...current,
+                        manager: event.target.value,
+                      }))
+                    }
+                    placeholder="예: 사업운영팀 홍길동"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-stage">
+                    현재 사업 단계
+                  </FieldLabel>
+                  <Select
+                    value={projectForm.currentStage}
+                    onValueChange={(value) =>
+                      setProjectForm((current) => {
+                        const currentStage = value as FarmProjectStage;
+                        return {
+                          ...current,
+                          currentStage,
+                          status:
+                            currentStage === 'closed'
+                              ? 'completed'
+                              : current.status === 'completed'
+                                ? 'active'
+                                : current.status,
+                        };
+                      })
+                    }
+                  >
+                    <SelectTrigger id="project-stage" className="h-10 w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(FARM_PROJECT_STAGE_LABELS).map(
+                        ([value, label]) => (
+                          <SelectItem key={value} value={value}>
+                            {label}
+                          </SelectItem>
+                        ),
+                      )}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-start-date">
+                    사업 시작일
+                  </FieldLabel>
+                  <Input
+                    id="project-start-date"
+                    type="date"
+                    value={projectForm.startDate}
+                    onChange={(event) =>
+                      setProjectForm((current) => ({
+                        ...current,
+                        startDate: event.target.value,
+                      }))
+                    }
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-end-date">
+                    종료 예정일
+                  </FieldLabel>
+                  <Input
+                    id="project-end-date"
+                    type="date"
+                    value={projectForm.endDate}
+                    onChange={(event) =>
+                      setProjectForm((current) => ({
+                        ...current,
+                        endDate: event.target.value,
+                      }))
+                    }
+                  />
+                </Field>
               </div>
               <Field>
-                <FieldLabel>사업 설명</FieldLabel>
+                <FieldLabel htmlFor="project-description">사업 설명</FieldLabel>
                 <Textarea
+                  id="project-description"
                   value={projectForm.description}
                   onChange={(event) =>
                     setProjectForm((current) => ({
@@ -5744,6 +7331,442 @@ export function FarmLedgerDashboard() {
                     }))
                   }
                   placeholder="사업 목적과 범위를 적어 주세요."
+                  className="min-h-24"
+                />
+              </Field>
+              {editingProjectId && projectForm.status === 'completed' && (
+                <div className="flex gap-3 rounded-2xl border border-[#d7d8b8] bg-[#fbfaed] p-4 text-sm text-[#746d2f]">
+                  <LockKeyhole className="mt-0.5 size-4 shrink-0" />
+                  <p className="leading-6">
+                    완료 근거인 목표 농가·기간·정산·필수서류는 잠겨 있습니다.
+                    이를 바꾸거나 새 농가·업무를 연결하려면 사업 상태를 먼저
+                    진행 중 또는 보류로 바꿔 저장해 주세요.
+                  </p>
+                </div>
+              )}
+              <div className="rounded-2xl border border-[#dfe6dd] bg-[#f7f9f6] p-4">
+                <div className="mb-4">
+                  <h3 className="font-semibold">최종 정산 관리</h3>
+                  <p className="mt-1 text-xs text-[#77847b]">
+                    현재 버전은 프로젝트별 최종정산 1건을 관리합니다.
+                  </p>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field>
+                    <FieldLabel htmlFor="project-settlement-status">
+                      정산 상태
+                    </FieldLabel>
+                    <Select
+                      value={projectForm.settlementStatus}
+                      onValueChange={(value) =>
+                        setProjectForm((current) => ({
+                          ...current,
+                          settlementStatus: value as FarmSettlementStatus,
+                        }))
+                      }
+                    >
+                      <SelectTrigger
+                        id="project-settlement-status"
+                        className="h-10 w-full bg-white"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {Object.entries(FARM_SETTLEMENT_STATUS_LABELS).map(
+                          ([value, label]) => (
+                            <SelectItem key={value} value={value}>
+                              {label}
+                            </SelectItem>
+                          ),
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="project-settlement-owner">
+                      정산 담당자
+                    </FieldLabel>
+                    <Input
+                      id="project-settlement-owner"
+                      value={projectForm.settlementOwner}
+                      onChange={(event) =>
+                        setProjectForm((current) => ({
+                          ...current,
+                          settlementOwner: event.target.value,
+                        }))
+                      }
+                      placeholder="예: 경영지원팀"
+                      className="bg-white"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="project-settlement-due-date">
+                      정산 기한
+                    </FieldLabel>
+                    <Input
+                      id="project-settlement-due-date"
+                      type="date"
+                      value={projectForm.settlementDueDate}
+                      onChange={(event) =>
+                        setProjectForm((current) => ({
+                          ...current,
+                          settlementDueDate: event.target.value,
+                        }))
+                      }
+                      className="bg-white"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="project-settled-at">
+                      입금·마감일
+                    </FieldLabel>
+                    <Input
+                      id="project-settled-at"
+                      type="date"
+                      value={projectForm.settledAt}
+                      onChange={(event) =>
+                        setProjectForm((current) => ({
+                          ...current,
+                          settledAt: event.target.value,
+                        }))
+                      }
+                      className="bg-white"
+                    />
+                  </Field>
+                  {[
+                    ['계약금액', 'contractAmount'],
+                    ['청구액', 'settlementClaimAmount'],
+                    ['승인액', 'settlementApprovedAmount'],
+                    ['입금액', 'settlementPaidAmount'],
+                  ].map(([label, field]) => (
+                    <Field key={field}>
+                      <FieldLabel htmlFor={`project-${field}`}>
+                        {label}
+                      </FieldLabel>
+                      <Input
+                        id={`project-${field}`}
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={
+                          projectForm[field as keyof FarmProjectInput] as number
+                        }
+                        onChange={(event) =>
+                          setProjectForm((current) => ({
+                            ...current,
+                            [field]: Number(event.target.value),
+                          }))
+                        }
+                        className="bg-white"
+                      />
+                    </Field>
+                  ))}
+                  <Field className="sm:col-span-2">
+                    <FieldLabel htmlFor="project-settlement-evidence">
+                      정산 증빙 링크
+                    </FieldLabel>
+                    <Input
+                      id="project-settlement-evidence"
+                      value={projectForm.settlementEvidenceUrl}
+                      onChange={(event) =>
+                        setProjectForm((current) => ({
+                          ...current,
+                          settlementEvidenceUrl: event.target.value,
+                        }))
+                      }
+                      placeholder="https://drive.google.com/..."
+                      className="bg-white"
+                    />
+                  </Field>
+                  <Field className="sm:col-span-2">
+                    <FieldLabel htmlFor="project-settlement-note">
+                      정산 메모
+                    </FieldLabel>
+                    <Textarea
+                      id="project-settlement-note"
+                      value={projectForm.settlementNote}
+                      onChange={(event) =>
+                        setProjectForm((current) => ({
+                          ...current,
+                          settlementNote: event.target.value,
+                        }))
+                      }
+                      placeholder="보완 요청, 입금 예정, 확인사항을 적어 주세요."
+                      className="min-h-20 bg-white"
+                    />
+                  </Field>
+                </div>
+              </div>
+              {formError && <FieldError>{formError}</FieldError>}
+              <DialogFooter className="mx-0 mb-0 px-0 pb-0 pt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDialog(null)}
+                  disabled={submitting}
+                >
+                  취소
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={submitting}
+                  className="bg-[#2f7b59] hover:bg-[#286b4d]"
+                >
+                  {submitting && <Loader2 className="animate-spin" />}
+                  {editingProjectId ? '수정 저장' : '사업 등록'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={dialog === 'project_document'}
+          onOpenChange={(open) =>
+            !submitting && setDialog(open ? 'project_document' : null)
+          }
+        >
+          <DialogContent className="max-h-[92vh] overflow-y-auto p-5 sm:max-w-[680px] sm:p-6">
+            <DialogHeader>
+              <DialogTitle className="text-lg">
+                {editingProjectDocumentId ? '제출서류 수정' : '제출서류 추가'}
+              </DialogTitle>
+              <DialogDescription>
+                책임자, 현재 처리자, 기한과 제출·승인 상태를 기록합니다.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={submitProjectDocument} className="mt-1 space-y-4">
+              <Field>
+                <FieldLabel htmlFor="project-document-title">서류명</FieldLabel>
+                <Input
+                  id="project-document-title"
+                  value={projectDocumentForm.title}
+                  onChange={(event) =>
+                    setProjectDocumentForm((current) => ({
+                      ...current,
+                      title: event.target.value,
+                    }))
+                  }
+                  placeholder="예: 최종 정산보고서"
+                />
+              </Field>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field>
+                  <FieldLabel htmlFor="project-document-category">
+                    서류 구분
+                  </FieldLabel>
+                  <Select
+                    value={projectDocumentForm.category}
+                    onValueChange={(value) =>
+                      setProjectDocumentForm((current) => ({
+                        ...current,
+                        category: value as FarmProjectDocumentCategory,
+                      }))
+                    }
+                  >
+                    <SelectTrigger
+                      id="project-document-category"
+                      className="h-10 w-full"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(
+                        FARM_PROJECT_DOCUMENT_CATEGORY_LABELS,
+                      ).map(([value, label]) => (
+                        <SelectItem key={value} value={value}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-document-required">
+                    필수 여부
+                  </FieldLabel>
+                  <Select
+                    value={
+                      projectDocumentForm.isRequired ? 'required' : 'optional'
+                    }
+                    onValueChange={(value) =>
+                      setProjectDocumentForm((current) => ({
+                        ...current,
+                        isRequired: value === 'required',
+                      }))
+                    }
+                  >
+                    <SelectTrigger
+                      id="project-document-required"
+                      className="h-10 w-full"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="required">필수서류</SelectItem>
+                      <SelectItem value="optional">선택서류</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-document-status">
+                    서류 상태
+                  </FieldLabel>
+                  <Select
+                    value={projectDocumentForm.status}
+                    onValueChange={(value) =>
+                      setProjectDocumentForm((current) => ({
+                        ...current,
+                        status: value as FarmProjectDocumentStatus,
+                      }))
+                    }
+                  >
+                    <SelectTrigger
+                      id="project-document-status"
+                      className="h-10 w-full"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(FARM_PROJECT_DOCUMENT_STATUS_LABELS).map(
+                        ([value, label]) => (
+                          <SelectItem key={value} value={value}>
+                            {label}
+                          </SelectItem>
+                        ),
+                      )}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-document-revision">
+                    개정번호
+                  </FieldLabel>
+                  <Input
+                    id="project-document-revision"
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={projectDocumentForm.revision}
+                    onChange={(event) =>
+                      setProjectDocumentForm((current) => ({
+                        ...current,
+                        revision: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-document-owner">
+                    제출 책임자
+                  </FieldLabel>
+                  <Input
+                    id="project-document-owner"
+                    value={projectDocumentForm.owner}
+                    onChange={(event) =>
+                      setProjectDocumentForm((current) => ({
+                        ...current,
+                        owner: event.target.value,
+                      }))
+                    }
+                    placeholder="예: 사업운영팀"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-document-handler">
+                    현재 처리자
+                  </FieldLabel>
+                  <Input
+                    id="project-document-handler"
+                    value={projectDocumentForm.currentHandler}
+                    onChange={(event) =>
+                      setProjectDocumentForm((current) => ({
+                        ...current,
+                        currentHandler: event.target.value,
+                      }))
+                    }
+                    placeholder="예: 주관기관 검토자"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-document-due-date">
+                    제출 기한
+                  </FieldLabel>
+                  <Input
+                    id="project-document-due-date"
+                    type="date"
+                    value={projectDocumentForm.dueDate}
+                    onChange={(event) =>
+                      setProjectDocumentForm((current) => ({
+                        ...current,
+                        dueDate: event.target.value,
+                      }))
+                    }
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-document-submitted-at">
+                    제출일
+                  </FieldLabel>
+                  <Input
+                    id="project-document-submitted-at"
+                    type="date"
+                    value={projectDocumentForm.submittedAt}
+                    onChange={(event) =>
+                      setProjectDocumentForm((current) => ({
+                        ...current,
+                        submittedAt: event.target.value,
+                      }))
+                    }
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-document-approved-at">
+                    승인일
+                  </FieldLabel>
+                  <Input
+                    id="project-document-approved-at"
+                    type="date"
+                    value={projectDocumentForm.approvedAt}
+                    onChange={(event) =>
+                      setProjectDocumentForm((current) => ({
+                        ...current,
+                        approvedAt: event.target.value,
+                      }))
+                    }
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-document-reference">
+                    서류 링크
+                  </FieldLabel>
+                  <Input
+                    id="project-document-reference"
+                    value={projectDocumentForm.referenceUrl}
+                    onChange={(event) =>
+                      setProjectDocumentForm((current) => ({
+                        ...current,
+                        referenceUrl: event.target.value,
+                      }))
+                    }
+                    placeholder="https://drive.google.com/..."
+                  />
+                </Field>
+              </div>
+              <Field>
+                <FieldLabel htmlFor="project-document-note">
+                  메모·보완 내용
+                </FieldLabel>
+                <Textarea
+                  id="project-document-note"
+                  value={projectDocumentForm.note}
+                  onChange={(event) =>
+                    setProjectDocumentForm((current) => ({
+                      ...current,
+                      note: event.target.value,
+                    }))
+                  }
+                  placeholder="반려·보완 사유와 다음 행동을 기록해 주세요."
                   className="min-h-24"
                 />
               </Field>
@@ -5762,7 +7785,348 @@ export function FarmLedgerDashboard() {
                   disabled={submitting}
                   className="bg-[#2f7b59] hover:bg-[#286b4d]"
                 >
-                  {submitting && <Loader2 className="animate-spin" />}사업 등록
+                  {submitting && <Loader2 className="animate-spin" />}
+                  {editingProjectDocumentId ? '수정 저장' : '서류 추가'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={dialog === 'project_update'}
+          onOpenChange={(open) =>
+            !submitting && setDialog(open ? 'project_update' : null)
+          }
+        >
+          <DialogContent className="max-h-[92vh] overflow-y-auto p-5 sm:max-w-[720px] sm:p-6">
+            <DialogHeader>
+              <DialogTitle className="text-lg">프로젝트 기록 추가</DialogTitle>
+              <DialogDescription>
+                특정 농가가 없는 공문, 회의 결정, 정산 연락과 프로젝트 막힘을
+                바로 남깁니다.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={submitProjectUpdate} className="mt-1 space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field>
+                  <FieldLabel htmlFor="project-update-kind">
+                    기록 구분
+                  </FieldLabel>
+                  <Select
+                    value={projectUpdateForm.kind}
+                    onValueChange={(value) =>
+                      setProjectUpdateForm((current) => ({
+                        ...current,
+                        kind: value as ProjectUpdateForm['kind'],
+                      }))
+                    }
+                  >
+                    <SelectTrigger
+                      id="project-update-kind"
+                      className="h-10 w-full"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="communication">수신·연락</SelectItem>
+                      <SelectItem value="decision">결정·변경</SelectItem>
+                      <SelectItem value="blocker">프로젝트 막힘</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-update-occurred-at">
+                    기록 일시
+                  </FieldLabel>
+                  <Input
+                    id="project-update-occurred-at"
+                    type="datetime-local"
+                    value={projectUpdateForm.occurredAt}
+                    onChange={(event) =>
+                      setProjectUpdateForm((current) => ({
+                        ...current,
+                        occurredAt: event.target.value,
+                      }))
+                    }
+                  />
+                </Field>
+              </div>
+              <Field>
+                <FieldLabel htmlFor="project-update-title">제목</FieldLabel>
+                <Input
+                  id="project-update-title"
+                  value={projectUpdateForm.title}
+                  onChange={(event) =>
+                    setProjectUpdateForm((current) => ({
+                      ...current,
+                      title: event.target.value,
+                    }))
+                  }
+                  placeholder="예: 주관기관 중간보고 보완 요청"
+                />
+              </Field>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field>
+                  <FieldLabel htmlFor="project-update-channel">
+                    수신 경로
+                  </FieldLabel>
+                  <Select
+                    value={projectUpdateForm.channel}
+                    onValueChange={(value) =>
+                      setProjectUpdateForm((current) => ({
+                        ...current,
+                        channel: value as HistoryChannel,
+                      }))
+                    }
+                  >
+                    <SelectTrigger
+                      id="project-update-channel"
+                      className="h-10 w-full"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(FARM_HISTORY_CHANNEL_LABELS)
+                        .filter(([value]) => value !== 'system')
+                        .map(([value, label]) => (
+                          <SelectItem key={value} value={value}>
+                            {label}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-update-sender">
+                    발신자·기관
+                  </FieldLabel>
+                  <Input
+                    id="project-update-sender"
+                    value={projectUpdateForm.sender}
+                    onChange={(event) =>
+                      setProjectUpdateForm((current) => ({
+                        ...current,
+                        sender: event.target.value,
+                      }))
+                    }
+                    placeholder="예: 지역 농업기술원 담당자"
+                  />
+                </Field>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field>
+                  <FieldLabel htmlFor="project-update-received">
+                    받은 내용
+                  </FieldLabel>
+                  <Textarea
+                    id="project-update-received"
+                    value={projectUpdateForm.receivedContent}
+                    onChange={(event) =>
+                      setProjectUpdateForm((current) => ({
+                        ...current,
+                        receivedContent: event.target.value,
+                      }))
+                    }
+                    placeholder="메일·카톡·전화·구두로 전달받은 원문 요약"
+                    className="min-h-28"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-update-action">
+                    처리 내용·다음 행동
+                  </FieldLabel>
+                  <Textarea
+                    id="project-update-action"
+                    value={projectUpdateForm.actionContent}
+                    onChange={(event) =>
+                      setProjectUpdateForm((current) => ({
+                        ...current,
+                        actionContent: event.target.value,
+                      }))
+                    }
+                    placeholder="현재까지 처리한 내용과 다음 행동"
+                    className="min-h-28"
+                  />
+                </Field>
+              </div>
+              {projectUpdateForm.kind === 'blocker' && (
+                <div className="grid gap-4 rounded-2xl border border-[#efc8bb] bg-[#fff6f1] p-4 sm:grid-cols-2">
+                  <Field className="sm:col-span-2">
+                    <FieldLabel htmlFor="project-update-blocked-reason">
+                      막힘 사유
+                    </FieldLabel>
+                    <Textarea
+                      id="project-update-blocked-reason"
+                      value={projectUpdateForm.blockedReason}
+                      onChange={(event) =>
+                        setProjectUpdateForm((current) => ({
+                          ...current,
+                          blockedReason: event.target.value,
+                        }))
+                      }
+                      placeholder="무엇 때문에 다음 단계로 진행하지 못하는지"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="project-update-blocked-by">
+                      해결해 줄 사람·기관
+                    </FieldLabel>
+                    <Input
+                      id="project-update-blocked-by"
+                      value={projectUpdateForm.blockedBy}
+                      onChange={(event) =>
+                        setProjectUpdateForm((current) => ({
+                          ...current,
+                          blockedBy: event.target.value,
+                        }))
+                      }
+                      placeholder="예: 주관기관 정산 담당자"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="project-update-unblock-date">
+                      해결 예상일
+                    </FieldLabel>
+                    <Input
+                      id="project-update-unblock-date"
+                      type="date"
+                      value={projectUpdateForm.expectedUnblockDate}
+                      onChange={(event) =>
+                        setProjectUpdateForm((current) => ({
+                          ...current,
+                          expectedUnblockDate: event.target.value,
+                        }))
+                      }
+                    />
+                  </Field>
+                </div>
+              )}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field>
+                  <FieldLabel htmlFor="project-update-recorder">
+                    기록 담당자
+                  </FieldLabel>
+                  <Input
+                    id="project-update-recorder"
+                    value={projectUpdateForm.recorder}
+                    onChange={(event) =>
+                      setProjectUpdateForm((current) => ({
+                        ...current,
+                        recorder: event.target.value,
+                      }))
+                    }
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="project-update-reference">
+                    참고 링크
+                  </FieldLabel>
+                  <Input
+                    id="project-update-reference"
+                    type="url"
+                    value={projectUpdateForm.referenceUrl}
+                    onChange={(event) =>
+                      setProjectUpdateForm((current) => ({
+                        ...current,
+                        referenceUrl: event.target.value,
+                      }))
+                    }
+                    placeholder="https://..."
+                  />
+                </Field>
+              </div>
+              {formError && <FieldError>{formError}</FieldError>}
+              <DialogFooter className="mx-0 mb-0 px-0 pb-0 pt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDialog(null)}
+                  disabled={submitting}
+                >
+                  취소
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={submitting}
+                  className="bg-[#2f7b59] hover:bg-[#286b4d]"
+                >
+                  {submitting && <Loader2 className="animate-spin" />}
+                  기록 저장
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={dialog === 'project_blocker_resolve'}
+          onOpenChange={(open) =>
+            !submitting && setDialog(open ? 'project_blocker_resolve' : null)
+          }
+        >
+          <DialogContent className="p-5 sm:max-w-[560px] sm:p-6">
+            <DialogHeader>
+              <DialogTitle className="text-lg">
+                프로젝트 막힘 해결 처리
+              </DialogTitle>
+              <DialogDescription>
+                무엇이 어떻게 해결됐는지 남기면 열린 막힘에서 빠집니다.
+              </DialogDescription>
+            </DialogHeader>
+            <form
+              onSubmit={submitProjectBlockerResolution}
+              className="mt-1 space-y-4"
+            >
+              <Field>
+                <FieldLabel htmlFor="project-blocker-resolution">
+                  해결 내용
+                </FieldLabel>
+                <Textarea
+                  id="project-blocker-resolution"
+                  value={projectBlockerResolutionForm.resolution}
+                  onChange={(event) =>
+                    setProjectBlockerResolutionForm((current) => ({
+                      ...current,
+                      resolution: event.target.value,
+                    }))
+                  }
+                  placeholder="확보된 자료, 합의된 내용, 재개된 다음 단계를 적어 주세요."
+                  className="min-h-28"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="project-blocker-resolved-by">
+                  처리 담당자
+                </FieldLabel>
+                <Input
+                  id="project-blocker-resolved-by"
+                  value={projectBlockerResolutionForm.resolvedBy}
+                  onChange={(event) =>
+                    setProjectBlockerResolutionForm((current) => ({
+                      ...current,
+                      resolvedBy: event.target.value,
+                    }))
+                  }
+                />
+              </Field>
+              {formError && <FieldError>{formError}</FieldError>}
+              <DialogFooter className="mx-0 mb-0 px-0 pb-0 pt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDialog(null)}
+                  disabled={submitting}
+                >
+                  취소
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={submitting}
+                  className="bg-[#2f7b59] hover:bg-[#286b4d]"
+                >
+                  {submitting && <Loader2 className="animate-spin" />}
+                  해결 완료
                 </Button>
               </DialogFooter>
             </form>

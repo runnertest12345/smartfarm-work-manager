@@ -16,8 +16,13 @@ import type {
 } from '../lib/business-types';
 import type {
   FarmHistoryChannel,
+  FarmProjectDocumentCategory,
+  FarmProjectDocumentStatus,
   FarmProjectStatus,
+  FarmProjectStage,
   FarmProjectType,
+  FarmProjectUpdateKind,
+  FarmSettlementStatus,
   FarmInboxStatus,
   FarmVisitStatus,
   FarmWorkPriority,
@@ -38,6 +43,34 @@ export const smartfarmProjects = sqliteTable(
     status: text('status').$type<FarmProjectStatus>().notNull(),
     description: text('description').notNull().default(''),
     targetFarmCount: integer('target_farm_count').notNull().default(0),
+    manager: text('manager').notNull().default(''),
+    startDate: text('start_date').notNull().default(''),
+    endDate: text('end_date').notNull().default(''),
+    currentStage: text('current_stage')
+      .$type<FarmProjectStage>()
+      .notNull()
+      .default('agreement'),
+    settlementStatus: text('settlement_status')
+      .$type<FarmSettlementStatus>()
+      .notNull()
+      .default('not_started'),
+    settlementDueDate: text('settlement_due_date').notNull().default(''),
+    contractAmount: integer('contract_amount').notNull().default(0),
+    settlementClaimAmount: integer('settlement_claim_amount')
+      .notNull()
+      .default(0),
+    settlementApprovedAmount: integer('settlement_approved_amount')
+      .notNull()
+      .default(0),
+    settlementPaidAmount: integer('settlement_paid_amount')
+      .notNull()
+      .default(0),
+    settledAt: text('settled_at').notNull().default(''),
+    settlementOwner: text('settlement_owner').notNull().default(''),
+    settlementEvidenceUrl: text('settlement_evidence_url')
+      .notNull()
+      .default(''),
+    settlementNote: text('settlement_note').notNull().default(''),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
@@ -58,7 +91,123 @@ export const smartfarmProjects = sqliteTable(
       'chk_smartfarm_projects_target_count',
       sql`${table.targetFarmCount} BETWEEN 0 AND 100000`,
     ),
+    check(
+      'chk_smartfarm_projects_stage',
+      sql`${table.currentStage} IN ('agreement', 'farm_selection', 'installation', 'verification', 'operation', 'settlement', 'closed')`,
+    ),
+    check(
+      'chk_smartfarm_projects_settlement_status',
+      sql`${table.settlementStatus} IN ('not_started', 'collecting', 'submitted', 'revision', 'approved', 'paid', 'closed')`,
+    ),
+    check(
+      'chk_smartfarm_projects_amounts',
+      sql`${table.contractAmount} BETWEEN 0 AND 100000000000 AND ${table.settlementClaimAmount} BETWEEN 0 AND 100000000000 AND ${table.settlementApprovedAmount} BETWEEN 0 AND 100000000000 AND ${table.settlementPaidAmount} BETWEEN 0 AND 100000000000 AND ${table.settlementPaidAmount} <= ${table.settlementApprovedAmount}`,
+    ),
     index('idx_smartfarm_projects_status_year').on(table.status, table.year),
+    index('idx_smartfarm_projects_stage_settlement').on(
+      table.currentStage,
+      table.settlementStatus,
+    ),
+  ],
+);
+
+export const farmProjectDocuments = sqliteTable(
+  'farm_project_documents',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => smartfarmProjects.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    category: text('category').$type<FarmProjectDocumentCategory>().notNull(),
+    isRequired: integer('is_required', { mode: 'boolean' })
+      .notNull()
+      .default(true),
+    status: text('status')
+      .$type<FarmProjectDocumentStatus>()
+      .notNull()
+      .default('not_started'),
+    owner: text('owner').notNull().default(''),
+    currentHandler: text('current_handler').notNull().default(''),
+    dueDate: text('due_date').notNull().default(''),
+    submittedAt: text('submitted_at').notNull().default(''),
+    approvedAt: text('approved_at').notNull().default(''),
+    referenceUrl: text('reference_url').notNull().default(''),
+    revision: integer('revision').notNull().default(1),
+    note: text('note').notNull().default(''),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    check(
+      'chk_farm_project_documents_category',
+      sql`${table.category} IN ('agreement', 'farm', 'installation', 'inspection', 'settlement', 'other')`,
+    ),
+    check(
+      'chk_farm_project_documents_required',
+      sql`${table.isRequired} IN (0, 1)`,
+    ),
+    check(
+      'chk_farm_project_documents_status',
+      sql`${table.status} IN ('not_started', 'preparing', 'submitted', 'reviewing', 'revision', 'approved', 'rejected')`,
+    ),
+    check(
+      'chk_farm_project_documents_revision',
+      sql`${table.revision} BETWEEN 1 AND 1000`,
+    ),
+    index('idx_farm_project_documents_project_status').on(
+      table.projectId,
+      table.status,
+    ),
+    index('idx_farm_project_documents_due').on(table.status, table.dueDate),
+  ],
+);
+
+export const farmProjectUpdates = sqliteTable(
+  'farm_project_updates',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => smartfarmProjects.id, { onDelete: 'cascade' }),
+    kind: text('kind').$type<FarmProjectUpdateKind>().notNull(),
+    title: text('title').notNull(),
+    channel: text('channel').$type<FarmHistoryChannel>().notNull(),
+    sender: text('sender').notNull().default(''),
+    receivedContent: text('received_content').notNull().default(''),
+    actionContent: text('action_content').notNull().default(''),
+    recorder: text('recorder').notNull(),
+    occurredAt: integer('occurred_at').notNull(),
+    referenceUrl: text('reference_url').notNull().default(''),
+    blockedReason: text('blocked_reason').notNull().default(''),
+    blockedBy: text('blocked_by').notNull().default(''),
+    expectedUnblockDate: text('expected_unblock_date').notNull().default(''),
+    resolvedAt: integer('resolved_at').notNull().default(0),
+    resolution: text('resolution').notNull().default(''),
+    resolvedBy: text('resolved_by').notNull().default(''),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    check(
+      'chk_farm_project_updates_kind',
+      sql`${table.kind} IN ('communication', 'decision', 'blocker', 'system')`,
+    ),
+    check(
+      'chk_farm_project_updates_channel',
+      sql`${table.channel} IN ('email', 'kakao', 'verbal', 'phone', 'meeting', 'system', 'other')`,
+    ),
+    check(
+      'chk_farm_project_updates_resolution',
+      sql`${table.resolvedAt} = 0 OR (${table.kind} = 'blocker' AND ${table.resolvedAt} >= ${table.occurredAt} AND trim(${table.resolution}) != '' AND trim(${table.resolvedBy}) != '')`,
+    ),
+    index('idx_farm_project_updates_project_occurred').on(
+      table.projectId,
+      table.occurredAt,
+    ),
+    index('idx_farm_project_updates_open_blockers')
+      .on(table.projectId, table.occurredAt)
+      .where(sql`${table.kind} = 'blocker' AND ${table.resolvedAt} = 0`),
   ],
 );
 
