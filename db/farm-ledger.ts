@@ -4,6 +4,9 @@ import type {
   FarmCreationResult,
   FarmHistoryChannel,
   FarmHistoryEntry,
+  FarmInboxItem,
+  FarmInboxItemInput,
+  FarmInboxStatus,
   FarmInitialHistoryEntryInput,
   FarmInput,
   FarmLedgerWorkspace,
@@ -15,8 +18,10 @@ import type {
   FarmRecordInput,
   FarmRecordMutationResult,
   FarmWorkItem,
+  FarmWorkChecklistItem,
   FarmWorkItemInput,
   FarmWorkItemMutationResult,
+  FarmWorkPriority,
   FarmWorkStatus,
   FarmWorkType,
   SubscriptionStatus,
@@ -88,7 +93,37 @@ interface FarmWorkItemRow {
   owner: string;
   due_date: string;
   description: string;
+  expected_outcome: string;
+  next_action: string;
+  priority: FarmWorkPriority;
+  review_date: string;
   last_activity_at: number;
+  created_at: number;
+  updated_at: number;
+}
+
+interface FarmWorkChecklistItemRow {
+  id: string;
+  work_item_id: string;
+  content: string;
+  is_completed: number;
+  sort_order: number;
+  completed_by: string;
+  completed_at: number;
+  created_at: number;
+  updated_at: number;
+}
+
+interface FarmInboxItemRow {
+  id: string;
+  channel: FarmHistoryChannel;
+  sender: string;
+  content: string;
+  captured_by: string;
+  received_at: number;
+  reference_url: string;
+  status: FarmInboxStatus;
+  converted_work_item_id: string;
   created_at: number;
   updated_at: number;
 }
@@ -193,7 +228,43 @@ function mapWorkItem(row: FarmWorkItemRow): FarmWorkItem {
     owner: row.owner,
     dueDate: row.due_date,
     description: row.description,
+    expectedOutcome: row.expected_outcome,
+    nextAction: row.next_action,
+    priority: row.priority,
+    reviewDate: row.review_date,
     lastActivityAt: row.last_activity_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapChecklistItem(
+  row: FarmWorkChecklistItemRow,
+): FarmWorkChecklistItem {
+  return {
+    id: row.id,
+    workItemId: row.work_item_id,
+    content: row.content,
+    isCompleted: Boolean(row.is_completed),
+    sortOrder: row.sort_order,
+    completedBy: row.completed_by,
+    completedAt: row.completed_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapInboxItem(row: FarmInboxItemRow): FarmInboxItem {
+  return {
+    id: row.id,
+    channel: row.channel,
+    sender: row.sender,
+    content: row.content,
+    capturedBy: row.captured_by,
+    receivedAt: row.received_at,
+    referenceUrl: row.reference_url,
+    status: row.status,
+    convertedWorkItemId: row.converted_work_item_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -233,6 +304,10 @@ function auditArtifacts(
     owner,
     dueDate: '',
     description: actionContent,
+    expectedOutcome: actionContent,
+    nextAction: '',
+    priority: 'medium',
+    reviewDate: '',
     lastActivityAt: occurredAt,
     createdAt: occurredAt,
     updatedAt: occurredAt,
@@ -341,10 +416,101 @@ async function initializeFarmLedgerStore() {
         owner TEXT NOT NULL,
         due_date TEXT NOT NULL DEFAULT '',
         description TEXT NOT NULL DEFAULT '',
+        expected_outcome TEXT NOT NULL DEFAULT '',
+        next_action TEXT NOT NULL DEFAULT '',
+        priority TEXT NOT NULL DEFAULT 'medium' CONSTRAINT chk_farm_work_items_priority
+          CHECK (priority IN ('high', 'medium', 'low')),
+        review_date TEXT NOT NULL DEFAULT '',
         last_activity_at INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
+    `),
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS farm_work_checklist_items (
+        id TEXT PRIMARY KEY,
+        work_item_id TEXT NOT NULL REFERENCES farm_work_items(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        is_completed INTEGER NOT NULL DEFAULT 0 CONSTRAINT chk_farm_work_checklist_completed
+          CHECK (is_completed IN (0, 1)),
+        sort_order INTEGER NOT NULL DEFAULT 0 CONSTRAINT chk_farm_work_checklist_sort
+          CHECK (sort_order BETWEEN 0 AND 10000),
+        completed_by TEXT NOT NULL DEFAULT '',
+        completed_at INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `),
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS farm_inbox_items (
+        id TEXT PRIMARY KEY,
+        channel TEXT NOT NULL CONSTRAINT chk_farm_inbox_channel
+          CHECK (channel IN ('email', 'kakao', 'verbal', 'phone', 'meeting', 'system', 'other')),
+        sender TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL,
+        captured_by TEXT NOT NULL,
+        received_at INTEGER NOT NULL,
+        reference_url TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'unprocessed' CONSTRAINT chk_farm_inbox_status
+          CHECK (status IN ('unprocessed', 'converted', 'reference', 'discarded')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_work_complete_requires_checklist
+      BEFORE UPDATE OF status ON farm_work_items
+      FOR EACH ROW
+      WHEN NEW.status = 'completed' AND EXISTS (
+        SELECT 1 FROM farm_work_checklist_items
+        WHERE work_item_id = NEW.id AND is_completed = 0
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_CHECKLIST_INCOMPLETE');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_completed_checklist_insert_lock
+      BEFORE INSERT ON farm_work_checklist_items
+      FOR EACH ROW
+      WHEN NEW.is_completed = 0 AND EXISTS (
+        SELECT 1 FROM farm_work_items
+        WHERE id = NEW.work_item_id AND status = 'completed'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_COMPLETED_CHECKLIST_LOCKED');
+      END
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_completed_checklist_update_lock
+      BEFORE UPDATE OF is_completed ON farm_work_checklist_items
+      FOR EACH ROW
+      WHEN NEW.is_completed = 0 AND EXISTS (
+        SELECT 1 FROM farm_work_items
+        WHERE id = NEW.work_item_id AND status = 'completed'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_COMPLETED_CHECKLIST_LOCKED');
+      END
+    `),
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS farm_inbox_conversions (
+        inbox_item_id TEXT PRIMARY KEY REFERENCES farm_inbox_items(id) ON DELETE CASCADE,
+        work_item_id TEXT NOT NULL UNIQUE REFERENCES farm_work_items(id) ON DELETE RESTRICT,
+        created_at INTEGER NOT NULL
+      )
+    `),
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_farm_inbox_conversion_unprocessed
+      BEFORE INSERT ON farm_inbox_conversions
+      FOR EACH ROW
+      WHEN NOT EXISTS (
+        SELECT 1 FROM farm_inbox_items
+        WHERE id = NEW.inbox_item_id AND status = 'unprocessed'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'FARM_INBOX_ALREADY_PROCESSED');
+      END
     `),
     db.prepare(`
       CREATE TABLE IF NOT EXISTS farm_history_entries (
@@ -363,17 +529,48 @@ async function initializeFarmLedgerStore() {
         created_at INTEGER NOT NULL
       )
     `),
-    db.prepare(`CREATE INDEX IF NOT EXISTS idx_smartfarm_projects_status_year ON smartfarm_projects(status, year)`),
-    db.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_farms_farm_code ON farms(farm_code)`),
-    db.prepare(`CREATE INDEX IF NOT EXISTS idx_farm_records_farm_project ON farm_records(farm_id, project_id)`),
-    db.prepare(`CREATE INDEX IF NOT EXISTS idx_farm_records_project_farm ON farm_records(project_id, farm_id)`),
-    db.prepare(`CREATE INDEX IF NOT EXISTS idx_farm_records_subscription_expiry ON farm_records(subscription_status, current_subscription_expires_at)`),
-    db.prepare(`CREATE INDEX IF NOT EXISTS idx_farm_records_last_activity ON farm_records(last_activity_at)`),
-    db.prepare(`CREATE INDEX IF NOT EXISTS idx_farm_work_items_record_activity ON farm_work_items(farm_record_id, last_activity_at)`),
-    db.prepare(`CREATE INDEX IF NOT EXISTS idx_farm_work_items_status_due ON farm_work_items(status, due_date)`),
-    db.prepare(`CREATE INDEX IF NOT EXISTS idx_farm_work_items_type_status ON farm_work_items(work_type, status)`),
-    db.prepare(`CREATE INDEX IF NOT EXISTS idx_farm_history_work_item_occurred ON farm_history_entries(work_item_id, occurred_at)`),
-    db.prepare(`CREATE INDEX IF NOT EXISTS idx_farm_history_occurred ON farm_history_entries(occurred_at)`),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_smartfarm_projects_status_year ON smartfarm_projects(status, year)`,
+    ),
+    db.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_farms_farm_code ON farms(farm_code)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_records_farm_project ON farm_records(farm_id, project_id)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_records_project_farm ON farm_records(project_id, farm_id)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_records_subscription_expiry ON farm_records(subscription_status, current_subscription_expires_at)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_records_last_activity ON farm_records(last_activity_at)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_work_items_record_activity ON farm_work_items(farm_record_id, last_activity_at)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_work_items_status_due ON farm_work_items(status, due_date)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_work_items_type_status ON farm_work_items(work_type, status)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_work_items_review_priority ON farm_work_items(status, review_date, priority)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_work_checklist_order ON farm_work_checklist_items(work_item_id, sort_order, created_at)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_inbox_status_received ON farm_inbox_items(status, received_at)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_history_work_item_occurred ON farm_history_entries(work_item_id, occurred_at)`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_farm_history_occurred ON farm_history_entries(occurred_at)`,
+    ),
     db.prepare('PRAGMA optimize'),
   ]);
 
@@ -388,28 +585,53 @@ async function initializeFarmLedgerStore() {
   const day = 24 * hour;
   const projects: FarmProject[] = [
     {
-      id: 'sf-project-data-2025', name: '2025 데이터 기반 스마트농업', projectType: 'general',
-      year: 2025, institution: '지역 농업기술원', status: 'active',
-      description: '과수 농가의 환경·관수 데이터를 수집하고 생산 모델을 적용합니다.', targetFarmCount: 12,
-      createdAt: now - 120 * day, updatedAt: now - 2 * hour,
+      id: 'sf-project-data-2025',
+      name: '2025 데이터 기반 스마트농업',
+      projectType: 'general',
+      year: 2025,
+      institution: '지역 농업기술원',
+      status: 'active',
+      description:
+        '과수 농가의 환경·관수 데이터를 수집하고 생산 모델을 적용합니다.',
+      targetFarmCount: 12,
+      createdAt: now - 120 * day,
+      updatedAt: now - 2 * hour,
     },
     {
-      id: 'sf-project-water-2025', name: '2025 수분스트레스 자동관수', projectType: 'research',
-      year: 2025, institution: '농림식품기술기획평가원', status: 'active',
-      description: '수분스트레스 측정과 자동관수 제어를 실증합니다.', targetFarmCount: 8,
-      createdAt: now - 90 * day, updatedAt: now - 5 * hour,
+      id: 'sf-project-water-2025',
+      name: '2025 수분스트레스 자동관수',
+      projectType: 'research',
+      year: 2025,
+      institution: '농림식품기술기획평가원',
+      status: 'active',
+      description: '수분스트레스 측정과 자동관수 제어를 실증합니다.',
+      targetFarmCount: 8,
+      createdAt: now - 90 * day,
+      updatedAt: now - 5 * hour,
     },
     {
-      id: 'sf-project-outdoor-2024', name: '2024 노지 스마트팜 확산', projectType: 'general',
-      year: 2024, institution: '농촌진흥청', status: 'completed',
-      description: '노지 과수 농가의 관수·기상 장비를 설치한 사업입니다.', targetFarmCount: 20,
-      createdAt: now - 500 * day, updatedAt: now - 20 * day,
+      id: 'sf-project-outdoor-2024',
+      name: '2024 노지 스마트팜 확산',
+      projectType: 'general',
+      year: 2024,
+      institution: '농촌진흥청',
+      status: 'completed',
+      description: '노지 과수 농가의 관수·기상 장비를 설치한 사업입니다.',
+      targetFarmCount: 20,
+      createdAt: now - 500 * day,
+      updatedAt: now - 20 * day,
     },
     {
-      id: 'sf-project-greenhouse-2023', name: '2023 시설원예 스마트팜 보급', projectType: 'general',
-      year: 2023, institution: '지방자치단체', status: 'completed',
-      description: '시설원예 농가에 환경계측과 제어 장비를 보급했습니다.', targetFarmCount: 10,
-      createdAt: now - 800 * day, updatedAt: now - 60 * day,
+      id: 'sf-project-greenhouse-2023',
+      name: '2023 시설원예 스마트팜 보급',
+      projectType: 'general',
+      year: 2023,
+      institution: '지방자치단체',
+      status: 'completed',
+      description: '시설원예 농가에 환경계측과 제어 장비를 보급했습니다.',
+      targetFarmCount: 10,
+      createdAt: now - 800 * day,
+      updatedAt: now - 60 * day,
     },
   ];
 
@@ -436,23 +658,123 @@ async function initializeFarmLedgerStore() {
   }));
 
   const recordSeeds = [
-    [0, 0, '포도', '클라우드', '관수내비', '인지시스템', '무선 라우터', 'active', 2, -5, 14, true, true],
-    [1, 2, '포도', '라떼판다', '온실내비', '인지시스템', '유선', 'active', 1, -12, 9, true, true],
-    [2, 1, '사과', '미니컴', '센서내비', '금화이엔에스', '유선', 'expired', 0, -15, -1, true, false],
-    [3, 3, '토마토', '라떼판다', '21년식', '인지시스템', '무선 라우터', 'active', 1, -20, 11, true, true],
-    [4, 0, '사과', '클라우드', '관수내비', '경농', '무선 라우터', 'unregistered', 0, -2, 0, false, false],
-    [5, 3, '딸기', '라떼판다', '22년식', '인지시스템', '유선', 'active', 2, -25, 18, true, true],
+    [
+      0,
+      0,
+      '포도',
+      '클라우드',
+      '관수내비',
+      '인지시스템',
+      '무선 라우터',
+      'active',
+      2,
+      -5,
+      14,
+      true,
+      true,
+    ],
+    [
+      1,
+      2,
+      '포도',
+      '라떼판다',
+      '온실내비',
+      '인지시스템',
+      '유선',
+      'active',
+      1,
+      -12,
+      9,
+      true,
+      true,
+    ],
+    [
+      2,
+      1,
+      '사과',
+      '미니컴',
+      '센서내비',
+      '금화이엔에스',
+      '유선',
+      'expired',
+      0,
+      -15,
+      -1,
+      true,
+      false,
+    ],
+    [
+      3,
+      3,
+      '토마토',
+      '라떼판다',
+      '21년식',
+      '인지시스템',
+      '무선 라우터',
+      'active',
+      1,
+      -20,
+      11,
+      true,
+      true,
+    ],
+    [
+      4,
+      0,
+      '사과',
+      '클라우드',
+      '관수내비',
+      '경농',
+      '무선 라우터',
+      'unregistered',
+      0,
+      -2,
+      0,
+      false,
+      false,
+    ],
+    [
+      5,
+      3,
+      '딸기',
+      '라떼판다',
+      '22년식',
+      '인지시스템',
+      '유선',
+      'active',
+      2,
+      -25,
+      18,
+      true,
+      true,
+    ],
   ] as const;
 
   const records: FarmRecord[] = recordSeeds.map((seed, index) => {
-    const [farmIndex, projectIndex, crop, deviceType, productType, vendor, internetType,
-      subscriptionStatus, renewalCount, installedOffset, expiryMonths, commissioned, educated] = seed;
+    const [
+      farmIndex,
+      projectIndex,
+      crop,
+      deviceType,
+      productType,
+      vendor,
+      internetType,
+      subscriptionStatus,
+      renewalCount,
+      installedOffset,
+      expiryMonths,
+      commissioned,
+      educated,
+    ] = seed;
     const installationDate = dateFromToday(installedOffset);
     return {
       id: `sf-record-sample-${String(index + 1).padStart(3, '0')}`,
       farmId: farms[farmIndex].id,
       projectId: projects[projectIndex].id,
-      crop, deviceType, productType, vendor,
+      crop,
+      deviceType,
+      productType,
+      vendor,
       productionSetupDate: installationDate,
       installationDate,
       commissioningDate: commissioned ? dateFromToday(installedOffset + 1) : '',
@@ -461,9 +783,16 @@ async function initializeFarmLedgerStore() {
       warrantyYears: 1,
       warrantyExpiresAt: dateFromNowMonths(12),
       subscriptionYears: subscriptionStatus === 'unregistered' ? 0 : 1,
-      initialSubscriptionExpiresAt: subscriptionStatus === 'unregistered' ? '' : dateFromNowMonths(expiryMonths),
-      currentSubscriptionExpiresAt: subscriptionStatus === 'unregistered' ? '' : dateFromNowMonths(expiryMonths),
-      lastPaymentDate: subscriptionStatus === 'active' ? dateFromToday(-30) : '',
+      initialSubscriptionExpiresAt:
+        subscriptionStatus === 'unregistered'
+          ? ''
+          : dateFromNowMonths(expiryMonths),
+      currentSubscriptionExpiresAt:
+        subscriptionStatus === 'unregistered'
+          ? ''
+          : dateFromNowMonths(expiryMonths),
+      lastPaymentDate:
+        subscriptionStatus === 'active' ? dateFromToday(-30) : '',
       renewalCount,
       subscriptionStatus,
       notes: index === 4 ? '시운전과 교육 일정을 확정해야 합니다.' : '',
@@ -474,12 +803,54 @@ async function initializeFarmLedgerStore() {
   });
 
   const workItemSeeds = [
-    ['communication', '관수 시간 조정 문의', 'completed', '운영 담당자', '', now - 2 * hour],
-    ['payment', '연간 구독료 입금 확인', 'completed', '회계 담당자', '', now - 5 * hour],
-    ['service', '센서 게이트웨이 통신 불량', 'in_progress', 'A/S 담당자', dateFromToday(2), now - day],
-    ['subscription', '구독 갱신 안내 발송', 'waiting', '운영 담당자', dateFromToday(14), now - 2 * day],
-    ['installation', '시운전·교육 일정 조율', 'in_progress', '설치 담당자', dateFromToday(5), now - 3 * day],
-    ['service', '제어기 화면 점검', 'completed', 'A/S 담당자', '', now - 4 * day],
+    [
+      'communication',
+      '관수 시간 조정 문의',
+      'completed',
+      '운영 담당자',
+      '',
+      now - 2 * hour,
+    ],
+    [
+      'payment',
+      '연간 구독료 입금 확인',
+      'completed',
+      '회계 담당자',
+      '',
+      now - 5 * hour,
+    ],
+    [
+      'service',
+      '센서 게이트웨이 통신 불량',
+      'in_progress',
+      'A/S 담당자',
+      dateFromToday(2),
+      now - day,
+    ],
+    [
+      'subscription',
+      '구독 갱신 안내 발송',
+      'waiting',
+      '운영 담당자',
+      dateFromToday(14),
+      now - 2 * day,
+    ],
+    [
+      'installation',
+      '시운전·교육 일정 조율',
+      'in_progress',
+      '설치 담당자',
+      dateFromToday(5),
+      now - 3 * day,
+    ],
+    [
+      'service',
+      '제어기 화면 점검',
+      'completed',
+      'A/S 담당자',
+      '',
+      now - 4 * day,
+    ],
   ] as const;
   const workItems: FarmWorkItem[] = workItemSeeds.map((seed, index) => ({
     id: `sf-work-sample-${String(index + 1).padStart(3, '0')}`,
@@ -491,49 +862,132 @@ async function initializeFarmLedgerStore() {
     owner: seed[3],
     dueDate: seed[4],
     description: seed[1],
+    expectedOutcome: `${seed[1]} 처리가 끝났음을 농가와 담당자가 확인합니다.`,
+    nextAction:
+      index === 2
+        ? '농가와 현장 방문 일정을 확정합니다.'
+        : index === 3
+          ? '갱신 의사를 다시 확인합니다.'
+          : index === 4
+            ? '농가와 시운전 가능 날짜를 확정합니다.'
+            : '',
+    priority:
+      index === 2 || index === 4 ? 'high' : index === 3 ? 'medium' : 'low',
+    reviewDate:
+      index === 2
+        ? dateFromToday(1)
+        : index === 3
+          ? dateFromToday(3)
+          : index === 4
+            ? dateFromToday(2)
+            : '',
     lastActivityAt: seed[5],
     createdAt: seed[5],
     updatedAt: seed[5],
   }));
 
   const historyContents = [
-    ['kakao', '농가 담당자', '최근 기온 변화에 맞춰 관수 시간을 조정할 수 있는지 문의했습니다.', '데이터 확인 후 오전 관수 시작 시간을 30분 앞당겨 안내했습니다.', 0],
-    ['system', '', '', '연간 구독료 입금을 확인하고 구독 상태를 유지했습니다.', 66000],
-    ['phone', '농가 담당자', '센서 데이터가 새벽부터 수집되지 않는다고 접수했습니다.', '원격 재부팅을 시도했고 현장 점검 일정을 조율 중입니다.', 0],
+    [
+      'kakao',
+      '농가 담당자',
+      '최근 기온 변화에 맞춰 관수 시간을 조정할 수 있는지 문의했습니다.',
+      '데이터 확인 후 오전 관수 시작 시간을 30분 앞당겨 안내했습니다.',
+      0,
+    ],
+    [
+      'system',
+      '',
+      '',
+      '연간 구독료 입금을 확인하고 구독 상태를 유지했습니다.',
+      66000,
+    ],
+    [
+      'phone',
+      '농가 담당자',
+      '센서 데이터가 새벽부터 수집되지 않는다고 접수했습니다.',
+      '원격 재부팅을 시도했고 현장 점검 일정을 조율 중입니다.',
+      0,
+    ],
     ['email', '', '', '만료 60일 전 갱신 안내 메일을 발송했습니다.', 0],
-    ['meeting', '사업 담당자', '장비 설치 후 시운전과 사용자 교육 일정을 확정해 달라는 요청이 있었습니다.', '농가 가능 일정을 확인하고 있습니다.', 0],
-    ['phone', '농가 담당자', '화면 밝기가 간헐적으로 어두워진다고 접수했습니다.', '전원 어댑터를 교체한 뒤 정상 동작을 확인했습니다.', 0],
+    [
+      'meeting',
+      '사업 담당자',
+      '장비 설치 후 시운전과 사용자 교육 일정을 확정해 달라는 요청이 있었습니다.',
+      '농가 가능 일정을 확인하고 있습니다.',
+      0,
+    ],
+    [
+      'phone',
+      '농가 담당자',
+      '화면 밝기가 간헐적으로 어두워진다고 접수했습니다.',
+      '전원 어댑터를 교체한 뒤 정상 동작을 확인했습니다.',
+      0,
+    ],
   ] as const;
-  const historyEntries: FarmHistoryEntry[] = historyContents.map((seed, index) => ({
-    id: `sf-history-sample-${String(index + 1).padStart(3, '0')}`,
-    workItemId: workItems[index].id,
-    channel: seed[0],
-    sender: seed[1],
-    receivedContent: seed[2],
-    actionContent: seed[3],
-    amount: seed[4],
-    recorder: workItems[index].owner,
-    occurredAt: workItems[index].lastActivityAt,
-    referenceUrl: '',
-    createdAt: workItems[index].lastActivityAt,
-  }));
+  const historyEntries: FarmHistoryEntry[] = historyContents.map(
+    (seed, index) => ({
+      id: `sf-history-sample-${String(index + 1).padStart(3, '0')}`,
+      workItemId: workItems[index].id,
+      channel: seed[0],
+      sender: seed[1],
+      receivedContent: seed[2],
+      actionContent: seed[3],
+      amount: seed[4],
+      recorder: workItems[index].owner,
+      occurredAt: workItems[index].lastActivityAt,
+      referenceUrl: '',
+      createdAt: workItems[index].lastActivityAt,
+    }),
+  );
 
   await db.batch([
-    ...projects.map((project) => db.prepare(`
+    ...projects.map((project) =>
+      db
+        .prepare(`
       INSERT OR IGNORE INTO smartfarm_projects (
         id, name, project_type, year, institution, status, description,
         target_farm_count, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(project.id, project.name, project.projectType, project.year, project.institution,
-      project.status, project.description, project.targetFarmCount, project.createdAt, project.updatedAt)),
-    ...farms.map((farm) => db.prepare(`
+    `)
+        .bind(
+          project.id,
+          project.name,
+          project.projectType,
+          project.year,
+          project.institution,
+          project.status,
+          project.description,
+          project.targetFarmCount,
+          project.createdAt,
+          project.updatedAt,
+        ),
+    ),
+    ...farms.map((farm) =>
+      db
+        .prepare(`
       INSERT OR IGNORE INTO farms (
         id, farm_code, name, phone, address, region, business_number,
         folder_url, location_url, special_notes, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(farm.id, farm.farmCode, farm.name, farm.phone, farm.address, farm.region,
-      farm.businessNumber, farm.folderUrl, farm.locationUrl, farm.specialNotes, farm.createdAt, farm.updatedAt)),
-    ...records.map((record) => db.prepare(`
+    `)
+        .bind(
+          farm.id,
+          farm.farmCode,
+          farm.name,
+          farm.phone,
+          farm.address,
+          farm.region,
+          farm.businessNumber,
+          farm.folderUrl,
+          farm.locationUrl,
+          farm.specialNotes,
+          farm.createdAt,
+          farm.updatedAt,
+        ),
+    ),
+    ...records.map((record) =>
+      db
+        .prepare(`
       INSERT OR IGNORE INTO farm_records (
         id, farm_id, project_id, crop, device_type, product_type, vendor,
         production_setup_date, installation_date, commissioning_date, education_date,
@@ -542,27 +996,85 @@ async function initializeFarmLedgerStore() {
         last_payment_date, renewal_count, subscription_status, notes,
         last_activity_at, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(record.id, record.farmId, record.projectId, record.crop, record.deviceType,
-      record.productType, record.vendor, record.productionSetupDate, record.installationDate,
-      record.commissioningDate, record.educationDate, record.internetType, record.warrantyYears,
-      record.warrantyExpiresAt, record.subscriptionYears, record.initialSubscriptionExpiresAt,
-      record.currentSubscriptionExpiresAt, record.lastPaymentDate, record.renewalCount,
-      record.subscriptionStatus, record.notes, record.lastActivityAt, record.createdAt, record.updatedAt)),
-    ...workItems.map((item) => db.prepare(`
+    `)
+        .bind(
+          record.id,
+          record.farmId,
+          record.projectId,
+          record.crop,
+          record.deviceType,
+          record.productType,
+          record.vendor,
+          record.productionSetupDate,
+          record.installationDate,
+          record.commissioningDate,
+          record.educationDate,
+          record.internetType,
+          record.warrantyYears,
+          record.warrantyExpiresAt,
+          record.subscriptionYears,
+          record.initialSubscriptionExpiresAt,
+          record.currentSubscriptionExpiresAt,
+          record.lastPaymentDate,
+          record.renewalCount,
+          record.subscriptionStatus,
+          record.notes,
+          record.lastActivityAt,
+          record.createdAt,
+          record.updatedAt,
+        ),
+    ),
+    ...workItems.map((item) =>
+      db
+        .prepare(`
       INSERT OR IGNORE INTO farm_work_items (
         id, farm_record_id, work_type, title, status, owner, due_date, description,
+        expected_outcome, next_action, priority, review_date,
         last_activity_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(item.id, item.farmRecordId, item.workType, item.title, item.status, item.owner,
-      item.dueDate, item.description, item.lastActivityAt, item.createdAt, item.updatedAt)),
-    ...historyEntries.map((entry) => db.prepare(`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+        .bind(
+          item.id,
+          item.farmRecordId,
+          item.workType,
+          item.title,
+          item.status,
+          item.owner,
+          item.dueDate,
+          item.description,
+          item.expectedOutcome,
+          item.nextAction,
+          item.priority,
+          item.reviewDate,
+          item.lastActivityAt,
+          item.createdAt,
+          item.updatedAt,
+        ),
+    ),
+    ...historyEntries.map((entry) =>
+      db
+        .prepare(`
       INSERT OR IGNORE INTO farm_history_entries (
         id, work_item_id, channel, sender, received_content, action_content,
         amount, recorder, occurred_at, reference_url, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(entry.id, entry.workItemId, entry.channel, entry.sender, entry.receivedContent,
-      entry.actionContent, entry.amount, entry.recorder, entry.occurredAt, entry.referenceUrl, entry.createdAt)),
-    db.prepare('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)')
+    `)
+        .bind(
+          entry.id,
+          entry.workItemId,
+          entry.channel,
+          entry.sender,
+          entry.receivedContent,
+          entry.actionContent,
+          entry.amount,
+          entry.recorder,
+          entry.occurredAt,
+          entry.referenceUrl,
+          entry.createdAt,
+        ),
+    ),
+    db
+      .prepare('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)')
       .bind('smartfarm_ledger_seeded_v2', '1'),
   ]);
 }
@@ -578,22 +1090,35 @@ export async function ensureFarmLedgerStore() {
 export async function listFarmLedgerWorkspace(): Promise<FarmLedgerWorkspace> {
   await ensureFarmLedgerStore();
   const db = getD1();
-  const [projectResult, farmResult, recordResult, workItemResult, historyResult] = await Promise.all([
-    db.prepare(`
+  const [
+    projectResult,
+    farmResult,
+    recordResult,
+    inboxResult,
+    workItemResult,
+    checklistResult,
+    historyResult,
+  ] = await Promise.all([
+    db
+      .prepare(`
       SELECT id, name, project_type, year, institution, status, description,
              target_farm_count, created_at, updated_at
       FROM smartfarm_projects
       ORDER BY year DESC, name ASC
       LIMIT 5000
-    `).all<FarmProjectRow>(),
-    db.prepare(`
+    `)
+      .all<FarmProjectRow>(),
+    db
+      .prepare(`
       SELECT id, farm_code, name, phone, address, region, business_number,
              folder_url, location_url, special_notes, created_at, updated_at
       FROM farms
       ORDER BY updated_at DESC
       LIMIT 5000
-    `).all<FarmRow>(),
-    db.prepare(`
+    `)
+      .all<FarmRow>(),
+    db
+      .prepare(`
       SELECT id, farm_id, project_id, crop, device_type, product_type, vendor,
              production_setup_date, installation_date, commissioning_date, education_date,
              internet_type, warranty_years, warranty_expires_at, subscription_years,
@@ -603,65 +1128,134 @@ export async function listFarmLedgerWorkspace(): Promise<FarmLedgerWorkspace> {
       FROM farm_records
       ORDER BY last_activity_at DESC
       LIMIT 10000
-    `).all<FarmRecordRow>(),
-    db.prepare(`
+    `)
+      .all<FarmRecordRow>(),
+    db
+      .prepare(`
+      SELECT i.id, i.channel, i.sender, i.content, i.captured_by, i.received_at,
+             i.reference_url, i.status, COALESCE(c.work_item_id, '') AS converted_work_item_id,
+             i.created_at, i.updated_at
+      FROM farm_inbox_items i
+      LEFT JOIN farm_inbox_conversions c ON c.inbox_item_id = i.id
+      ORDER BY i.received_at DESC, i.created_at DESC
+      LIMIT 10000
+    `)
+      .all<FarmInboxItemRow>(),
+    db
+      .prepare(`
       SELECT wi.id, wi.farm_record_id, fr.farm_id, wi.work_type, wi.title, wi.status,
-             wi.owner, wi.due_date, wi.description, wi.last_activity_at,
+             wi.owner, wi.due_date, wi.description, wi.expected_outcome, wi.next_action,
+             wi.priority, wi.review_date, wi.last_activity_at,
              wi.created_at, wi.updated_at
       FROM farm_work_items wi
       INNER JOIN farm_records fr ON fr.id = wi.farm_record_id
       ORDER BY wi.last_activity_at DESC, wi.created_at DESC
       LIMIT 10000
-    `).all<FarmWorkItemRow>(),
-    db.prepare(`
+    `)
+      .all<FarmWorkItemRow>(),
+    db
+      .prepare(`
+      SELECT id, work_item_id, content, is_completed, sort_order, completed_by,
+             completed_at, created_at, updated_at
+      FROM farm_work_checklist_items
+      ORDER BY work_item_id ASC, sort_order ASC, created_at ASC
+      LIMIT 50000
+    `)
+      .all<FarmWorkChecklistItemRow>(),
+    db
+      .prepare(`
       SELECT id, work_item_id, channel, sender, received_content, action_content,
              amount, recorder, occurred_at, reference_url, created_at
       FROM farm_history_entries
       ORDER BY occurred_at DESC, created_at DESC
       LIMIT 30000
-    `).all<FarmHistoryEntryRow>(),
+    `)
+      .all<FarmHistoryEntryRow>(),
   ]);
 
   return {
     projects: projectResult.results.map(mapProject),
     farms: farmResult.results.map(mapFarm),
     records: recordResult.results.map(mapRecord),
+    inboxItems: inboxResult.results.map(mapInboxItem),
     workItems: workItemResult.results.map(mapWorkItem),
+    checklistItems: checklistResult.results.map(mapChecklistItem),
     historyEntries: historyResult.results.map(mapHistoryEntry),
   };
 }
 
-export async function createFarmProject(input: FarmProjectInput): Promise<FarmProject> {
+export async function createFarmProject(
+  input: FarmProjectInput,
+): Promise<FarmProject> {
   await ensureFarmLedgerStore();
   const now = Date.now();
-  const project: FarmProject = { id: crypto.randomUUID(), ...input, createdAt: now, updatedAt: now };
-  await getD1().prepare(`
+  const project: FarmProject = {
+    id: crypto.randomUUID(),
+    ...input,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await getD1()
+    .prepare(`
     INSERT INTO smartfarm_projects (
       id, name, project_type, year, institution, status, description,
       target_farm_count, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(project.id, project.name, project.projectType, project.year, project.institution,
-    project.status, project.description, project.targetFarmCount, project.createdAt, project.updatedAt).run();
+  `)
+    .bind(
+      project.id,
+      project.name,
+      project.projectType,
+      project.year,
+      project.institution,
+      project.status,
+      project.description,
+      project.targetFarmCount,
+      project.createdAt,
+      project.updatedAt,
+    )
+    .run();
   return project;
 }
 
 export async function createFarm(input: FarmInput): Promise<Farm> {
   await ensureFarmLedgerStore();
   const db = getD1();
-  const duplicate = await db.prepare('SELECT id FROM farms WHERE farm_code = ?')
-    .bind(input.farmCode).first<{ id: string }>();
+  const duplicate = await db
+    .prepare('SELECT id FROM farms WHERE farm_code = ?')
+    .bind(input.farmCode)
+    .first<{ id: string }>();
   if (duplicate) throw new Error('FARM_CODE_EXISTS');
 
   const now = Date.now();
-  const farm: Farm = { id: crypto.randomUUID(), ...input, createdAt: now, updatedAt: now };
-  await db.prepare(`
+  const farm: Farm = {
+    id: crypto.randomUUID(),
+    ...input,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await db
+    .prepare(`
     INSERT INTO farms (
       id, farm_code, name, phone, address, region, business_number,
       folder_url, location_url, special_notes, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(farm.id, farm.farmCode, farm.name, farm.phone, farm.address, farm.region,
-    farm.businessNumber, farm.folderUrl, farm.locationUrl, farm.specialNotes,
-    farm.createdAt, farm.updatedAt).run();
+  `)
+    .bind(
+      farm.id,
+      farm.farmCode,
+      farm.name,
+      farm.phone,
+      farm.address,
+      farm.region,
+      farm.businessNumber,
+      farm.folderUrl,
+      farm.locationUrl,
+      farm.specialNotes,
+      farm.createdAt,
+      farm.updatedAt,
+    )
+    .run();
   return farm;
 }
 
@@ -673,10 +1267,14 @@ export async function createFarmWithRecord(
   await ensureFarmLedgerStore();
   const db = getD1();
   const [project, duplicate] = await Promise.all([
-    db.prepare('SELECT id, name FROM smartfarm_projects WHERE id = ?')
-      .bind(recordInput.projectId).first<{ id: string; name: string }>(),
-    db.prepare('SELECT id FROM farms WHERE farm_code = ?')
-      .bind(farmInput.farmCode).first<{ id: string }>(),
+    db
+      .prepare('SELECT id, name FROM smartfarm_projects WHERE id = ?')
+      .bind(recordInput.projectId)
+      .first<{ id: string; name: string }>(),
+    db
+      .prepare('SELECT id FROM farms WHERE farm_code = ?')
+      .bind(farmInput.farmCode)
+      .first<{ id: string }>(),
   ]);
   if (!project) throw new Error('SMARTFARM_PROJECT_NOT_FOUND');
   if (duplicate) throw new Error('FARM_CODE_EXISTS');
@@ -706,15 +1304,29 @@ export async function createFarmWithRecord(
   );
 
   await db.batch([
-    db.prepare(`
+    db
+      .prepare(`
       INSERT INTO farms (
         id, farm_code, name, phone, address, region, business_number,
         folder_url, location_url, special_notes, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(farm.id, farm.farmCode, farm.name, farm.phone, farm.address, farm.region,
-      farm.businessNumber, farm.folderUrl, farm.locationUrl, farm.specialNotes,
-      farm.createdAt, farm.updatedAt),
-    db.prepare(`
+    `)
+      .bind(
+        farm.id,
+        farm.farmCode,
+        farm.name,
+        farm.phone,
+        farm.address,
+        farm.region,
+        farm.businessNumber,
+        farm.folderUrl,
+        farm.locationUrl,
+        farm.specialNotes,
+        farm.createdAt,
+        farm.updatedAt,
+      ),
+    db
+      .prepare(`
       INSERT INTO farm_records (
         id, farm_id, project_id, crop, device_type, product_type, vendor,
         production_setup_date, installation_date, commissioning_date, education_date,
@@ -723,29 +1335,80 @@ export async function createFarmWithRecord(
         last_payment_date, renewal_count, subscription_status, notes,
         last_activity_at, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(record.id, record.farmId, record.projectId, record.crop, record.deviceType,
-      record.productType, record.vendor, record.productionSetupDate, record.installationDate,
-      record.commissioningDate, record.educationDate, record.internetType, record.warrantyYears,
-      record.warrantyExpiresAt, record.subscriptionYears, record.initialSubscriptionExpiresAt,
-      record.currentSubscriptionExpiresAt, record.lastPaymentDate, record.renewalCount,
-      record.subscriptionStatus, record.notes, record.lastActivityAt, record.createdAt, record.updatedAt),
-    db.prepare(`
+    `)
+      .bind(
+        record.id,
+        record.farmId,
+        record.projectId,
+        record.crop,
+        record.deviceType,
+        record.productType,
+        record.vendor,
+        record.productionSetupDate,
+        record.installationDate,
+        record.commissioningDate,
+        record.educationDate,
+        record.internetType,
+        record.warrantyYears,
+        record.warrantyExpiresAt,
+        record.subscriptionYears,
+        record.initialSubscriptionExpiresAt,
+        record.currentSubscriptionExpiresAt,
+        record.lastPaymentDate,
+        record.renewalCount,
+        record.subscriptionStatus,
+        record.notes,
+        record.lastActivityAt,
+        record.createdAt,
+        record.updatedAt,
+      ),
+    db
+      .prepare(`
       INSERT INTO farm_work_items (
         id, farm_record_id, work_type, title, status, owner, due_date, description,
+        expected_outcome, next_action, priority, review_date,
         last_activity_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(workItem.id, workItem.farmRecordId, workItem.workType, workItem.title,
-      workItem.status, workItem.owner, workItem.dueDate, workItem.description,
-      workItem.lastActivityAt, workItem.createdAt, workItem.updatedAt),
-    db.prepare(`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+      .bind(
+        workItem.id,
+        workItem.farmRecordId,
+        workItem.workType,
+        workItem.title,
+        workItem.status,
+        workItem.owner,
+        workItem.dueDate,
+        workItem.description,
+        workItem.expectedOutcome,
+        workItem.nextAction,
+        workItem.priority,
+        workItem.reviewDate,
+        workItem.lastActivityAt,
+        workItem.createdAt,
+        workItem.updatedAt,
+      ),
+    db
+      .prepare(`
       INSERT INTO farm_history_entries (
         id, work_item_id, channel, sender, received_content, action_content,
         amount, recorder, occurred_at, reference_url, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(historyEntry.id, historyEntry.workItemId, historyEntry.channel, historyEntry.sender,
-      historyEntry.receivedContent, historyEntry.actionContent, historyEntry.amount,
-      historyEntry.recorder, historyEntry.occurredAt, historyEntry.referenceUrl, historyEntry.createdAt),
-    db.prepare('UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?')
+    `)
+      .bind(
+        historyEntry.id,
+        historyEntry.workItemId,
+        historyEntry.channel,
+        historyEntry.sender,
+        historyEntry.receivedContent,
+        historyEntry.actionContent,
+        historyEntry.amount,
+        historyEntry.recorder,
+        historyEntry.occurredAt,
+        historyEntry.referenceUrl,
+        historyEntry.createdAt,
+      ),
+    db
+      .prepare('UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?')
       .bind(now, record.projectId),
   ]);
 
@@ -760,25 +1423,39 @@ export async function createFarmRecord(
   await ensureFarmLedgerStore();
   const db = getD1();
   const [farm, project] = await Promise.all([
-    db.prepare('SELECT id, name FROM farms WHERE id = ?').bind(farmId).first<{ id: string; name: string }>(),
-    db.prepare('SELECT id, name FROM smartfarm_projects WHERE id = ?')
-      .bind(input.projectId).first<{ id: string; name: string }>(),
+    db
+      .prepare('SELECT id, name FROM farms WHERE id = ?')
+      .bind(farmId)
+      .first<{ id: string; name: string }>(),
+    db
+      .prepare('SELECT id, name FROM smartfarm_projects WHERE id = ?')
+      .bind(input.projectId)
+      .first<{ id: string; name: string }>(),
   ]);
   if (!farm) throw new Error('FARM_NOT_FOUND');
   if (!project) throw new Error('SMARTFARM_PROJECT_NOT_FOUND');
 
   const now = Date.now();
   const record: FarmRecord = {
-    id: crypto.randomUUID(), farmId, ...input,
-    lastActivityAt: now, createdAt: now, updatedAt: now,
+    id: crypto.randomUUID(),
+    farmId,
+    ...input,
+    lastActivityAt: now,
+    createdAt: now,
+    updatedAt: now,
   };
   const { workItem, historyEntry } = auditArtifacts(
-    farmId, record.id, recorder, '사업 참여 등록',
-    `${farm.name} 농가를 ${project.name} 사업에 연결했습니다.`, now,
+    farmId,
+    record.id,
+    recorder,
+    '사업 참여 등록',
+    `${farm.name} 농가를 ${project.name} 사업에 연결했습니다.`,
+    now,
   );
 
   await db.batch([
-    db.prepare(`
+    db
+      .prepare(`
       INSERT INTO farm_records (
         id, farm_id, project_id, crop, device_type, product_type, vendor,
         production_setup_date, installation_date, commissioning_date, education_date,
@@ -787,77 +1464,168 @@ export async function createFarmRecord(
         last_payment_date, renewal_count, subscription_status, notes,
         last_activity_at, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(record.id, record.farmId, record.projectId, record.crop, record.deviceType,
-      record.productType, record.vendor, record.productionSetupDate, record.installationDate,
-      record.commissioningDate, record.educationDate, record.internetType, record.warrantyYears,
-      record.warrantyExpiresAt, record.subscriptionYears, record.initialSubscriptionExpiresAt,
-      record.currentSubscriptionExpiresAt, record.lastPaymentDate, record.renewalCount,
-      record.subscriptionStatus, record.notes, record.lastActivityAt, record.createdAt, record.updatedAt),
-    db.prepare(`
+    `)
+      .bind(
+        record.id,
+        record.farmId,
+        record.projectId,
+        record.crop,
+        record.deviceType,
+        record.productType,
+        record.vendor,
+        record.productionSetupDate,
+        record.installationDate,
+        record.commissioningDate,
+        record.educationDate,
+        record.internetType,
+        record.warrantyYears,
+        record.warrantyExpiresAt,
+        record.subscriptionYears,
+        record.initialSubscriptionExpiresAt,
+        record.currentSubscriptionExpiresAt,
+        record.lastPaymentDate,
+        record.renewalCount,
+        record.subscriptionStatus,
+        record.notes,
+        record.lastActivityAt,
+        record.createdAt,
+        record.updatedAt,
+      ),
+    db
+      .prepare(`
       INSERT INTO farm_work_items (
         id, farm_record_id, work_type, title, status, owner, due_date, description,
+        expected_outcome, next_action, priority, review_date,
         last_activity_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(workItem.id, workItem.farmRecordId, workItem.workType, workItem.title,
-      workItem.status, workItem.owner, workItem.dueDate, workItem.description,
-      workItem.lastActivityAt, workItem.createdAt, workItem.updatedAt),
-    db.prepare(`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+      .bind(
+        workItem.id,
+        workItem.farmRecordId,
+        workItem.workType,
+        workItem.title,
+        workItem.status,
+        workItem.owner,
+        workItem.dueDate,
+        workItem.description,
+        workItem.expectedOutcome,
+        workItem.nextAction,
+        workItem.priority,
+        workItem.reviewDate,
+        workItem.lastActivityAt,
+        workItem.createdAt,
+        workItem.updatedAt,
+      ),
+    db
+      .prepare(`
       INSERT INTO farm_history_entries (
         id, work_item_id, channel, sender, received_content, action_content,
         amount, recorder, occurred_at, reference_url, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(historyEntry.id, historyEntry.workItemId, historyEntry.channel, historyEntry.sender,
-      historyEntry.receivedContent, historyEntry.actionContent, historyEntry.amount,
-      historyEntry.recorder, historyEntry.occurredAt, historyEntry.referenceUrl, historyEntry.createdAt),
-    db.prepare('UPDATE farms SET updated_at = ? WHERE id = ?').bind(now, farmId),
-    db.prepare('UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?').bind(now, input.projectId),
+    `)
+      .bind(
+        historyEntry.id,
+        historyEntry.workItemId,
+        historyEntry.channel,
+        historyEntry.sender,
+        historyEntry.receivedContent,
+        historyEntry.actionContent,
+        historyEntry.amount,
+        historyEntry.recorder,
+        historyEntry.occurredAt,
+        historyEntry.referenceUrl,
+        historyEntry.createdAt,
+      ),
+    db
+      .prepare('UPDATE farms SET updated_at = ? WHERE id = ?')
+      .bind(now, farmId),
+    db
+      .prepare('UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?')
+      .bind(now, input.projectId),
   ]);
 
   return { record, workItem, historyEntry };
 }
 
-export async function updateFarm(farmId: string, input: FarmInput): Promise<Farm> {
+export async function updateFarm(
+  farmId: string,
+  input: FarmInput,
+): Promise<Farm> {
   await ensureFarmLedgerStore();
   const db = getD1();
   const [existing, duplicate] = await Promise.all([
-    db.prepare(`
+    db
+      .prepare(`
       SELECT id, farm_code, name, phone, address, region, business_number,
              folder_url, location_url, special_notes, created_at, updated_at
       FROM farms WHERE id = ?
-    `).bind(farmId).first<FarmRow>(),
-    db.prepare('SELECT id FROM farms WHERE farm_code = ? AND id <> ?')
-      .bind(input.farmCode, farmId).first<{ id: string }>(),
+    `)
+      .bind(farmId)
+      .first<FarmRow>(),
+    db
+      .prepare('SELECT id FROM farms WHERE farm_code = ? AND id <> ?')
+      .bind(input.farmCode, farmId)
+      .first<{ id: string }>(),
   ]);
   if (!existing) throw new Error('FARM_NOT_FOUND');
   if (duplicate) throw new Error('FARM_CODE_EXISTS');
 
   const farm: Farm = {
-    id: farmId, ...input, createdAt: existing.created_at, updatedAt: Date.now(),
+    id: farmId,
+    ...input,
+    createdAt: existing.created_at,
+    updatedAt: Date.now(),
   };
-  await db.prepare(`
+  await db
+    .prepare(`
     UPDATE farms SET
       farm_code = ?, name = ?, phone = ?, address = ?, region = ?, business_number = ?,
       folder_url = ?, location_url = ?, special_notes = ?, updated_at = ?
     WHERE id = ?
-  `).bind(farm.farmCode, farm.name, farm.phone, farm.address, farm.region, farm.businessNumber,
-    farm.folderUrl, farm.locationUrl, farm.specialNotes, farm.updatedAt, farm.id).run();
+  `)
+    .bind(
+      farm.farmCode,
+      farm.name,
+      farm.phone,
+      farm.address,
+      farm.region,
+      farm.businessNumber,
+      farm.folderUrl,
+      farm.locationUrl,
+      farm.specialNotes,
+      farm.updatedAt,
+      farm.id,
+    )
+    .run();
   return farm;
 }
 
 const RECORD_FIELD_LABELS: Array<[keyof FarmRecordInput, string]> = [
-  ['projectId', '참여 사업'], ['crop', '작물'], ['deviceType', '장비 종류'],
-  ['productType', '제품 종류'], ['vendor', '장비업체'], ['productionSetupDate', '제작·세팅일'],
-  ['installationDate', '설치일'], ['commissioningDate', '시운전일'], ['educationDate', '교육일'],
-  ['internetType', '인터넷 유형'], ['warrantyYears', '보증기간'], ['warrantyExpiresAt', '보증 만료일'],
-  ['subscriptionYears', '구독기간'], ['initialSubscriptionExpiresAt', '최초 구독 만료일'],
-  ['currentSubscriptionExpiresAt', '현재 구독 만료일'], ['lastPaymentDate', '최근 입금일'],
-  ['renewalCount', '갱신횟수'], ['subscriptionStatus', '구독 상태'], ['notes', '비고'],
+  ['projectId', '참여 사업'],
+  ['crop', '작물'],
+  ['deviceType', '장비 종류'],
+  ['productType', '제품 종류'],
+  ['vendor', '장비업체'],
+  ['productionSetupDate', '제작·세팅일'],
+  ['installationDate', '설치일'],
+  ['commissioningDate', '시운전일'],
+  ['educationDate', '교육일'],
+  ['internetType', '인터넷 유형'],
+  ['warrantyYears', '보증기간'],
+  ['warrantyExpiresAt', '보증 만료일'],
+  ['subscriptionYears', '구독기간'],
+  ['initialSubscriptionExpiresAt', '최초 구독 만료일'],
+  ['currentSubscriptionExpiresAt', '현재 구독 만료일'],
+  ['lastPaymentDate', '최근 입금일'],
+  ['renewalCount', '갱신횟수'],
+  ['subscriptionStatus', '구독 상태'],
+  ['notes', '비고'],
 ];
 
 function recordChangeSummary(existing: FarmRecord, input: FarmRecordInput) {
-  const changed = RECORD_FIELD_LABELS
-    .filter(([key]) => existing[key] !== input[key])
-    .map(([, label]) => label);
+  const changed = RECORD_FIELD_LABELS.filter(
+    ([key]) => existing[key] !== input[key],
+  ).map(([, label]) => label);
   return changed.length
     ? `${changed.join(', ')} 항목을 수정했습니다.`
     : '사업·설치 정보를 다시 확인하고 저장했습니다.';
@@ -871,7 +1639,8 @@ export async function updateFarmRecord(
   await ensureFarmLedgerStore();
   const db = getD1();
   const [existingRow, project] = await Promise.all([
-    db.prepare(`
+    db
+      .prepare(`
       SELECT id, farm_id, project_id, crop, device_type, product_type, vendor,
              production_setup_date, installation_date, commissioning_date, education_date,
              internet_type, warranty_years, warranty_expires_at, subscription_years,
@@ -879,9 +1648,13 @@ export async function updateFarmRecord(
              last_payment_date, renewal_count, subscription_status, notes,
              last_activity_at, created_at, updated_at
       FROM farm_records WHERE id = ?
-    `).bind(recordId).first<FarmRecordRow>(),
-    db.prepare('SELECT id FROM smartfarm_projects WHERE id = ?')
-      .bind(input.projectId).first<{ id: string }>(),
+    `)
+      .bind(recordId)
+      .first<FarmRecordRow>(),
+    db
+      .prepare('SELECT id FROM smartfarm_projects WHERE id = ?')
+      .bind(input.projectId)
+      .first<{ id: string }>(),
   ]);
   if (!existingRow) throw new Error('FARM_RECORD_NOT_FOUND');
   if (!project) throw new Error('SMARTFARM_PROJECT_NOT_FOUND');
@@ -895,18 +1668,39 @@ export async function updateFarmRecord(
     updatedAt: now,
   };
   const { workItem, historyEntry } = auditArtifacts(
-    record.farmId, record.id, recorder, '사업 참여 정보 수정', recordChangeSummary(existing, input), now,
+    record.farmId,
+    record.id,
+    recorder,
+    '사업 참여 정보 수정',
+    recordChangeSummary(existing, input),
+    now,
   );
 
-  const projectUpdates = existing.projectId === input.projectId
-    ? [db.prepare('UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?').bind(now, input.projectId)]
-    : [
-        db.prepare('UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?').bind(now, existing.projectId),
-        db.prepare('UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?').bind(now, input.projectId),
-      ];
+  const projectUpdates =
+    existing.projectId === input.projectId
+      ? [
+          db
+            .prepare(
+              'UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?',
+            )
+            .bind(now, input.projectId),
+        ]
+      : [
+          db
+            .prepare(
+              'UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?',
+            )
+            .bind(now, existing.projectId),
+          db
+            .prepare(
+              'UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?',
+            )
+            .bind(now, input.projectId),
+        ];
 
   await db.batch([
-    db.prepare(`
+    db
+      .prepare(`
       UPDATE farm_records SET
         project_id = ?, crop = ?, device_type = ?, product_type = ?, vendor = ?,
         production_setup_date = ?, installation_date = ?, commissioning_date = ?, education_date = ?,
@@ -915,28 +1709,79 @@ export async function updateFarmRecord(
         last_payment_date = ?, renewal_count = ?, subscription_status = ?, notes = ?,
         last_activity_at = ?, updated_at = ?
       WHERE id = ?
-    `).bind(record.projectId, record.crop, record.deviceType, record.productType, record.vendor,
-      record.productionSetupDate, record.installationDate, record.commissioningDate, record.educationDate,
-      record.internetType, record.warrantyYears, record.warrantyExpiresAt, record.subscriptionYears,
-      record.initialSubscriptionExpiresAt, record.currentSubscriptionExpiresAt, record.lastPaymentDate,
-      record.renewalCount, record.subscriptionStatus, record.notes, record.lastActivityAt, record.updatedAt, record.id),
-    db.prepare(`
+    `)
+      .bind(
+        record.projectId,
+        record.crop,
+        record.deviceType,
+        record.productType,
+        record.vendor,
+        record.productionSetupDate,
+        record.installationDate,
+        record.commissioningDate,
+        record.educationDate,
+        record.internetType,
+        record.warrantyYears,
+        record.warrantyExpiresAt,
+        record.subscriptionYears,
+        record.initialSubscriptionExpiresAt,
+        record.currentSubscriptionExpiresAt,
+        record.lastPaymentDate,
+        record.renewalCount,
+        record.subscriptionStatus,
+        record.notes,
+        record.lastActivityAt,
+        record.updatedAt,
+        record.id,
+      ),
+    db
+      .prepare(`
       INSERT INTO farm_work_items (
         id, farm_record_id, work_type, title, status, owner, due_date, description,
+        expected_outcome, next_action, priority, review_date,
         last_activity_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(workItem.id, workItem.farmRecordId, workItem.workType, workItem.title,
-      workItem.status, workItem.owner, workItem.dueDate, workItem.description,
-      workItem.lastActivityAt, workItem.createdAt, workItem.updatedAt),
-    db.prepare(`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+      .bind(
+        workItem.id,
+        workItem.farmRecordId,
+        workItem.workType,
+        workItem.title,
+        workItem.status,
+        workItem.owner,
+        workItem.dueDate,
+        workItem.description,
+        workItem.expectedOutcome,
+        workItem.nextAction,
+        workItem.priority,
+        workItem.reviewDate,
+        workItem.lastActivityAt,
+        workItem.createdAt,
+        workItem.updatedAt,
+      ),
+    db
+      .prepare(`
       INSERT INTO farm_history_entries (
         id, work_item_id, channel, sender, received_content, action_content,
         amount, recorder, occurred_at, reference_url, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(historyEntry.id, historyEntry.workItemId, historyEntry.channel, historyEntry.sender,
-      historyEntry.receivedContent, historyEntry.actionContent, historyEntry.amount,
-      historyEntry.recorder, historyEntry.occurredAt, historyEntry.referenceUrl, historyEntry.createdAt),
-    db.prepare('UPDATE farms SET updated_at = ? WHERE id = ?').bind(now, record.farmId),
+    `)
+      .bind(
+        historyEntry.id,
+        historyEntry.workItemId,
+        historyEntry.channel,
+        historyEntry.sender,
+        historyEntry.receivedContent,
+        historyEntry.actionContent,
+        historyEntry.amount,
+        historyEntry.recorder,
+        historyEntry.occurredAt,
+        historyEntry.referenceUrl,
+        historyEntry.createdAt,
+      ),
+    db
+      .prepare('UPDATE farms SET updated_at = ? WHERE id = ?')
+      .bind(now, record.farmId),
     ...projectUpdates,
   ]);
 
@@ -946,48 +1791,396 @@ export async function updateFarmRecord(
 export async function createFarmWorkItem(
   input: FarmWorkItemInput,
   initialHistory: FarmInitialHistoryEntryInput,
+  checklistContents: string[] = [],
+  sourceInboxId = '',
 ): Promise<FarmWorkItemMutationResult> {
   await ensureFarmLedgerStore();
   const db = getD1();
-  const record = await db.prepare('SELECT id, farm_id FROM farm_records WHERE id = ?')
-    .bind(input.farmRecordId).first<{ id: string; farm_id: string }>();
+  const [record, sourceInbox] = await Promise.all([
+    db
+      .prepare('SELECT id, farm_id FROM farm_records WHERE id = ?')
+      .bind(input.farmRecordId)
+      .first<{ id: string; farm_id: string }>(),
+    sourceInboxId
+      ? db
+          .prepare(`
+          SELECT i.id, i.channel, i.sender, i.content, i.captured_by, i.received_at,
+                 i.reference_url, i.status, COALESCE(c.work_item_id, '') AS converted_work_item_id,
+                 i.created_at, i.updated_at
+          FROM farm_inbox_items i
+          LEFT JOIN farm_inbox_conversions c ON c.inbox_item_id = i.id
+          WHERE i.id = ?
+        `)
+          .bind(sourceInboxId)
+          .first<FarmInboxItemRow>()
+      : Promise.resolve(null),
+  ]);
   if (!record) throw new Error('FARM_RECORD_NOT_FOUND');
+  if (sourceInboxId && !sourceInbox)
+    throw new Error('FARM_INBOX_ITEM_NOT_FOUND');
+  if (sourceInbox && sourceInbox.status !== 'unprocessed') {
+    throw new Error('FARM_INBOX_ALREADY_PROCESSED');
+  }
+  if (input.status === 'completed' && checklistContents.length > 0) {
+    throw new Error('FARM_CHECKLIST_INCOMPLETE');
+  }
 
   const now = Date.now();
   const workItem: FarmWorkItem = {
-    id: crypto.randomUUID(), ...input, farmId: record.farm_id,
-    lastActivityAt: initialHistory.occurredAt, createdAt: now, updatedAt: now,
+    id: crypto.randomUUID(),
+    ...input,
+    nextAction: input.status === 'completed' ? '' : input.nextAction,
+    reviewDate: input.status === 'completed' ? '' : input.reviewDate,
+    farmId: record.farm_id,
+    lastActivityAt: sourceInbox ? now : initialHistory.occurredAt,
+    createdAt: now,
+    updatedAt: now,
   };
   const historyEntry: FarmHistoryEntry = {
-    id: crypto.randomUUID(), workItemId: workItem.id, ...initialHistory, createdAt: now,
+    id: crypto.randomUUID(),
+    workItemId: workItem.id,
+    ...(sourceInbox
+      ? {
+          channel: sourceInbox.channel,
+          sender: sourceInbox.sender || '발신자 미상',
+          receivedContent: sourceInbox.content,
+          actionContent: '',
+          amount: 0,
+          recorder: sourceInbox.captured_by || initialHistory.recorder,
+          occurredAt: sourceInbox.received_at,
+          referenceUrl: sourceInbox.reference_url,
+        }
+      : initialHistory),
+    createdAt: now,
   };
+  const transitionHistory: FarmHistoryEntry | null = sourceInbox
+    ? {
+        id: crypto.randomUUID(),
+        workItemId: workItem.id,
+        channel: 'system',
+        sender: '',
+        receivedContent: '',
+        actionContent:
+          initialHistory.actionContent.trim() ||
+          '수신함 내용을 업무로 정리하고 다음 행동을 설정했습니다.',
+        amount: initialHistory.amount,
+        recorder: initialHistory.recorder,
+        occurredAt: now,
+        referenceUrl: '',
+        createdAt: now,
+      }
+    : null;
+  const checklistItems: FarmWorkChecklistItem[] = checklistContents.map(
+    (content, index) => ({
+      id: crypto.randomUUID(),
+      workItemId: workItem.id,
+      content,
+      isCompleted: false,
+      sortOrder: index,
+      completedBy: '',
+      completedAt: 0,
+      createdAt: now,
+      updatedAt: now,
+    }),
+  );
 
   await db.batch([
-    db.prepare(`
+    db
+      .prepare(`
       INSERT INTO farm_work_items (
         id, farm_record_id, work_type, title, status, owner, due_date, description,
+        expected_outcome, next_action, priority, review_date,
         last_activity_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(workItem.id, workItem.farmRecordId, workItem.workType, workItem.title,
-      workItem.status, workItem.owner, workItem.dueDate, workItem.description,
-      workItem.lastActivityAt, workItem.createdAt, workItem.updatedAt),
-    db.prepare(`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+      .bind(
+        workItem.id,
+        workItem.farmRecordId,
+        workItem.workType,
+        workItem.title,
+        workItem.status,
+        workItem.owner,
+        workItem.dueDate,
+        workItem.description,
+        workItem.expectedOutcome,
+        workItem.nextAction,
+        workItem.priority,
+        workItem.reviewDate,
+        workItem.lastActivityAt,
+        workItem.createdAt,
+        workItem.updatedAt,
+      ),
+    db
+      .prepare(`
       INSERT INTO farm_history_entries (
         id, work_item_id, channel, sender, received_content, action_content,
         amount, recorder, occurred_at, reference_url, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(historyEntry.id, historyEntry.workItemId, historyEntry.channel, historyEntry.sender,
-      historyEntry.receivedContent, historyEntry.actionContent, historyEntry.amount,
-      historyEntry.recorder, historyEntry.occurredAt, historyEntry.referenceUrl, historyEntry.createdAt),
-    db.prepare(`
+    `)
+      .bind(
+        historyEntry.id,
+        historyEntry.workItemId,
+        historyEntry.channel,
+        historyEntry.sender,
+        historyEntry.receivedContent,
+        historyEntry.actionContent,
+        historyEntry.amount,
+        historyEntry.recorder,
+        historyEntry.occurredAt,
+        historyEntry.referenceUrl,
+        historyEntry.createdAt,
+      ),
+    ...(transitionHistory
+      ? [
+          db
+            .prepare(`
+              INSERT INTO farm_history_entries (
+                id, work_item_id, channel, sender, received_content, action_content,
+                amount, recorder, occurred_at, reference_url, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `)
+            .bind(
+              transitionHistory.id,
+              transitionHistory.workItemId,
+              transitionHistory.channel,
+              transitionHistory.sender,
+              transitionHistory.receivedContent,
+              transitionHistory.actionContent,
+              transitionHistory.amount,
+              transitionHistory.recorder,
+              transitionHistory.occurredAt,
+              transitionHistory.referenceUrl,
+              transitionHistory.createdAt,
+            ),
+        ]
+      : []),
+    ...checklistItems.map((item) =>
+      db
+        .prepare(`
+      INSERT INTO farm_work_checklist_items (
+        id, work_item_id, content, is_completed, sort_order, completed_by,
+        completed_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+        .bind(
+          item.id,
+          item.workItemId,
+          item.content,
+          item.isCompleted ? 1 : 0,
+          item.sortOrder,
+          item.completedBy,
+          item.completedAt,
+          item.createdAt,
+          item.updatedAt,
+        ),
+    ),
+    ...(sourceInboxId
+      ? [
+          db
+            .prepare(`
+            INSERT INTO farm_inbox_conversions (inbox_item_id, work_item_id, created_at)
+            VALUES (?, ?, ?)
+          `)
+            .bind(sourceInboxId, workItem.id, now),
+          db
+            .prepare(`
+          UPDATE farm_inbox_items
+          SET status = 'converted', updated_at = ?
+          WHERE id = ? AND status = 'unprocessed'
+        `)
+            .bind(now, sourceInboxId),
+        ]
+      : []),
+    db
+      .prepare(`
       UPDATE farm_records
       SET last_activity_at = CASE WHEN last_activity_at > ? THEN last_activity_at ELSE ? END,
           updated_at = ?
       WHERE id = ?
-    `).bind(initialHistory.occurredAt, initialHistory.occurredAt, now, input.farmRecordId),
-    db.prepare('UPDATE farms SET updated_at = ? WHERE id = ?').bind(now, record.farm_id),
+    `)
+      .bind(
+        workItem.lastActivityAt,
+        workItem.lastActivityAt,
+        now,
+        input.farmRecordId,
+      ),
+    db
+      .prepare('UPDATE farms SET updated_at = ? WHERE id = ?')
+      .bind(now, record.farm_id),
   ]);
   return { workItem, historyEntry };
+}
+
+export async function createFarmInboxItem(
+  input: FarmInboxItemInput,
+): Promise<FarmInboxItem> {
+  await ensureFarmLedgerStore();
+  const now = Date.now();
+  const inboxItem: FarmInboxItem = {
+    id: crypto.randomUUID(),
+    ...input,
+    status: 'unprocessed',
+    convertedWorkItemId: '',
+    createdAt: now,
+    updatedAt: now,
+  };
+  await getD1()
+    .prepare(`
+    INSERT INTO farm_inbox_items (
+      id, channel, sender, content, captured_by, received_at, reference_url,
+      status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+    .bind(
+      inboxItem.id,
+      inboxItem.channel,
+      inboxItem.sender,
+      inboxItem.content,
+      inboxItem.capturedBy,
+      inboxItem.receivedAt,
+      inboxItem.referenceUrl,
+      inboxItem.status,
+      inboxItem.createdAt,
+      inboxItem.updatedAt,
+    )
+    .run();
+  return inboxItem;
+}
+
+export async function updateFarmInboxStatus(
+  inboxItemId: string,
+  status: FarmInboxStatus,
+): Promise<FarmInboxItem> {
+  await ensureFarmLedgerStore();
+  const db = getD1();
+  const row = await db
+    .prepare(`
+    SELECT i.id, i.channel, i.sender, i.content, i.captured_by, i.received_at,
+           i.reference_url, i.status, COALESCE(c.work_item_id, '') AS converted_work_item_id,
+           i.created_at, i.updated_at
+    FROM farm_inbox_items i
+    LEFT JOIN farm_inbox_conversions c ON c.inbox_item_id = i.id
+    WHERE i.id = ?
+  `)
+    .bind(inboxItemId)
+    .first<FarmInboxItemRow>();
+  if (!row) throw new Error('FARM_INBOX_ITEM_NOT_FOUND');
+  if (row.status !== 'unprocessed') {
+    throw new Error('FARM_INBOX_ALREADY_PROCESSED');
+  }
+
+  const inboxItem = mapInboxItem({ ...row, status, updated_at: Date.now() });
+  const updateResult = await db
+    .prepare(`
+    UPDATE farm_inbox_items
+    SET status = ?, updated_at = ?
+    WHERE id = ?
+      AND status = 'unprocessed'
+      AND NOT EXISTS (
+        SELECT 1 FROM farm_inbox_conversions WHERE inbox_item_id = ?
+      )
+  `)
+    .bind(inboxItem.status, inboxItem.updatedAt, inboxItem.id, inboxItem.id)
+    .run();
+  if ((updateResult.meta.changes ?? 0) !== 1) {
+    throw new Error('FARM_INBOX_ALREADY_PROCESSED');
+  }
+  return inboxItem;
+}
+
+export async function toggleFarmChecklistItem(
+  workItemId: string,
+  checklistItemId: string,
+  isCompleted: boolean,
+  completedBy: string,
+): Promise<FarmWorkChecklistItem> {
+  await ensureFarmLedgerStore();
+  const db = getD1();
+  const row = await db
+    .prepare(`
+    SELECT id, work_item_id, content, is_completed, sort_order, completed_by,
+           completed_at, created_at, updated_at
+    FROM farm_work_checklist_items
+    WHERE id = ? AND work_item_id = ?
+  `)
+    .bind(checklistItemId, workItemId)
+    .first<FarmWorkChecklistItemRow>();
+  if (!row) throw new Error('FARM_CHECKLIST_ITEM_NOT_FOUND');
+  const parentWorkItem = await db
+    .prepare('SELECT status FROM farm_work_items WHERE id = ?')
+    .bind(workItemId)
+    .first<{ status: FarmWorkStatus }>();
+  if (parentWorkItem?.status === 'completed') {
+    throw new Error('FARM_COMPLETED_CHECKLIST_LOCKED');
+  }
+
+  const now = Date.now();
+  const checklistItem = mapChecklistItem({
+    ...row,
+    is_completed: isCompleted ? 1 : 0,
+    completed_by: isCompleted ? completedBy : '',
+    completed_at: isCompleted ? now : 0,
+    updated_at: now,
+  });
+  const actionContent = `${isCompleted ? '체크리스트 완료' : '체크리스트 확인 취소'}: ${checklistItem.content}`;
+  await db.batch([
+    db
+      .prepare(`
+      UPDATE farm_work_checklist_items
+      SET is_completed = ?, completed_by = ?, completed_at = ?, updated_at = ?
+      WHERE id = ? AND work_item_id = ?
+    `)
+      .bind(
+        checklistItem.isCompleted ? 1 : 0,
+        checklistItem.completedBy,
+        checklistItem.completedAt,
+        checklistItem.updatedAt,
+        checklistItem.id,
+        checklistItem.workItemId,
+      ),
+    db
+      .prepare(`
+      INSERT INTO farm_history_entries (
+        id, work_item_id, channel, sender, received_content, action_content,
+        amount, recorder, occurred_at, reference_url, created_at
+      ) VALUES (?, ?, 'system', '', '', ?, 0, ?, ?, '', ?)
+    `)
+      .bind(
+        crypto.randomUUID(),
+        workItemId,
+        actionContent,
+        completedBy,
+        now,
+        now,
+      ),
+    db
+      .prepare(`
+      UPDATE farm_work_items
+      SET last_activity_at = ?, updated_at = ?
+      WHERE id = ?
+    `)
+      .bind(now, now, workItemId),
+    db
+      .prepare(`
+      UPDATE farm_records
+      SET last_activity_at = ?, updated_at = ?
+      WHERE id = (SELECT farm_record_id FROM farm_work_items WHERE id = ?)
+    `)
+      .bind(now, now, workItemId),
+    db
+      .prepare(`
+      UPDATE farms
+      SET updated_at = ?
+      WHERE id = (
+        SELECT fr.farm_id
+        FROM farm_records fr
+        INNER JOIN farm_work_items wi ON wi.farm_record_id = fr.id
+        WHERE wi.id = ?
+      )
+    `)
+      .bind(now, workItemId),
+  ]);
+  return checklistItem;
 }
 
 export async function addFarmHistoryEntry(
@@ -995,48 +2188,136 @@ export async function addFarmHistoryEntry(
 ): Promise<FarmWorkItemMutationResult> {
   await ensureFarmLedgerStore();
   const db = getD1();
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(`
     SELECT wi.id, wi.farm_record_id, fr.farm_id, wi.work_type, wi.title, wi.status,
-           wi.owner, wi.due_date, wi.description, wi.last_activity_at,
+           wi.owner, wi.due_date, wi.description, wi.expected_outcome, wi.next_action,
+           wi.priority, wi.review_date, wi.last_activity_at,
            wi.created_at, wi.updated_at
     FROM farm_work_items wi
     INNER JOIN farm_records fr ON fr.id = wi.farm_record_id
     WHERE wi.id = ?
-  `).bind(input.workItemId).first<FarmWorkItemRow>();
+  `)
+    .bind(input.workItemId)
+    .first<FarmWorkItemRow>();
   if (!row) throw new Error('FARM_WORK_ITEM_NOT_FOUND');
 
   const existing = mapWorkItem(row);
+  if (input.newStatus === 'completed' && existing.status !== 'completed') {
+    const incompleteChecklist = await db
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM farm_work_checklist_items
+        WHERE work_item_id = ? AND is_completed = 0
+      `)
+      .bind(input.workItemId)
+      .first<{ count: number }>();
+    if ((incompleteChecklist?.count ?? 0) > 0) {
+      throw new Error('FARM_CHECKLIST_INCOMPLETE');
+    }
+  }
   const now = Date.now();
-  const { newStatus, ...historyInput } = input;
-  const historyEntry: FarmHistoryEntry = { id: crypto.randomUUID(), ...historyInput, createdAt: now };
+  const {
+    newStatus,
+    nextAction,
+    reviewDate,
+    priority,
+    owner,
+    dueDate,
+    expectedOutcome,
+    ...historyInput
+  } = input;
+  const resolvedStatus = newStatus ?? existing.status;
   const workItem: FarmWorkItem = {
     ...existing,
-    status: newStatus ?? existing.status,
+    status: resolvedStatus,
+    owner: owner ?? existing.owner,
+    dueDate: dueDate ?? existing.dueDate,
+    expectedOutcome: expectedOutcome ?? existing.expectedOutcome,
+    nextAction:
+      resolvedStatus === 'completed' ? '' : (nextAction ?? existing.nextAction),
+    reviewDate:
+      resolvedStatus === 'completed' ? '' : (reviewDate ?? existing.reviewDate),
+    priority: priority ?? existing.priority,
     lastActivityAt: Math.max(existing.lastActivityAt, input.occurredAt),
     updatedAt: now,
   };
+  const planningChanges = [
+    workItem.status !== existing.status ? '상태' : '',
+    workItem.owner !== existing.owner ? '담당자' : '',
+    workItem.dueDate !== existing.dueDate ? '처리 기한' : '',
+    workItem.expectedOutcome !== existing.expectedOutcome ? '완료 기준' : '',
+    workItem.nextAction !== existing.nextAction ? '다음 행동' : '',
+    workItem.reviewDate !== existing.reviewDate ? '검토일' : '',
+    workItem.priority !== existing.priority ? '우선순위' : '',
+  ].filter(Boolean);
+  const isPlanningOnly =
+    !historyInput.receivedContent.trim() && !historyInput.actionContent.trim();
+  const historyEntry: FarmHistoryEntry = {
+    id: crypto.randomUUID(),
+    ...historyInput,
+    channel: isPlanningOnly ? 'system' : historyInput.channel,
+    sender: isPlanningOnly ? '' : historyInput.sender,
+    actionContent: isPlanningOnly
+      ? planningChanges.length
+        ? `${planningChanges.join(', ')}을(를) 변경했습니다.`
+        : '업무 계획을 검토했습니다.'
+      : historyInput.actionContent,
+    createdAt: now,
+  };
 
   await db.batch([
-    db.prepare(`
+    db
+      .prepare(`
       INSERT INTO farm_history_entries (
         id, work_item_id, channel, sender, received_content, action_content,
         amount, recorder, occurred_at, reference_url, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(historyEntry.id, historyEntry.workItemId, historyEntry.channel, historyEntry.sender,
-      historyEntry.receivedContent, historyEntry.actionContent, historyEntry.amount,
-      historyEntry.recorder, historyEntry.occurredAt, historyEntry.referenceUrl, historyEntry.createdAt),
-    db.prepare(`
+    `)
+      .bind(
+        historyEntry.id,
+        historyEntry.workItemId,
+        historyEntry.channel,
+        historyEntry.sender,
+        historyEntry.receivedContent,
+        historyEntry.actionContent,
+        historyEntry.amount,
+        historyEntry.recorder,
+        historyEntry.occurredAt,
+        historyEntry.referenceUrl,
+        historyEntry.createdAt,
+      ),
+    db
+      .prepare(`
       UPDATE farm_work_items
-      SET status = ?, last_activity_at = ?, updated_at = ?
+      SET status = ?, owner = ?, due_date = ?, expected_outcome = ?,
+          next_action = ?, priority = ?, review_date = ?,
+          last_activity_at = ?, updated_at = ?
       WHERE id = ?
-    `).bind(workItem.status, workItem.lastActivityAt, workItem.updatedAt, workItem.id),
-    db.prepare(`
+    `)
+      .bind(
+        workItem.status,
+        workItem.owner,
+        workItem.dueDate,
+        workItem.expectedOutcome,
+        workItem.nextAction,
+        workItem.priority,
+        workItem.reviewDate,
+        workItem.lastActivityAt,
+        workItem.updatedAt,
+        workItem.id,
+      ),
+    db
+      .prepare(`
       UPDATE farm_records
       SET last_activity_at = CASE WHEN last_activity_at > ? THEN last_activity_at ELSE ? END,
           updated_at = ?
       WHERE id = ?
-    `).bind(input.occurredAt, input.occurredAt, now, workItem.farmRecordId),
-    db.prepare('UPDATE farms SET updated_at = ? WHERE id = ?').bind(now, workItem.farmId),
+    `)
+      .bind(input.occurredAt, input.occurredAt, now, workItem.farmRecordId),
+    db
+      .prepare('UPDATE farms SET updated_at = ? WHERE id = ?')
+      .bind(now, workItem.farmId),
   ]);
   return { workItem, historyEntry };
 }

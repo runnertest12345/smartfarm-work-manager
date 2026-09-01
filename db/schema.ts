@@ -1,5 +1,12 @@
 import { sql } from 'drizzle-orm';
-import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import {
+  check,
+  index,
+  integer,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from 'drizzle-orm/sqlite-core';
 
 import type {
   HistoryChannel,
@@ -11,6 +18,8 @@ import type {
   FarmHistoryChannel,
   FarmProjectStatus,
   FarmProjectType,
+  FarmInboxStatus,
+  FarmWorkPriority,
   FarmWorkStatus,
   FarmWorkType,
   SubscriptionStatus,
@@ -32,9 +41,18 @@ export const smartfarmProjects = sqliteTable(
     updatedAt: integer('updated_at').notNull(),
   },
   (table) => [
-    check('chk_smartfarm_projects_type', sql`${table.projectType} IN ('general', 'research')`),
-    check('chk_smartfarm_projects_status', sql`${table.status} IN ('active', 'completed', 'on_hold')`),
-    check('chk_smartfarm_projects_year', sql`${table.year} BETWEEN 2000 AND 2100`),
+    check(
+      'chk_smartfarm_projects_type',
+      sql`${table.projectType} IN ('general', 'research')`,
+    ),
+    check(
+      'chk_smartfarm_projects_status',
+      sql`${table.status} IN ('active', 'completed', 'on_hold')`,
+    ),
+    check(
+      'chk_smartfarm_projects_year',
+      sql`${table.year} BETWEEN 2000 AND 2100`,
+    ),
     check(
       'chk_smartfarm_projects_target_count',
       sql`${table.targetFarmCount} BETWEEN 0 AND 100000`,
@@ -66,8 +84,12 @@ export const farmRecords = sqliteTable(
   'farm_records',
   {
     id: text('id').primaryKey(),
-    farmId: text('farm_id').notNull().references(() => farms.id, { onDelete: 'cascade' }),
-    projectId: text('project_id').notNull().references(() => smartfarmProjects.id, { onDelete: 'restrict' }),
+    farmId: text('farm_id')
+      .notNull()
+      .references(() => farms.id, { onDelete: 'cascade' }),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => smartfarmProjects.id, { onDelete: 'restrict' }),
     crop: text('crop').notNull().default(''),
     deviceType: text('device_type').notNull().default(''),
     productType: text('product_type').notNull().default(''),
@@ -80,23 +102,35 @@ export const farmRecords = sqliteTable(
     warrantyYears: integer('warranty_years').notNull().default(1),
     warrantyExpiresAt: text('warranty_expires_at').notNull().default(''),
     subscriptionYears: integer('subscription_years').notNull().default(1),
-    initialSubscriptionExpiresAt: text('initial_subscription_expires_at').notNull().default(''),
-    currentSubscriptionExpiresAt: text('current_subscription_expires_at').notNull().default(''),
+    initialSubscriptionExpiresAt: text('initial_subscription_expires_at')
+      .notNull()
+      .default(''),
+    currentSubscriptionExpiresAt: text('current_subscription_expires_at')
+      .notNull()
+      .default(''),
     lastPaymentDate: text('last_payment_date').notNull().default(''),
     renewalCount: integer('renewal_count').notNull().default(0),
-    subscriptionStatus: text('subscription_status').$type<SubscriptionStatus>().notNull(),
+    subscriptionStatus: text('subscription_status')
+      .$type<SubscriptionStatus>()
+      .notNull(),
     notes: text('notes').notNull().default(''),
     lastActivityAt: integer('last_activity_at').notNull(),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
   (table) => [
-    check('chk_farm_records_warranty_years', sql`${table.warrantyYears} BETWEEN 0 AND 20`),
+    check(
+      'chk_farm_records_warranty_years',
+      sql`${table.warrantyYears} BETWEEN 0 AND 20`,
+    ),
     check(
       'chk_farm_records_subscription_years',
       sql`${table.subscriptionYears} BETWEEN 0 AND 20`,
     ),
-    check('chk_farm_records_renewal_count', sql`${table.renewalCount} BETWEEN 0 AND 100`),
+    check(
+      'chk_farm_records_renewal_count',
+      sql`${table.renewalCount} BETWEEN 0 AND 100`,
+    ),
     check(
       'chk_farm_records_subscription_status',
       sql`${table.subscriptionStatus} IN ('active', 'expired', 'unregistered')`,
@@ -124,6 +158,13 @@ export const farmWorkItems = sqliteTable(
     owner: text('owner').notNull(),
     dueDate: text('due_date').notNull().default(''),
     description: text('description').notNull().default(''),
+    expectedOutcome: text('expected_outcome').notNull().default(''),
+    nextAction: text('next_action').notNull().default(''),
+    priority: text('priority')
+      .$type<FarmWorkPriority>()
+      .notNull()
+      .default('medium'),
+    reviewDate: text('review_date').notNull().default(''),
     lastActivityAt: integer('last_activity_at').notNull(),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
@@ -137,11 +178,98 @@ export const farmWorkItems = sqliteTable(
       'chk_farm_work_items_status',
       sql`${table.status} IN ('open', 'in_progress', 'waiting', 'completed')`,
     ),
-    index('idx_farm_work_items_record_activity').on(table.farmRecordId, table.lastActivityAt),
+    check(
+      'chk_farm_work_items_priority',
+      sql`${table.priority} IN ('high', 'medium', 'low')`,
+    ),
+    index('idx_farm_work_items_record_activity').on(
+      table.farmRecordId,
+      table.lastActivityAt,
+    ),
     index('idx_farm_work_items_status_due').on(table.status, table.dueDate),
     index('idx_farm_work_items_type_status').on(table.workType, table.status),
+    index('idx_farm_work_items_review_priority').on(
+      table.status,
+      table.reviewDate,
+      table.priority,
+    ),
   ],
 );
+
+export const farmWorkChecklistItems = sqliteTable(
+  'farm_work_checklist_items',
+  {
+    id: text('id').primaryKey(),
+    workItemId: text('work_item_id')
+      .notNull()
+      .references(() => farmWorkItems.id, { onDelete: 'cascade' }),
+    content: text('content').notNull(),
+    isCompleted: integer('is_completed', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    sortOrder: integer('sort_order').notNull().default(0),
+    completedBy: text('completed_by').notNull().default(''),
+    completedAt: integer('completed_at').notNull().default(0),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    check(
+      'chk_farm_work_checklist_completed',
+      sql`${table.isCompleted} IN (0, 1)`,
+    ),
+    check(
+      'chk_farm_work_checklist_sort',
+      sql`${table.sortOrder} BETWEEN 0 AND 10000`,
+    ),
+    index('idx_farm_work_checklist_order').on(
+      table.workItemId,
+      table.sortOrder,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const farmInboxItems = sqliteTable(
+  'farm_inbox_items',
+  {
+    id: text('id').primaryKey(),
+    channel: text('channel').$type<FarmHistoryChannel>().notNull(),
+    sender: text('sender').notNull().default(''),
+    content: text('content').notNull(),
+    capturedBy: text('captured_by').notNull(),
+    receivedAt: integer('received_at').notNull(),
+    referenceUrl: text('reference_url').notNull().default(''),
+    status: text('status')
+      .$type<FarmInboxStatus>()
+      .notNull()
+      .default('unprocessed'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    check(
+      'chk_farm_inbox_channel',
+      sql`${table.channel} IN ('email', 'kakao', 'verbal', 'phone', 'meeting', 'system', 'other')`,
+    ),
+    check(
+      'chk_farm_inbox_status',
+      sql`${table.status} IN ('unprocessed', 'converted', 'reference', 'discarded')`,
+    ),
+    index('idx_farm_inbox_status_received').on(table.status, table.receivedAt),
+  ],
+);
+
+export const farmInboxConversions = sqliteTable('farm_inbox_conversions', {
+  inboxItemId: text('inbox_item_id')
+    .primaryKey()
+    .references(() => farmInboxItems.id, { onDelete: 'cascade' }),
+  workItemId: text('work_item_id')
+    .notNull()
+    .unique()
+    .references(() => farmWorkItems.id, { onDelete: 'restrict' }),
+  createdAt: integer('created_at').notNull(),
+});
 
 export const farmHistoryEntries = sqliteTable(
   'farm_history_entries',
@@ -169,7 +297,10 @@ export const farmHistoryEntries = sqliteTable(
       'chk_farm_history_entries_amount',
       sql`${table.amount} BETWEEN 0 AND 10000000000`,
     ),
-    index('idx_farm_history_work_item_occurred').on(table.workItemId, table.occurredAt),
+    index('idx_farm_history_work_item_occurred').on(
+      table.workItemId,
+      table.occurredAt,
+    ),
     index('idx_farm_history_occurred').on(table.occurredAt),
   ],
 );
@@ -204,7 +335,10 @@ export const workItems = sqliteTable(
     updatedAt: integer('updated_at').notNull(),
   },
   (table) => [
-    index('idx_work_items_project_activity').on(table.projectId, table.lastActivityAt),
+    index('idx_work_items_project_activity').on(
+      table.projectId,
+      table.lastActivityAt,
+    ),
   ],
 );
 
@@ -225,7 +359,10 @@ export const historyEntries = sqliteTable(
     createdAt: integer('created_at').notNull(),
   },
   (table) => [
-    index('idx_history_work_item_occurred').on(table.workItemId, table.occurredAt),
+    index('idx_history_work_item_occurred').on(
+      table.workItemId,
+      table.occurredAt,
+    ),
   ],
 );
 
@@ -243,7 +380,9 @@ export const tasks = sqliteTable(
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
-  (table) => [index('idx_tasks_due_created').on(table.dueDate, table.createdAt)],
+  (table) => [
+    index('idx_tasks_due_created').on(table.dueDate, table.createdAt),
+  ],
 );
 
 export const appMeta = sqliteTable('app_meta', {

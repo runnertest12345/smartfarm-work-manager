@@ -9,6 +9,7 @@ import {
 } from 'react';
 import {
   AlertCircle,
+  Archive,
   ArrowLeft,
   ArrowRight,
   BarChart3,
@@ -17,6 +18,8 @@ import {
   CalendarCheck2,
   CalendarClock,
   CircleAlert,
+  Check,
+  CheckCircle2,
   ClipboardList,
   CreditCard,
   Download,
@@ -25,7 +28,9 @@ import {
   FileText,
   FolderOpen,
   Leaf,
+  LayoutDashboard,
   Link2,
+  List,
   Loader2,
   Mail,
   MapPin,
@@ -34,6 +39,7 @@ import {
   Pencil,
   Phone,
   Plus,
+  Inbox,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -81,13 +87,16 @@ import { Textarea } from '@/components/ui/textarea';
 import { Toaster, toast } from '@/components/ui/toast';
 import {
   FARM_HISTORY_CHANNEL_LABELS,
+  FARM_INBOX_STATUS_LABELS,
   FARM_PROJECT_STATUS_LABELS,
   FARM_PROJECT_TYPE_LABELS,
   FARM_WORK_STATUS_LABELS,
+  FARM_WORK_PRIORITY_LABELS,
   FARM_WORK_TYPE_LABELS,
   SUBSCRIPTION_STATUS_LABELS,
   type Farm,
   type FarmHistoryEntry,
+  type FarmInboxItem,
   type FarmInput,
   type FarmLedgerWorkspace,
   type FarmProjectInput,
@@ -96,6 +105,7 @@ import {
   type FarmRecord,
   type FarmRecordInput,
   type FarmWorkItem,
+  type FarmWorkPriority,
   type SubscriptionStatus,
 } from '@/lib/farm-types';
 
@@ -115,6 +125,8 @@ type DialogKind =
   | 'record_edit'
   | 'project'
   | 'work_item'
+  | 'inbox'
+  | 'inbox_route'
   | 'history'
   | null;
 type FormSubmitEvent = Parameters<
@@ -122,6 +134,7 @@ type FormSubmitEvent = Parameters<
 >[0];
 type WorkType = FarmWorkItem['workType'];
 type WorkStatus = FarmWorkItem['status'];
+type WorkMode = 'inbox' | 'board' | 'list' | 'review';
 type HistoryChannel = FarmHistoryEntry['channel'];
 
 const FARM_LOG_TYPE_LABELS = FARM_WORK_TYPE_LABELS;
@@ -151,10 +164,30 @@ interface WorkItemForm extends HistoryDraft {
   owner: string;
   dueDate: string;
   description: string;
+  expectedOutcome: string;
+  nextAction: string;
+  priority: FarmWorkPriority;
+  reviewDate: string;
+  checklistText: string;
 }
 
 interface HistoryForm extends HistoryDraft {
   newStatus: WorkStatus;
+  nextAction: string;
+  priority: FarmWorkPriority;
+  reviewDate: string;
+  owner: string;
+  dueDate: string;
+  expectedOutcome: string;
+}
+
+interface InboxForm {
+  channel: HistoryChannel;
+  sender: string;
+  content: string;
+  capturedBy: string;
+  receivedAt: string;
+  referenceUrl: string;
 }
 
 interface QualityIssue {
@@ -170,8 +203,44 @@ const emptyWorkspace: FarmLedgerWorkspace = {
   projects: [],
   farms: [],
   records: [],
+  inboxItems: [],
   workItems: [],
+  checklistItems: [],
   historyEntries: [],
+};
+
+const WORK_IN_PROGRESS_LIMIT = 5;
+const WORK_COLUMNS: Array<{ status: WorkStatus; description: string }> = [
+  { status: 'open', description: '아직 시작하지 않은 업무' },
+  { status: 'in_progress', description: '지금 집중해서 처리 중' },
+  { status: 'waiting', description: '회신·부품·일정 대기' },
+  { status: 'completed', description: '최근 7일 내 완료' },
+];
+
+const WORK_CHECKLIST_TEMPLATES: Partial<Record<WorkType, string[]>> = {
+  installation: [
+    '현장 일정과 출입 방법 확인',
+    '설치 전 전원·통신 환경 확인',
+    '이상 사항과 사진 링크 기록',
+    '다음 점검 담당자·날짜 지정',
+  ],
+  service: [
+    '증상과 발생 시점 확인',
+    '원인·조치 내용 기록',
+    '농가 정상 동작 확인',
+    '후속 확인일 지정',
+  ],
+  subscription: [
+    '갱신 조건을 농가에 안내',
+    '의사 결정자와 회신 기한 확인',
+    '입금 확인 요청 전달',
+    '다음 확인 담당자·날짜 지정',
+  ],
+  payment: [
+    '입금 근거 링크·메모 남기기',
+    '대상 농가·사업 확인',
+    '회계 담당자에게 반영 요청',
+  ],
 };
 
 const sourceSheetUrl =
@@ -351,11 +420,44 @@ function emptyWorkItemForm(farmRecordId = ''): WorkItemForm {
     owner: '',
     dueDate: dateWithOffset(7),
     description: '',
+    expectedOutcome: '',
+    nextAction: '',
+    priority: 'medium',
+    reviewDate: dateWithOffset(3),
+    checklistText: '',
   };
 }
 
-function emptyHistoryForm(status: WorkStatus = 'in_progress'): HistoryForm {
-  return { ...emptyHistoryDraft(), newStatus: status };
+function emptyHistoryForm(
+  status: WorkStatus = 'in_progress',
+  nextAction = '',
+  priority: FarmWorkPriority = 'medium',
+  reviewDate = '',
+  owner = '',
+  dueDate = '',
+  expectedOutcome = '',
+): HistoryForm {
+  return {
+    ...emptyHistoryDraft(),
+    newStatus: status,
+    nextAction,
+    priority,
+    reviewDate,
+    owner,
+    dueDate,
+    expectedOutcome,
+  };
+}
+
+function emptyInboxForm(): InboxForm {
+  return {
+    channel: 'kakao',
+    sender: '',
+    content: '',
+    capturedBy: '',
+    receivedAt: localDateTimeValue(),
+    referenceUrl: '',
+  };
 }
 
 function subscriptionClass(status: SubscriptionStatus) {
@@ -374,6 +476,13 @@ function workStatusClass(status: WorkStatus) {
   if (status === 'waiting')
     return 'border-[#ead9b8] bg-[#fff9ed] text-[#94601c]';
   return 'border-[#f0cdbb] bg-[#fff4ed] text-[#a75b35]';
+}
+
+function workPriorityClass(priority: FarmWorkPriority) {
+  if (priority === 'high')
+    return 'border-[#efc8bb] bg-[#fff1ec] text-[#a94f32]';
+  if (priority === 'low') return 'border-[#d8dfdc] bg-[#f5f7f6] text-[#6d7972]';
+  return 'border-[#d7d8b8] bg-[#fbfaed] text-[#7d762d]';
 }
 
 function WorkIcon({
@@ -441,6 +550,7 @@ export function FarmLedgerDashboard() {
   const [workStatusFilter, setWorkStatusFilter] = useState<'all' | WorkStatus>(
     'all',
   );
+  const [workMode, setWorkMode] = useState<WorkMode>('board');
   const [businessYearFilter, setBusinessYearFilter] = useState('all');
   const [businessTypeFilter, setBusinessTypeFilter] = useState<
     'all' | FarmProjectType
@@ -458,8 +568,15 @@ export function FarmLedgerDashboard() {
   const [historyForm, setHistoryForm] = useState<HistoryForm>(() =>
     emptyHistoryForm(),
   );
+  const [inboxForm, setInboxForm] = useState<InboxForm>(() => emptyInboxForm());
+  const [clarifyingInboxId, setClarifyingInboxId] = useState('');
+  const [inboxRouteFarmId, setInboxRouteFarmId] = useState('');
+  const [inboxRouteRecordId, setInboxRouteRecordId] = useState('');
+  const [inboxFarmSearch, setInboxFarmSearch] = useState('');
+  const [checklistActor, setChecklistActor] = useState('');
   const [formError, setFormError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [checklistSubmitting, setChecklistSubmitting] = useState(false);
 
   const loadWorkspace = useCallback(async (quiet = false) => {
     if (quiet) setRefreshing(true);
@@ -473,7 +590,9 @@ export function FarmLedgerDashboard() {
       if (
         !response.ok ||
         !Array.isArray(data.farms) ||
+        !Array.isArray(data.inboxItems) ||
         !Array.isArray(data.workItems) ||
+        !Array.isArray(data.checklistItems) ||
         !Array.isArray(data.historyEntries)
       ) {
         throw new Error(data.error || '관리대장을 불러오지 못했습니다.');
@@ -537,6 +656,19 @@ export function FarmLedgerDashboard() {
     return map;
   }, [workspace.historyEntries]);
 
+  const checklistByWorkItem = useMemo(() => {
+    const map = new Map<string, typeof workspace.checklistItems>();
+    for (const item of workspace.checklistItems) {
+      map.set(item.workItemId, [...(map.get(item.workItemId) ?? []), item]);
+    }
+    for (const items of map.values()) {
+      items.sort(
+        (a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt,
+      );
+    }
+    return map;
+  }, [workspace.checklistItems]);
+
   const projectById = useMemo(
     () => new Map(workspace.projects.map((project) => [project.id, project])),
     [workspace.projects],
@@ -565,6 +697,9 @@ export function FarmLedgerDashboard() {
   const selectedWorkItem = workItemById.get(selectedWorkItemId) ?? null;
   const selectedWorkHistory = selectedWorkItem
     ? (historiesByWorkItem.get(selectedWorkItem.id) ?? [])
+    : [];
+  const selectedChecklist = selectedWorkItem
+    ? (checklistByWorkItem.get(selectedWorkItem.id) ?? [])
     : [];
 
   function projectForWorkItem(workItem: FarmWorkItem) {
@@ -676,6 +811,8 @@ export function FarmLedgerDashboard() {
           workItem.title,
           workItem.owner,
           workItem.description,
+          workItem.expectedOutcome,
+          workItem.nextAction,
           farm?.name ?? '',
           project?.name ?? '',
           ...entries.flatMap((entry) => [
@@ -716,6 +853,52 @@ export function FarmLedgerDashboard() {
     recordById,
   ]);
 
+  const unprocessedInboxItems = workspace.inboxItems.filter(
+    (item) => item.status === 'unprocessed',
+  );
+  const referenceInboxItems = workspace.inboxItems.filter(
+    (item) => item.status === 'reference',
+  );
+  const convertedInboxItems = workspace.inboxItems.filter(
+    (item) => item.status === 'converted',
+  );
+  const inboxRouteFarmQuery = inboxFarmSearch.trim().toLocaleLowerCase('ko-KR');
+  const inboxRouteFarmOptions = workspace.farms.filter((farm) => {
+    if ((recordsByFarm.get(farm.id) ?? []).length === 0) return false;
+    if (!inboxRouteFarmQuery) return true;
+    return [
+      farm.name,
+      farm.farmCode,
+      farm.businessNumber,
+      farm.region,
+      farm.address,
+    ]
+      .join(' ')
+      .toLocaleLowerCase('ko-KR')
+      .includes(inboxRouteFarmQuery);
+  });
+  const totalInProgressCount = workspace.workItems.filter(
+    (item) => item.status === 'in_progress',
+  ).length;
+  const today = localDateString();
+  const sevenDaysAgo =
+    new Date(`${today}T00:00:00`).getTime() - 7 * 24 * 60 * 60 * 1000;
+  const recentCompletedWorkItems = workspace.workItems.filter(
+    (item) =>
+      item.status === 'completed' && item.lastActivityAt >= sevenDaysAgo,
+  );
+  const missingNextActionWorkItems = workspace.workItems.filter(
+    (item) => item.status !== 'completed' && !item.nextAction.trim(),
+  );
+  const reviewDueWorkItems = workspace.workItems.filter(
+    (item) =>
+      item.status !== 'completed' &&
+      item.reviewDate &&
+      item.reviewDate <= today,
+  );
+  const staleWaitingWorkItems = workspace.workItems.filter(
+    (item) => item.status === 'waiting' && item.lastActivityAt < sevenDaysAgo,
+  );
   const overdueWorkItems = workspace.workItems.filter((workItem) => {
     const days = daysUntil(workItem.dueDate);
     return workItem.status !== 'completed' && days !== null && days < 0;
@@ -726,6 +909,16 @@ export function FarmLedgerDashboard() {
       workItem.status !== 'completed' && days !== null && days >= 0 && days <= 7
     );
   });
+  const weeklyReviewItems = [
+    ...new Map(
+      [
+        ...missingNextActionWorkItems,
+        ...overdueWorkItems,
+        ...reviewDueWorkItems,
+        ...staleWaitingWorkItems,
+      ].map((item) => [item.id, item]),
+    ).values(),
+  ].sort((a, b) => a.lastActivityAt - b.lastActivityAt);
 
   const businessYears = [
     ...new Set(workspace.projects.map((project) => project.year)),
@@ -1101,6 +1294,7 @@ export function FarmLedgerDashboard() {
         ? selectedRecords[0].id
         : '';
     setWorkItemForm(emptyWorkItemForm(safeRecordId));
+    setClarifyingInboxId('');
     setFormError('');
     setDialog('work_item');
   }
@@ -1116,19 +1310,191 @@ export function FarmLedgerDashboard() {
       ...emptyWorkItemForm(record.id),
       workType,
       title,
-      status: workType === 'payment' ? 'completed' : 'open',
+      checklistText: (WORK_CHECKLIST_TEMPLATES[workType] ?? []).join('\n'),
+      status: 'open',
       dueDate: workType === 'payment' ? localDateString() : dateWithOffset(7),
       channel: 'other',
     });
+    setClarifyingInboxId('');
     setFormError('');
     setDialog('work_item');
   }
 
   function openHistoryDialog(workItem: FarmWorkItem) {
     setSelectedWorkItemId(workItem.id);
-    setHistoryForm(emptyHistoryForm(workItem.status));
+    setHistoryForm(
+      emptyHistoryForm(
+        workItem.status,
+        workItem.nextAction,
+        workItem.priority,
+        workItem.reviewDate,
+        workItem.owner,
+        workItem.dueDate,
+        workItem.expectedOutcome,
+      ),
+    );
     setFormError('');
     setDialog('history');
+  }
+
+  function openInboxDialog() {
+    setInboxForm(emptyInboxForm());
+    setFormError('');
+    setDialog('inbox');
+  }
+
+  function openInboxRoute(item: FarmInboxItem) {
+    const defaultFarmId = selectedFarm?.id ?? '';
+    const records = defaultFarmId
+      ? (recordsByFarm.get(defaultFarmId) ?? [])
+      : [];
+    setClarifyingInboxId(item.id);
+    setInboxRouteFarmId(defaultFarmId);
+    setInboxRouteRecordId(records.length === 1 ? records[0].id : '');
+    setInboxFarmSearch('');
+    setFormError('');
+    setDialog('inbox_route');
+  }
+
+  function continueInboxRoute() {
+    const inboxItem = workspace.inboxItems.find(
+      (item) => item.id === clarifyingInboxId,
+    );
+    const record = recordById.get(inboxRouteRecordId);
+    if (!inboxItem || !record || record.farmId !== inboxRouteFarmId) {
+      setFormError('농가와 연결 사업을 선택해 주세요.');
+      return;
+    }
+    setSelectedFarmId(inboxRouteFarmId);
+    setSelectedWorkItemId('');
+    setWorkItemForm({
+      ...emptyWorkItemForm(record.id),
+      title: inboxItem.content.replace(/\s+/g, ' ').slice(0, 70),
+      description: '수신함에서 정리한 요청입니다.',
+      expectedOutcome:
+        '요청 사항을 처리하고 농가 또는 사업 담당자에게 결과를 확인받습니다.',
+      channel: inboxItem.channel,
+      sender: inboxItem.sender,
+      receivedContent: inboxItem.content,
+      recorder: inboxItem.capturedBy,
+      occurredAt: localDateTimeValue(new Date(inboxItem.receivedAt)),
+      referenceUrl: inboxItem.referenceUrl,
+    });
+    setFormError('');
+    setDialog('work_item');
+  }
+
+  async function submitInbox(event: FormSubmitEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setFormError('');
+    try {
+      const response = await fetch('/api/farm-ledger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'inbox',
+          inboxItem: {
+            ...inboxForm,
+            receivedAt: new Date(inboxForm.receivedAt).getTime(),
+          },
+        }),
+      });
+      const data = await readResponse(response);
+      if (!response.ok || !data.inboxItem) {
+        throw new Error(data.error || '수신 내용을 저장하지 못했습니다.');
+      }
+      await loadWorkspace(true);
+      setWorkMode('inbox');
+      setDialog(null);
+      toast.add({
+        title: '수신함에 담았습니다',
+        description: '업무로 정리할 때까지 원문을 그대로 보관합니다.',
+        type: 'success',
+      });
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : '수신 내용을 저장하지 못했습니다.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function changeInboxStatus(
+    item: FarmInboxItem,
+    status: 'reference' | 'discarded',
+  ) {
+    setSubmitting(true);
+    try {
+      const response = await fetch('/api/farm-ledger', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'inbox_status',
+          inboxItemId: item.id,
+          status,
+        }),
+      });
+      const data = await readResponse(response);
+      if (!response.ok || !data.inboxItem) {
+        throw new Error(data.error || '수신함 상태를 바꾸지 못했습니다.');
+      }
+      await loadWorkspace(true);
+      toast.add({
+        title:
+          status === 'reference'
+            ? '참고 자료로 보관했습니다'
+            : '처리 대상에서 제외했습니다',
+        type: 'success',
+      });
+    } catch (error) {
+      toast.add({
+        title: '수신함을 정리하지 못했습니다',
+        description: error instanceof Error ? error.message : undefined,
+        type: 'error',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function toggleChecklistItem(itemId: string, isCompleted: boolean) {
+    if (!selectedWorkItem) return;
+    if (checklistSubmitting || selectedWorkItem.status === 'completed') return;
+    if (!checklistActor.trim()) {
+      toast.add({ title: '확인 담당자를 먼저 입력해 주세요', type: 'error' });
+      return;
+    }
+    setChecklistSubmitting(true);
+    try {
+      const response = await fetch('/api/farm-ledger', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'checklist',
+          workItemId: selectedWorkItem.id,
+          checklistItemId: itemId,
+          isCompleted,
+          completedBy: checklistActor,
+        }),
+      });
+      const data = await readResponse(response);
+      if (!response.ok || !data.checklistItem) {
+        throw new Error(data.error || '체크리스트를 저장하지 못했습니다.');
+      }
+      await loadWorkspace(true);
+    } catch (error) {
+      toast.add({
+        title: '체크리스트를 저장하지 못했습니다',
+        description: error instanceof Error ? error.message : undefined,
+        type: 'error',
+      });
+    } finally {
+      setChecklistSubmitting(false);
+    }
   }
 
   function exportFarmLedgerCsv() {
@@ -1377,6 +1743,16 @@ export function FarmLedgerDashboard() {
             owner: workItemForm.owner,
             dueDate: workItemForm.dueDate,
             description: workItemForm.description,
+            expectedOutcome: workItemForm.expectedOutcome,
+            nextAction:
+              workItemForm.status === 'completed'
+                ? ''
+                : workItemForm.nextAction,
+            priority: workItemForm.priority,
+            reviewDate:
+              workItemForm.status === 'completed'
+                ? ''
+                : workItemForm.reviewDate,
           },
           history: {
             channel: workItemForm.channel,
@@ -1388,6 +1764,11 @@ export function FarmLedgerDashboard() {
             occurredAt: new Date(workItemForm.occurredAt).getTime(),
             referenceUrl: workItemForm.referenceUrl,
           },
+          checklist: workItemForm.checklistText
+            .split('\n')
+            .map((item) => item.trim())
+            .filter(Boolean),
+          sourceInboxId: clarifyingInboxId,
         }),
       });
       const data = await readResponse(response);
@@ -1396,6 +1777,7 @@ export function FarmLedgerDashboard() {
       const workItemId = (data.workItem as { id: string }).id;
       await loadWorkspace(true);
       setSelectedWorkItemId(workItemId);
+      setClarifyingInboxId('');
       setDialog(null);
       toast.add({
         title: '업무를 등록했습니다',
@@ -1414,13 +1796,6 @@ export function FarmLedgerDashboard() {
   async function submitHistory(event: FormSubmitEvent) {
     event.preventDefault();
     if (!selectedWorkItem) return;
-    if (
-      !historyForm.receivedContent.trim() &&
-      !historyForm.actionContent.trim()
-    ) {
-      setFormError('받은 내용 또는 처리 내용을 입력해 주세요.');
-      return;
-    }
     setSubmitting(true);
     setFormError('');
     try {
@@ -1440,6 +1815,18 @@ export function FarmLedgerDashboard() {
             occurredAt: new Date(historyForm.occurredAt).getTime(),
             referenceUrl: historyForm.referenceUrl,
             newStatus: historyForm.newStatus,
+            nextAction:
+              historyForm.newStatus === 'completed'
+                ? ''
+                : historyForm.nextAction,
+            reviewDate:
+              historyForm.newStatus === 'completed'
+                ? ''
+                : historyForm.reviewDate,
+            priority: historyForm.priority,
+            owner: historyForm.owner,
+            dueDate: historyForm.dueDate,
+            expectedOutcome: historyForm.expectedOutcome,
           },
         }),
       });
@@ -1484,6 +1871,10 @@ export function FarmLedgerDashboard() {
     const project = projectForWorkItem(workItem);
     const latestReceived = latestEntryWith(workItem, 'receivedContent');
     const latestAction = latestEntryWith(workItem, 'actionContent');
+    const checklist = checklistByWorkItem.get(workItem.id) ?? [];
+    const completedChecklist = checklist.filter(
+      (item) => item.isCompleted,
+    ).length;
     const isSelected = selectedWorkItemId === workItem.id;
     return (
       <button
@@ -1512,6 +1903,12 @@ export function FarmLedgerDashboard() {
               >
                 {FARM_WORK_STATUS_LABELS[workItem.status]}
               </Badge>
+              <Badge
+                variant="outline"
+                className={workPriorityClass(workItem.priority)}
+              >
+                {FARM_WORK_PRIORITY_LABELS[workItem.priority]}
+              </Badge>
             </div>
             <h4 className="mt-2 font-semibold text-[#29382f]">
               {workItem.title}
@@ -1524,6 +1921,19 @@ export function FarmLedgerDashboard() {
           <time className="shrink-0 text-[11px] text-[#929b94]">
             {formatTimestamp(workItem.lastActivityAt, true)}
           </time>
+        </div>
+        <div className="mt-3 rounded-xl bg-[#f4f8f2] p-3">
+          <p className="text-[11px] font-semibold text-[#4e765b]">다음 행동</p>
+          <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#435349]">
+            {workItem.status === 'completed'
+              ? '완료된 업무입니다.'
+              : workItem.nextAction || '다음 행동을 정해 주세요.'}
+          </p>
+          {checklist.length > 0 && (
+            <p className="mt-2 text-[11px] text-[#7b877f]">
+              체크리스트 {completedChecklist}/{checklist.length}
+            </p>
+          )}
         </div>
         {!compact && (
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -1960,221 +2370,651 @@ export function FarmLedgerDashboard() {
 
                   {view === 'work' && (
                     <section>
-                      <div className="mb-6">
-                        <p className="text-sm font-medium text-[#647568]">
-                          Runner 업무판 참고
-                        </p>
-                        <h1 className="mt-1 text-[28px] font-bold">
-                          업무 현황
-                        </h1>
-                        <p className="mt-2 text-sm text-[#77847b]">
-                          마감일과 현재 상태를 기준으로 지연 업무부터 확인하고,
-                          마지막 수신·처리 내용을 바로 이어서 기록합니다.
-                        </p>
-                      </div>
-                      <div className="mb-4 grid gap-3 sm:grid-cols-3">
-                        <Card className="border-0 bg-white ring-[#dfe6dd]">
-                          <CardContent>
-                            <p className="text-xs text-[#7a867d]">
-                              미완료 업무
-                            </p>
-                            <p className="mt-1 text-2xl font-bold">
-                              {openWorkItems}건
-                            </p>
-                            <p className="mt-1 text-[11px] text-[#89938c]">
-                              접수·처리 중·회신 대기
-                            </p>
-                          </CardContent>
-                        </Card>
-                        <Card className="border-0 bg-white ring-[#efcfc3]">
-                          <CardContent>
-                            <p className="text-xs text-[#9b654d]">마감 지연</p>
-                            <p className="mt-1 text-2xl font-bold text-[#aa4e30]">
-                              {overdueWorkItems.length}건
-                            </p>
-                            <p className="mt-1 text-[11px] text-[#9d8174]">
-                              완료되지 않은 지난 기한 업무
-                            </p>
-                          </CardContent>
-                        </Card>
-                        <Card className="border-0 bg-white ring-[#eadfca]">
-                          <CardContent>
-                            <p className="text-xs text-[#8b7047]">
-                              7일 이내 마감
-                            </p>
-                            <p className="mt-1 text-2xl font-bold text-[#94601c]">
-                              {dueSoonWorkItems.length}건
-                            </p>
-                            <p className="mt-1 text-[11px] text-[#978773]">
-                              오늘 포함 예정 업무
-                            </p>
-                          </CardContent>
-                        </Card>
-                      </div>
-                      <div className="mb-4 grid gap-2 rounded-2xl border border-[#dfe6dd] bg-white p-4 sm:grid-cols-[1fr_170px_150px]">
-                        <div className="relative">
-                          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#99a39c]" />
-                          <Input
-                            value={workSearch}
-                            onChange={(event) =>
-                              setWorkSearch(event.target.value)
-                            }
-                            placeholder="업무, 농가, 사업, 받은·처리 내용 검색"
-                            className="h-10 pl-9"
-                          />
+                      <div className="mb-6 flex flex-col justify-between gap-4 xl:flex-row xl:items-end">
+                        <div>
+                          <p className="text-sm font-medium text-[#647568]">
+                            GTD · Kanban · 현장 체크리스트
+                          </p>
+                          <h1 className="mt-1 text-[28px] font-bold">
+                            업무 현황
+                          </h1>
+                          <p className="mt-2 text-sm text-[#77847b]">
+                            들어온 내용을 한곳에 모으고, 다음 행동을 정해 흐름과
+                            완료 기준을 관리합니다.
+                          </p>
                         </div>
-                        <Select
-                          value={workTypeFilter}
-                          onValueChange={(value) =>
-                            setWorkTypeFilter(value as typeof workTypeFilter)
-                          }
+                        <Button
+                          onClick={openInboxDialog}
+                          className="bg-[#2f7b59] hover:bg-[#286b4d]"
                         >
-                          <SelectTrigger className="h-10 w-full">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="all">모든 업무 유형</SelectItem>
-                            {Object.entries(FARM_WORK_TYPE_LABELS).map(
-                              ([value, label]) => (
-                                <SelectItem key={value} value={value}>
-                                  {label}
-                                </SelectItem>
-                              ),
-                            )}
-                          </SelectContent>
-                        </Select>
-                        <Select
-                          value={workStatusFilter}
-                          onValueChange={(value) =>
-                            setWorkStatusFilter(
-                              value as typeof workStatusFilter,
-                            )
-                          }
-                        >
-                          <SelectTrigger className="h-10 w-full">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="all">모든 상태</SelectItem>
-                            {Object.entries(FARM_WORK_STATUS_LABELS).map(
-                              ([value, label]) => (
-                                <SelectItem key={value} value={value}>
-                                  {label}
-                                </SelectItem>
-                              ),
-                            )}
-                          </SelectContent>
-                        </Select>
+                          <Inbox />
+                          빠른 수신
+                        </Button>
                       </div>
-                      <div className="overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
-                        <Table>
-                          <TableHeader>
-                            <TableRow className="bg-[#f7f9f6]">
-                              <TableHead className="pl-5">업무·농가</TableHead>
-                              <TableHead>사업</TableHead>
-                              <TableHead>마지막 받은 내용</TableHead>
-                              <TableHead>마지막 처리 내용</TableHead>
-                              <TableHead>담당자</TableHead>
-                              <TableHead>마감</TableHead>
-                              <TableHead className="pr-5">상태</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {filteredWorkItems.map((workItem) => {
-                              const farm = farmById.get(workItem.farmId);
-                              const latestReceived = latestEntryWith(
-                                workItem,
-                                'receivedContent',
-                              );
-                              const latestAction = latestEntryWith(
-                                workItem,
-                                'actionContent',
-                              );
-                              return (
-                                <TableRow key={workItem.id}>
-                                  <TableCell className="pl-5">
+                      <div className="mb-4 flex flex-wrap gap-2 rounded-2xl border border-[#dfe6dd] bg-white p-2">
+                        {(
+                          [
+                            [
+                              'inbox',
+                              '수신함',
+                              Inbox,
+                              unprocessedInboxItems.length,
+                            ],
+                            ['board', '업무 보드', LayoutDashboard, null],
+                            ['list', '목록', List, null],
+                            [
+                              'review',
+                              '주간 검토',
+                              CheckCircle2,
+                              weeklyReviewItems.length,
+                            ],
+                          ] as const
+                        ).map(([mode, label, Icon, count]) => (
+                          <button
+                            key={mode}
+                            type="button"
+                            onClick={() => {
+                              setWorkMode(mode);
+                              if (mode === 'board') setWorkStatusFilter('all');
+                            }}
+                            className={`flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold ${
+                              workMode === mode
+                                ? 'bg-[#e9f5ec] text-[#286b4d]'
+                                : 'text-[#728078] hover:bg-[#f4f7f3]'
+                            }`}
+                          >
+                            <Icon className="size-4" />
+                            {label}
+                            {count !== null && count > 0 && (
+                              <span className="rounded-full bg-[#2f7b59] px-2 py-0.5 text-[10px] text-white">
+                                {count}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                      {(workMode === 'board' || workMode === 'list') && (
+                        <>
+                          <div className="mb-4 grid gap-3 sm:grid-cols-3">
+                            <Card className="border-0 bg-white ring-[#dfe6dd]">
+                              <CardContent>
+                                <p className="text-xs text-[#7a867d]">
+                                  미완료 업무
+                                </p>
+                                <p className="mt-1 text-2xl font-bold">
+                                  {openWorkItems}건
+                                </p>
+                                <p className="mt-1 text-[11px] text-[#89938c]">
+                                  접수·처리 중·회신 대기
+                                </p>
+                              </CardContent>
+                            </Card>
+                            <Card className="border-0 bg-white ring-[#efcfc3]">
+                              <CardContent>
+                                <p className="text-xs text-[#9b654d]">
+                                  마감 지연
+                                </p>
+                                <p className="mt-1 text-2xl font-bold text-[#aa4e30]">
+                                  {overdueWorkItems.length}건
+                                </p>
+                                <p className="mt-1 text-[11px] text-[#9d8174]">
+                                  완료되지 않은 지난 기한 업무
+                                </p>
+                              </CardContent>
+                            </Card>
+                            <Card className="border-0 bg-white ring-[#eadfca]">
+                              <CardContent>
+                                <p className="text-xs text-[#8b7047]">
+                                  7일 이내 마감
+                                </p>
+                                <p className="mt-1 text-2xl font-bold text-[#94601c]">
+                                  {dueSoonWorkItems.length}건
+                                </p>
+                                <p className="mt-1 text-[11px] text-[#978773]">
+                                  오늘 포함 예정 업무
+                                </p>
+                              </CardContent>
+                            </Card>
+                          </div>
+                          <div
+                            className={`mb-4 grid gap-2 rounded-2xl border border-[#dfe6dd] bg-white p-4 ${
+                              workMode === 'list'
+                                ? 'sm:grid-cols-[1fr_170px_150px]'
+                                : 'sm:grid-cols-[1fr_170px]'
+                            }`}
+                          >
+                            <div className="relative">
+                              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#99a39c]" />
+                              <Input
+                                value={workSearch}
+                                onChange={(event) =>
+                                  setWorkSearch(event.target.value)
+                                }
+                                placeholder="업무, 농가, 사업, 받은·처리 내용 검색"
+                                className="h-10 pl-9"
+                              />
+                            </div>
+                            <Select
+                              value={workTypeFilter}
+                              onValueChange={(value) =>
+                                setWorkTypeFilter(
+                                  value as typeof workTypeFilter,
+                                )
+                              }
+                            >
+                              <SelectTrigger className="h-10 w-full">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="all">
+                                  모든 업무 유형
+                                </SelectItem>
+                                {Object.entries(FARM_WORK_TYPE_LABELS).map(
+                                  ([value, label]) => (
+                                    <SelectItem key={value} value={value}>
+                                      {label}
+                                    </SelectItem>
+                                  ),
+                                )}
+                              </SelectContent>
+                            </Select>
+                            {workMode === 'list' && (
+                              <Select
+                                value={workStatusFilter}
+                                onValueChange={(value) =>
+                                  setWorkStatusFilter(
+                                    value as typeof workStatusFilter,
+                                  )
+                                }
+                              >
+                                <SelectTrigger className="h-10 w-full">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="all">모든 상태</SelectItem>
+                                  {Object.entries(FARM_WORK_STATUS_LABELS).map(
+                                    ([value, label]) => (
+                                      <SelectItem key={value} value={value}>
+                                        {label}
+                                      </SelectItem>
+                                    ),
+                                  )}
+                                </SelectContent>
+                              </Select>
+                            )}
+                          </div>
+                        </>
+                      )}
+                      {workMode === 'inbox' && (
+                        <div className="space-y-3">
+                          <div className="rounded-2xl border border-[#dce6dd] bg-[#f8fbf7] p-4">
+                            <p className="text-sm font-bold text-[#355b43]">
+                              먼저 모으고, 나중에 분류합니다
+                            </p>
+                            <p className="mt-1 text-xs leading-5 text-[#718078]">
+                              메일·카톡·전화·구두 내용을 빠르게 담은 뒤 농가와
+                              사업을 확인해 업무로 전환하세요.
+                            </p>
+                          </div>
+                          {unprocessedInboxItems.map((item) => (
+                            <article
+                              key={item.id}
+                              className="rounded-2xl border border-[#dfe6dd] bg-white p-4 shadow-sm"
+                            >
+                              <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-start">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="outline">
+                                      <ChannelIcon
+                                        channel={item.channel}
+                                        className="size-3"
+                                      />
+                                      {
+                                        FARM_HISTORY_CHANNEL_LABELS[
+                                          item.channel
+                                        ]
+                                      }
+                                    </Badge>
+                                    <Badge
+                                      variant="outline"
+                                      className="border-[#e7d6b9] bg-[#fff9ed] text-[#8a641f]"
+                                    >
+                                      {FARM_INBOX_STATUS_LABELS[item.status]}
+                                    </Badge>
+                                    <time className="text-[11px] text-[#8b958e]">
+                                      {formatTimestamp(item.receivedAt)}
+                                    </time>
+                                  </div>
+                                  <p className="mt-3 whitespace-pre-wrap text-sm leading-6">
+                                    {item.content}
+                                  </p>
+                                  <p className="mt-2 text-xs text-[#7b877f]">
+                                    {item.sender
+                                      ? `전달 ${item.sender} · `
+                                      : ''}
+                                    기록 {item.capturedBy}
+                                  </p>
+                                  {item.referenceUrl && (
+                                    <a
+                                      href={item.referenceUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-[#39795b] hover:underline"
+                                    >
+                                      <ExternalLink className="size-3" />
+                                      참고 링크
+                                    </a>
+                                  )}
+                                </div>
+                                <div className="flex shrink-0 flex-wrap gap-2">
+                                  <Button
+                                    size="sm"
+                                    onClick={() => openInboxRoute(item)}
+                                    className="bg-[#2f7b59] hover:bg-[#286b4d]"
+                                  >
+                                    <ArrowRight />
+                                    업무로 정리
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={submitting}
+                                    onClick={() =>
+                                      void changeInboxStatus(item, 'reference')
+                                    }
+                                  >
+                                    <Archive />
+                                    참고 보관
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={submitting}
+                                    onClick={() =>
+                                      void changeInboxStatus(item, 'discarded')
+                                    }
+                                  >
+                                    처리 제외
+                                  </Button>
+                                </div>
+                              </div>
+                            </article>
+                          ))}
+                          {!unprocessedInboxItems.length && (
+                            <div className="rounded-2xl border border-dashed border-[#d7dfd5] bg-white py-14 text-center">
+                              <CheckCircle2 className="mx-auto size-8 text-[#6eaf84]" />
+                              <p className="mt-3 font-semibold">
+                                정리할 수신 내용이 없습니다.
+                              </p>
+                              <p className="mt-1 text-xs text-[#89938c]">
+                                새 소식이 오면 ‘빠른 수신’으로 먼저 담아두세요.
+                              </p>
+                            </div>
+                          )}
+                          {referenceInboxItems.length > 0 && (
+                            <details className="rounded-2xl border border-[#dfe6dd] bg-white p-4">
+                              <summary className="cursor-pointer text-sm font-bold text-[#506357]">
+                                참고 보관 {referenceInboxItems.length}건
+                              </summary>
+                              <div className="mt-4 space-y-2">
+                                {referenceInboxItems.map((item) => (
+                                  <div
+                                    key={item.id}
+                                    className="rounded-xl bg-[#f6f8f5] p-3"
+                                  >
+                                    <p className="whitespace-pre-wrap text-sm leading-6">
+                                      {item.content}
+                                    </p>
+                                    <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-[#7f8b83]">
+                                      <span>
+                                        {formatTimestamp(item.receivedAt)}
+                                      </span>
+                                      <span>{item.sender}</span>
+                                      {item.referenceUrl && (
+                                        <a
+                                          href={item.referenceUrl}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="font-semibold text-[#39795b] hover:underline"
+                                        >
+                                          참고 링크 열기
+                                        </a>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
+                          )}
+                          {convertedInboxItems.length > 0 && (
+                            <details className="rounded-2xl border border-[#dfe6dd] bg-white p-4">
+                              <summary className="cursor-pointer text-sm font-bold text-[#506357]">
+                                업무 전환 완료 {convertedInboxItems.length}건
+                              </summary>
+                              <div className="mt-4 space-y-2">
+                                {convertedInboxItems.map((item) => {
+                                  const workItem = workItemById.get(
+                                    item.convertedWorkItemId,
+                                  );
+                                  return (
                                     <button
+                                      key={item.id}
                                       type="button"
+                                      disabled={!workItem}
                                       onClick={() =>
+                                        workItem &&
                                         openFarm(workItem.farmId, workItem.id)
                                       }
-                                      className="max-w-[250px] text-left"
+                                      className="w-full rounded-xl bg-[#f6f8f5] p-3 text-left disabled:cursor-default"
                                     >
-                                      <p className="truncate font-semibold hover:text-[#2f7b59]">
-                                        {workItem.title}
+                                      <p className="line-clamp-2 text-sm">
+                                        {item.content}
                                       </p>
-                                      <p className="mt-1 truncate text-xs text-[#89938c]">
-                                        {farm?.name ?? '농가 없음'} ·{' '}
-                                        {
-                                          FARM_WORK_TYPE_LABELS[
-                                            workItem.workType
-                                          ]
-                                        }
+                                      <p className="mt-1 text-[11px] font-semibold text-[#39795b]">
+                                        {workItem
+                                          ? `연결 업무 · ${workItem.title}`
+                                          : '연결 업무 확인 필요'}
                                       </p>
                                     </button>
-                                  </TableCell>
-                                  <TableCell className="max-w-[220px] truncate">
-                                    {projectForWorkItem(workItem)?.name ??
-                                      '사업 없음'}
-                                  </TableCell>
-                                  <TableCell className="max-w-[250px]">
-                                    <p className="line-clamp-2 text-xs leading-5">
-                                      {latestReceived?.receivedContent ||
-                                        '받은 내용 없음'}
+                                  );
+                                })}
+                              </div>
+                            </details>
+                          )}
+                          {workspace.inboxItems.some(
+                            (item) => item.status === 'discarded',
+                          ) && (
+                            <p className="px-2 text-[11px] text-[#929b94]">
+                              처리 제외{' '}
+                              {
+                                workspace.inboxItems.filter(
+                                  (item) => item.status === 'discarded',
+                                ).length
+                              }
+                              건은 통계에만 보관됩니다.
+                            </p>
+                          )}
+                        </div>
+                      )}
+
+                      {workMode === 'board' && (
+                        <div className="flex snap-x gap-4 overflow-x-auto pb-3">
+                          {WORK_COLUMNS.map((column) => {
+                            const columnItems = filteredWorkItems.filter(
+                              (item) =>
+                                item.status === column.status &&
+                                (column.status !== 'completed' ||
+                                  item.lastActivityAt >= sevenDaysAgo),
+                            );
+                            const wipExceeded =
+                              column.status === 'in_progress' &&
+                              totalInProgressCount > WORK_IN_PROGRESS_LIMIT;
+                            return (
+                              <section
+                                key={column.status}
+                                className="w-[86vw] max-w-[360px] shrink-0 snap-start rounded-2xl border border-[#dfe6dd] bg-[#eef3ed] p-3 xl:w-auto xl:max-w-none xl:flex-1"
+                              >
+                                <div className="mb-3 flex items-start justify-between gap-2 px-1">
+                                  <div>
+                                    <h2 className="text-sm font-bold">
+                                      {FARM_WORK_STATUS_LABELS[column.status]}
+                                    </h2>
+                                    <p className="mt-0.5 text-[11px] text-[#7e8a82]">
+                                      {column.description}
                                     </p>
-                                  </TableCell>
-                                  <TableCell className="max-w-[250px]">
-                                    <p className="line-clamp-2 text-xs leading-5 text-[#476752]">
-                                      {latestAction?.actionContent ||
-                                        '처리 내용 없음'}
-                                    </p>
-                                  </TableCell>
-                                  <TableCell>
-                                    {workItem.owner || '미지정'}
-                                  </TableCell>
-                                  <TableCell>
-                                    <Badge
-                                      variant="outline"
-                                      className={dueClass(
-                                        workItem.dueDate,
-                                        workItem.status === 'completed',
-                                      )}
-                                    >
-                                      {dueLabel(
-                                        workItem.dueDate,
-                                        workItem.status === 'completed',
-                                      )}
-                                    </Badge>
-                                    <p className="mt-1 text-[11px] text-[#89938c]">
-                                      {formatDate(workItem.dueDate)}
-                                    </p>
-                                  </TableCell>
-                                  <TableCell className="pr-5">
-                                    <Badge
-                                      variant="outline"
-                                      className={workStatusClass(
-                                        workItem.status,
-                                      )}
-                                    >
-                                      {FARM_WORK_STATUS_LABELS[workItem.status]}
-                                    </Badge>
+                                  </div>
+                                  <Badge
+                                    variant="outline"
+                                    className={
+                                      wipExceeded
+                                        ? 'border-[#efc8bb] bg-[#fff1ec] text-[#a94f32]'
+                                        : 'bg-white'
+                                    }
+                                  >
+                                    {column.status === 'in_progress'
+                                      ? `${totalInProgressCount} / ${WORK_IN_PROGRESS_LIMIT}`
+                                      : columnItems.length}
+                                  </Badge>
+                                </div>
+                                {wipExceeded && (
+                                  <div className="mb-3 flex gap-2 rounded-xl bg-[#fff1ec] p-3 text-xs text-[#9d4e34]">
+                                    <CircleAlert className="mt-0.5 size-4 shrink-0" />
+                                    새 업무보다 진행 중인 업무를 먼저 마무리해
+                                    주세요.
+                                  </div>
+                                )}
+                                <div className="space-y-3">
+                                  {columnItems.map((item) => (
+                                    <WorkItemCard
+                                      key={item.id}
+                                      workItem={item}
+                                      compact
+                                    />
+                                  ))}
+                                  {!columnItems.length && (
+                                    <div className="rounded-xl border border-dashed border-[#d5ded4] bg-white/60 py-8 text-center text-xs text-[#8b958e]">
+                                      업무 없음
+                                    </div>
+                                  )}
+                                </div>
+                              </section>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {workMode === 'review' && (
+                        <div className="space-y-4">
+                          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                            {[
+                              [
+                                '다음 행동 누락',
+                                missingNextActionWorkItems.length,
+                                '무엇을 할지 명확히 정합니다.',
+                              ],
+                              [
+                                '마감 지연',
+                                overdueWorkItems.length,
+                                '약속한 기한을 다시 잡습니다.',
+                              ],
+                              [
+                                '오늘 검토',
+                                reviewDueWorkItems.length,
+                                '대기 업무를 다시 확인합니다.',
+                              ],
+                              [
+                                '7일 넘은 대기',
+                                staleWaitingWorkItems.length,
+                                '회신을 재촉하거나 종료합니다.',
+                              ],
+                            ].map(([label, count, description]) => (
+                              <Card
+                                key={String(label)}
+                                className="border-0 bg-white ring-[#dfe6dd]"
+                              >
+                                <CardContent>
+                                  <p className="text-xs text-[#748078]">
+                                    {label}
+                                  </p>
+                                  <p className="mt-1 text-2xl font-bold">
+                                    {count}건
+                                  </p>
+                                  <p className="mt-1 text-[11px] text-[#8b958e]">
+                                    {description}
+                                  </p>
+                                </CardContent>
+                              </Card>
+                            ))}
+                          </div>
+                          <div className="rounded-2xl border border-[#dfe6dd] bg-white p-4 sm:p-5">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <h2 className="font-bold">
+                                  이번 주에 다시 볼 업무
+                                </h2>
+                                <p className="mt-1 text-xs text-[#7b877f]">
+                                  카드를 열어 진행 기록과 다음 행동을 함께
+                                  갱신하세요.
+                                </p>
+                              </div>
+                              <Badge variant="outline">
+                                최근 완료 {recentCompletedWorkItems.length}건
+                              </Badge>
+                            </div>
+                            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                              {weeklyReviewItems.map((item) => (
+                                <WorkItemCard
+                                  key={item.id}
+                                  workItem={item}
+                                  compact
+                                />
+                              ))}
+                            </div>
+                            {!weeklyReviewItems.length && (
+                              <div className="mt-4 rounded-xl bg-[#eef8f1] py-10 text-center text-sm text-[#39795b]">
+                                검토가 필요한 업무가 없습니다. 이번 주 정리가
+                                끝났습니다.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {workMode === 'list' && (
+                        <div className="overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
+                          <Table>
+                            <TableHeader>
+                              <TableRow className="bg-[#f7f9f6]">
+                                <TableHead className="pl-5">
+                                  업무·농가
+                                </TableHead>
+                                <TableHead>사업</TableHead>
+                                <TableHead>마지막 받은 내용</TableHead>
+                                <TableHead>마지막 처리 내용</TableHead>
+                                <TableHead>담당자</TableHead>
+                                <TableHead>마감</TableHead>
+                                <TableHead className="pr-5">상태</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {filteredWorkItems.map((workItem) => {
+                                const farm = farmById.get(workItem.farmId);
+                                const latestReceived = latestEntryWith(
+                                  workItem,
+                                  'receivedContent',
+                                );
+                                const latestAction = latestEntryWith(
+                                  workItem,
+                                  'actionContent',
+                                );
+                                return (
+                                  <TableRow key={workItem.id}>
+                                    <TableCell className="pl-5">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          openFarm(workItem.farmId, workItem.id)
+                                        }
+                                        className="max-w-[250px] text-left"
+                                      >
+                                        <p className="truncate font-semibold hover:text-[#2f7b59]">
+                                          {workItem.title}
+                                        </p>
+                                        <p className="mt-1 truncate text-xs text-[#89938c]">
+                                          {farm?.name ?? '농가 없음'} ·{' '}
+                                          {
+                                            FARM_WORK_TYPE_LABELS[
+                                              workItem.workType
+                                            ]
+                                          }
+                                        </p>
+                                        <p className="mt-1 line-clamp-2 text-[11px] text-[#4f765c]">
+                                          다음 행동 ·{' '}
+                                          {workItem.nextAction || '미지정'}
+                                        </p>
+                                      </button>
+                                    </TableCell>
+                                    <TableCell className="max-w-[220px] truncate">
+                                      {projectForWorkItem(workItem)?.name ??
+                                        '사업 없음'}
+                                    </TableCell>
+                                    <TableCell className="max-w-[250px]">
+                                      <p className="line-clamp-2 text-xs leading-5">
+                                        {latestReceived?.receivedContent ||
+                                          '받은 내용 없음'}
+                                      </p>
+                                    </TableCell>
+                                    <TableCell className="max-w-[250px]">
+                                      <p className="line-clamp-2 text-xs leading-5 text-[#476752]">
+                                        {latestAction?.actionContent ||
+                                          '처리 내용 없음'}
+                                      </p>
+                                    </TableCell>
+                                    <TableCell>
+                                      {workItem.owner || '미지정'}
+                                    </TableCell>
+                                    <TableCell>
+                                      <Badge
+                                        variant="outline"
+                                        className={dueClass(
+                                          workItem.dueDate,
+                                          workItem.status === 'completed',
+                                        )}
+                                      >
+                                        {dueLabel(
+                                          workItem.dueDate,
+                                          workItem.status === 'completed',
+                                        )}
+                                      </Badge>
+                                      <p className="mt-1 text-[11px] text-[#89938c]">
+                                        {formatDate(workItem.dueDate)}
+                                      </p>
+                                    </TableCell>
+                                    <TableCell className="pr-5">
+                                      <Badge
+                                        variant="outline"
+                                        className={workStatusClass(
+                                          workItem.status,
+                                        )}
+                                      >
+                                        {
+                                          FARM_WORK_STATUS_LABELS[
+                                            workItem.status
+                                          ]
+                                        }
+                                      </Badge>
+                                      <p className="mt-1 text-[11px] text-[#7f8b83]">
+                                        우선순위{' '}
+                                        {
+                                          FARM_WORK_PRIORITY_LABELS[
+                                            workItem.priority
+                                          ]
+                                        }
+                                        {(
+                                          checklistByWorkItem.get(
+                                            workItem.id,
+                                          ) ?? []
+                                        ).length > 0 &&
+                                          ` · 체크 ${(checklistByWorkItem.get(workItem.id) ?? []).filter((item) => item.isCompleted).length}/${(checklistByWorkItem.get(workItem.id) ?? []).length}`}
+                                      </p>
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })}
+                              {!filteredWorkItems.length && (
+                                <TableRow>
+                                  <TableCell
+                                    colSpan={7}
+                                    className="h-40 text-center text-[#89938c]"
+                                  >
+                                    조건에 맞는 업무가 없습니다.
                                   </TableCell>
                                 </TableRow>
-                              );
-                            })}
-                            {!filteredWorkItems.length && (
-                              <TableRow>
-                                <TableCell
-                                  colSpan={7}
-                                  className="h-40 text-center text-[#89938c]"
-                                >
-                                  조건에 맞는 업무가 없습니다.
-                                </TableCell>
-                              </TableRow>
-                            )}
-                          </TableBody>
-                        </Table>
-                      </div>
+                              )}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      )}
                     </section>
                   )}
 
@@ -3481,6 +4321,19 @@ export function FarmLedgerDashboard() {
                                 {projectForWorkItem(selectedWorkItem)?.name ??
                                   '사업 없음'}
                               </Badge>
+                              <Badge
+                                variant="outline"
+                                className={workPriorityClass(
+                                  selectedWorkItem.priority,
+                                )}
+                              >
+                                우선순위{' '}
+                                {
+                                  FARM_WORK_PRIORITY_LABELS[
+                                    selectedWorkItem.priority
+                                  ]
+                                }
+                              </Badge>
                             </div>
                             <h3 className="mt-3 text-lg font-bold">
                               {selectedWorkItem.title}
@@ -3504,6 +4357,116 @@ export function FarmLedgerDashboard() {
                             진행 기록 추가
                           </Button>
                         </div>
+                        <div className="mt-5 grid gap-3 md:grid-cols-2">
+                          <div className="rounded-2xl border border-[#dce7dc] bg-white p-4">
+                            <p className="text-xs font-bold text-[#5d7163]">
+                              완료 기준
+                            </p>
+                            <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                              {selectedWorkItem.expectedOutcome ||
+                                '완료됐다고 판단할 기준을 다음 등록 때 입력해 주세요.'}
+                            </p>
+                          </div>
+                          <div className="rounded-2xl border border-[#cfe2d3] bg-[#eef8f1] p-4">
+                            <p className="text-xs font-bold text-[#3e7250]">
+                              다음 행동
+                            </p>
+                            <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                              {selectedWorkItem.status === 'completed'
+                                ? '완료된 업무입니다.'
+                                : selectedWorkItem.nextAction ||
+                                  '다음 행동이 아직 정해지지 않았습니다.'}
+                            </p>
+                            {selectedWorkItem.status !== 'completed' && (
+                              <p className="mt-3 text-[11px] text-[#728078]">
+                                다시 볼 날짜{' '}
+                                {formatDate(selectedWorkItem.reviewDate)}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        {selectedChecklist.length > 0 && (
+                          <div className="mt-4 rounded-2xl border border-[#dce7dc] bg-white p-4">
+                            <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                              <div>
+                                <h4 className="text-sm font-bold">
+                                  현장 체크리스트
+                                </h4>
+                                <p className="mt-1 text-xs text-[#7b877f]">
+                                  완료{' '}
+                                  {
+                                    selectedChecklist.filter(
+                                      (item) => item.isCompleted,
+                                    ).length
+                                  }
+                                  /{selectedChecklist.length} · 확인자를 남겨
+                                  누락을 줄입니다.
+                                </p>
+                              </div>
+                              <Input
+                                value={checklistActor}
+                                onChange={(event) =>
+                                  setChecklistActor(event.target.value)
+                                }
+                                placeholder="확인 담당자"
+                                className="h-9 sm:w-44"
+                              />
+                            </div>
+                            <div className="mt-4 space-y-2">
+                              {selectedChecklist.map((item) => (
+                                <button
+                                  key={item.id}
+                                  type="button"
+                                  aria-pressed={item.isCompleted}
+                                  disabled={
+                                    checklistSubmitting ||
+                                    selectedWorkItem.status === 'completed'
+                                  }
+                                  onClick={() =>
+                                    void toggleChecklistItem(
+                                      item.id,
+                                      !item.isCompleted,
+                                    )
+                                  }
+                                  className={`flex w-full items-start gap-3 rounded-xl border p-3 text-left disabled:cursor-not-allowed disabled:opacity-70 ${
+                                    item.isCompleted
+                                      ? 'border-[#cbe2d1] bg-[#eef8f1]'
+                                      : 'border-[#e1e6e0] bg-[#fafbf9] hover:border-[#bdd8c5]'
+                                  }`}
+                                >
+                                  <span
+                                    className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-md border ${
+                                      item.isCompleted
+                                        ? 'border-[#4e9768] bg-[#4e9768] text-white'
+                                        : 'border-[#b7c2ba] bg-white'
+                                    }`}
+                                  >
+                                    {item.isCompleted && (
+                                      <Check className="size-3.5" />
+                                    )}
+                                  </span>
+                                  <span className="min-w-0 flex-1">
+                                    <span
+                                      className={
+                                        item.isCompleted
+                                          ? 'text-sm text-[#5b6b61] line-through'
+                                          : 'text-sm'
+                                      }
+                                    >
+                                      {item.content}
+                                    </span>
+                                    {item.isCompleted && (
+                                      <span className="mt-1 block text-[11px] text-[#7f8b83]">
+                                        {item.completedBy} ·{' '}
+                                        {formatTimestamp(item.completedAt)}
+                                      </span>
+                                    )}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         <div className="mt-5 border-t border-[#dde7dc] pt-5">
                           <h4 className="text-sm font-bold">
                             전체 진행 히스토리
@@ -4305,6 +5268,241 @@ export function FarmLedgerDashboard() {
         </Dialog>
 
         <Dialog
+          open={dialog === 'inbox'}
+          onOpenChange={(open) =>
+            !submitting && setDialog(open ? 'inbox' : null)
+          }
+        >
+          <DialogContent className="max-h-[92vh] overflow-y-auto p-5 sm:max-w-[660px] sm:p-6">
+            <DialogHeader>
+              <DialogTitle className="text-lg">빠른 수신</DialogTitle>
+              <DialogDescription>
+                농가와 사업을 아직 몰라도 괜찮습니다. 받은 내용을 먼저 원문
+                그대로 담아두세요.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={submitInbox} className="mt-1 space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field>
+                  <FieldLabel>수신 경로</FieldLabel>
+                  <Select
+                    value={inboxForm.channel}
+                    onValueChange={(value) =>
+                      setInboxForm((current) => ({
+                        ...current,
+                        channel: value as HistoryChannel,
+                      }))
+                    }
+                  >
+                    <SelectTrigger className="h-10 w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="email">메일</SelectItem>
+                      <SelectItem value="kakao">카톡</SelectItem>
+                      <SelectItem value="verbal">구두</SelectItem>
+                      <SelectItem value="phone">전화</SelectItem>
+                      <SelectItem value="meeting">회의</SelectItem>
+                      <SelectItem value="other">기타</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field>
+                  <FieldLabel>받은 일시</FieldLabel>
+                  <Input
+                    type="datetime-local"
+                    value={inboxForm.receivedAt}
+                    onChange={(event) =>
+                      setInboxForm((current) => ({
+                        ...current,
+                        receivedAt: event.target.value,
+                      }))
+                    }
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel>전달자·기관</FieldLabel>
+                  <Input
+                    value={inboxForm.sender}
+                    onChange={(event) =>
+                      setInboxForm((current) => ({
+                        ...current,
+                        sender: event.target.value,
+                      }))
+                    }
+                    placeholder="예: 홍길동 농가, ○○사업단"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel>기록자</FieldLabel>
+                  <Input
+                    value={inboxForm.capturedBy}
+                    onChange={(event) =>
+                      setInboxForm((current) => ({
+                        ...current,
+                        capturedBy: event.target.value,
+                      }))
+                    }
+                    placeholder="내용을 옮긴 담당자"
+                  />
+                </Field>
+                <Field className="sm:col-span-2">
+                  <FieldLabel>받은 내용</FieldLabel>
+                  <Textarea
+                    value={inboxForm.content}
+                    onChange={(event) =>
+                      setInboxForm((current) => ({
+                        ...current,
+                        content: event.target.value,
+                      }))
+                    }
+                    placeholder="메일·카톡·전화·구두로 받은 내용을 빠짐없이 붙여 넣으세요."
+                    className="min-h-36"
+                  />
+                </Field>
+                <Field className="sm:col-span-2">
+                  <FieldLabel>참고 링크</FieldLabel>
+                  <Input
+                    type="url"
+                    value={inboxForm.referenceUrl}
+                    onChange={(event) =>
+                      setInboxForm((current) => ({
+                        ...current,
+                        referenceUrl: event.target.value,
+                      }))
+                    }
+                    placeholder="https://..."
+                  />
+                </Field>
+              </div>
+              {formError && <FieldError>{formError}</FieldError>}
+              <DialogFooter className="mx-0 mb-0 px-0 pb-0 pt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDialog(null)}
+                  disabled={submitting}
+                >
+                  취소
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={submitting}
+                  className="bg-[#2f7b59] hover:bg-[#286b4d]"
+                >
+                  {submitting && <Loader2 className="animate-spin" />}수신함에
+                  담기
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={dialog === 'inbox_route'}
+          onOpenChange={(open) =>
+            !submitting && setDialog(open ? 'inbox_route' : null)
+          }
+        >
+          <DialogContent className="p-5 sm:max-w-[600px] sm:p-6">
+            <DialogHeader>
+              <DialogTitle className="text-lg">
+                수신 내용을 업무로 정리
+              </DialogTitle>
+              <DialogDescription>
+                어느 농가의 어떤 사업에서 처리할 내용인지 먼저 연결합니다.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="mt-1 space-y-4">
+              <div className="rounded-xl bg-[#f5f8f4] p-3 text-sm leading-6">
+                {
+                  workspace.inboxItems.find(
+                    (item) => item.id === clarifyingInboxId,
+                  )?.content
+                }
+              </div>
+              <Field>
+                <FieldLabel>농가 검색</FieldLabel>
+                <Input
+                  value={inboxFarmSearch}
+                  onChange={(event) => setInboxFarmSearch(event.target.value)}
+                  placeholder="농가명·농장번호·지역 검색"
+                />
+              </Field>
+              <Field>
+                <FieldLabel>농가</FieldLabel>
+                <Select
+                  value={inboxRouteFarmId}
+                  onValueChange={(value) => {
+                    const farmId = value ?? '';
+                    const records = recordsByFarm.get(farmId) ?? [];
+                    setInboxRouteFarmId(farmId);
+                    setInboxRouteRecordId(
+                      records.length === 1 ? records[0].id : '',
+                    );
+                  }}
+                >
+                  <SelectTrigger className="h-10 w-full">
+                    <SelectValue placeholder="농가를 선택하세요" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {inboxRouteFarmOptions.map((farm) => (
+                      <SelectItem key={farm.id} value={farm.id}>
+                        {farm.name} · {farm.farmCode}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {inboxRouteFarmOptions.length === 0 && (
+                  <p className="text-xs text-[#8a938e]">
+                    검색 조건에 맞는 참여 농가가 없습니다.
+                  </p>
+                )}
+              </Field>
+              <Field>
+                <FieldLabel>참여 사업</FieldLabel>
+                <Select
+                  value={inboxRouteRecordId}
+                  onValueChange={(value) => setInboxRouteRecordId(value ?? '')}
+                >
+                  <SelectTrigger className="h-10 w-full">
+                    <SelectValue placeholder="사업을 선택하세요" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(recordsByFarm.get(inboxRouteFarmId) ?? []).map(
+                      (record) => (
+                        <SelectItem key={record.id} value={record.id}>
+                          {projectById.get(record.projectId)?.name ??
+                            '사업 없음'}{' '}
+                          · {record.deviceType || '장비 미입력'}
+                        </SelectItem>
+                      ),
+                    )}
+                  </SelectContent>
+                </Select>
+              </Field>
+              {formError && <FieldError>{formError}</FieldError>}
+              <DialogFooter className="mx-0 mb-0 px-0 pb-0 pt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDialog(null)}
+                >
+                  취소
+                </Button>
+                <Button
+                  type="button"
+                  onClick={continueInboxRoute}
+                  className="bg-[#2f7b59] hover:bg-[#286b4d]"
+                >
+                  다음: 업무 계획 작성 <ArrowRight />
+                </Button>
+              </DialogFooter>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
           open={dialog === 'work_item'}
           onOpenChange={(open) =>
             !submitting && setDialog(open ? 'work_item' : null)
@@ -4357,10 +5555,24 @@ export function FarmLedgerDashboard() {
                     <Select
                       value={workItemForm.workType}
                       onValueChange={(value) =>
-                        setWorkItemForm((current) => ({
-                          ...current,
-                          workType: value as WorkType,
-                        }))
+                        setWorkItemForm((current) => {
+                          const workType = value as WorkType;
+                          const knownTemplateValues = Object.values(
+                            WORK_CHECKLIST_TEMPLATES,
+                          ).map((items) => items.join('\n'));
+                          const mayReplaceTemplate =
+                            !current.checklistText.trim() ||
+                            knownTemplateValues.includes(current.checklistText);
+                          return {
+                            ...current,
+                            workType,
+                            checklistText: mayReplaceTemplate
+                              ? (WORK_CHECKLIST_TEMPLATES[workType] ?? []).join(
+                                  '\n',
+                                )
+                              : current.checklistText,
+                          };
+                        })
                       }
                     >
                       <SelectTrigger className="h-10 w-full">
@@ -4437,6 +5649,40 @@ export function FarmLedgerDashboard() {
                       }
                     />
                   </Field>
+                  <Field>
+                    <FieldLabel>우선순위</FieldLabel>
+                    <Select
+                      value={workItemForm.priority}
+                      onValueChange={(value) =>
+                        setWorkItemForm((current) => ({
+                          ...current,
+                          priority: value as FarmWorkPriority,
+                        }))
+                      }
+                    >
+                      <SelectTrigger className="h-10 w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="high">높음</SelectItem>
+                        <SelectItem value="medium">보통</SelectItem>
+                        <SelectItem value="low">낮음</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field>
+                    <FieldLabel>다시 볼 날짜</FieldLabel>
+                    <Input
+                      type="date"
+                      value={workItemForm.reviewDate}
+                      onChange={(event) =>
+                        setWorkItemForm((current) => ({
+                          ...current,
+                          reviewDate: event.target.value,
+                        }))
+                      }
+                    />
+                  </Field>
                   <Field className="sm:col-span-2">
                     <FieldLabel>업무 설명</FieldLabel>
                     <Textarea
@@ -4450,17 +5696,64 @@ export function FarmLedgerDashboard() {
                       placeholder="업무 범위, 확인 사항이나 다음 일정을 적어 주세요."
                     />
                   </Field>
+                  <Field className="sm:col-span-2">
+                    <FieldLabel>완료 기준</FieldLabel>
+                    <Textarea
+                      value={workItemForm.expectedOutcome}
+                      onChange={(event) =>
+                        setWorkItemForm((current) => ({
+                          ...current,
+                          expectedOutcome: event.target.value,
+                        }))
+                      }
+                      placeholder="어떤 상태가 되면 이 업무를 완료라고 판단할지 적어 주세요."
+                    />
+                  </Field>
+                  <Field className="sm:col-span-2">
+                    <FieldLabel>다음 행동</FieldLabel>
+                    <Input
+                      value={workItemForm.nextAction}
+                      onChange={(event) =>
+                        setWorkItemForm((current) => ({
+                          ...current,
+                          nextAction: event.target.value,
+                        }))
+                      }
+                      placeholder="예: 농가에 전화해 현장 방문 가능 시간을 확인한다"
+                    />
+                  </Field>
+                  <Field className="sm:col-span-2">
+                    <FieldLabel>체크리스트</FieldLabel>
+                    <Textarea
+                      value={workItemForm.checklistText}
+                      onChange={(event) =>
+                        setWorkItemForm((current) => ({
+                          ...current,
+                          checklistText: event.target.value,
+                        }))
+                      }
+                      placeholder="한 줄에 한 항목씩 입력하세요. 업무 유형을 고르면 현장용 예시가 채워집니다."
+                      className="min-h-28"
+                    />
+                  </Field>
                 </div>
               </section>
               <section className="border-t border-[#e3e8e2] pt-5">
                 <h3 className="mb-4 text-sm font-bold text-[#365644]">
                   최초 수신·처리 기록
                 </h3>
+                {clarifyingInboxId && (
+                  <p className="mb-4 rounded-xl border border-[#d8e5d9] bg-[#f2f8f2] px-3 py-2 text-xs leading-5 text-[#53715d]">
+                    수신함 원문은 기록의 신뢰성을 위해 수정할 수 없습니다. 새로
+                    한 조치는 ‘처리 내용’에 입력하세요.
+                  </p>
+                )}
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field>
                     <FieldLabel>수신 경로</FieldLabel>
                     <Select
                       value={workItemForm.channel}
+                      disabled={Boolean(clarifyingInboxId)}
                       onValueChange={(value) =>
                         setWorkItemForm((current) => ({
                           ...current,
@@ -4487,6 +5780,7 @@ export function FarmLedgerDashboard() {
                     <Input
                       type="datetime-local"
                       value={workItemForm.occurredAt}
+                      disabled={Boolean(clarifyingInboxId)}
                       onChange={(event) =>
                         setWorkItemForm((current) => ({
                           ...current,
@@ -4499,6 +5793,7 @@ export function FarmLedgerDashboard() {
                     <FieldLabel>전달자·기관</FieldLabel>
                     <Input
                       value={workItemForm.sender}
+                      disabled={Boolean(clarifyingInboxId)}
                       onChange={(event) =>
                         setWorkItemForm((current) => ({
                           ...current,
@@ -4526,6 +5821,7 @@ export function FarmLedgerDashboard() {
                     <FieldLabel>받은 내용</FieldLabel>
                     <Textarea
                       value={workItemForm.receivedContent}
+                      disabled={Boolean(clarifyingInboxId)}
                       onChange={(event) =>
                         setWorkItemForm((current) => ({
                           ...current,
@@ -4570,6 +5866,7 @@ export function FarmLedgerDashboard() {
                       <Input
                         type="url"
                         value={workItemForm.referenceUrl}
+                        disabled={Boolean(clarifyingInboxId)}
                         onChange={(event) =>
                           setWorkItemForm((current) => ({
                             ...current,
@@ -4615,8 +5912,8 @@ export function FarmLedgerDashboard() {
             <DialogHeader>
               <DialogTitle className="text-lg">진행 기록 추가</DialogTitle>
               <DialogDescription>
-                {selectedWorkItem?.title} 업무의 새 수신·처리 내용과 변경 상태를
-                남깁니다.
+                {selectedWorkItem?.title} 업무의 계획을 정리하거나 새 수신·처리
+                내용을 남깁니다. 내용 없이 계획만 저장해도 됩니다.
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={submitHistory} className="mt-1 space-y-4">
@@ -4667,6 +5964,97 @@ export function FarmLedgerDashboard() {
                       <SelectItem value="completed">완료</SelectItem>
                     </SelectContent>
                   </Select>
+                </Field>
+                <Field>
+                  <FieldLabel>담당자</FieldLabel>
+                  <Input
+                    value={historyForm.owner}
+                    onChange={(event) =>
+                      setHistoryForm((current) => ({
+                        ...current,
+                        owner: event.target.value,
+                      }))
+                    }
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel>처리 기한</FieldLabel>
+                  <Input
+                    type="date"
+                    value={historyForm.dueDate}
+                    onChange={(event) =>
+                      setHistoryForm((current) => ({
+                        ...current,
+                        dueDate: event.target.value,
+                      }))
+                    }
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel>우선순위</FieldLabel>
+                  <Select
+                    value={historyForm.priority}
+                    onValueChange={(value) =>
+                      setHistoryForm((current) => ({
+                        ...current,
+                        priority: value as FarmWorkPriority,
+                      }))
+                    }
+                  >
+                    <SelectTrigger className="h-10 w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="high">높음</SelectItem>
+                      <SelectItem value="medium">보통</SelectItem>
+                      <SelectItem value="low">낮음</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field>
+                  <FieldLabel>다시 볼 날짜</FieldLabel>
+                  <Input
+                    type="date"
+                    value={historyForm.reviewDate}
+                    disabled={historyForm.newStatus === 'completed'}
+                    onChange={(event) =>
+                      setHistoryForm((current) => ({
+                        ...current,
+                        reviewDate: event.target.value,
+                      }))
+                    }
+                  />
+                </Field>
+                <Field className="sm:col-span-2">
+                  <FieldLabel>다음 행동</FieldLabel>
+                  <Input
+                    value={historyForm.nextAction}
+                    disabled={historyForm.newStatus === 'completed'}
+                    onChange={(event) =>
+                      setHistoryForm((current) => ({
+                        ...current,
+                        nextAction: event.target.value,
+                      }))
+                    }
+                    placeholder={
+                      historyForm.newStatus === 'completed'
+                        ? '완료 업무에는 다음 행동이 없습니다.'
+                        : '이번 기록 이후 바로 할 한 가지 행동'
+                    }
+                  />
+                </Field>
+                <Field className="sm:col-span-2">
+                  <FieldLabel>완료 기준</FieldLabel>
+                  <Textarea
+                    value={historyForm.expectedOutcome}
+                    onChange={(event) =>
+                      setHistoryForm((current) => ({
+                        ...current,
+                        expectedOutcome: event.target.value,
+                      }))
+                    }
+                    placeholder="완료됐다고 판단할 기준"
+                  />
                 </Field>
                 <Field>
                   <FieldLabel>발생 일시</FieldLabel>
@@ -4768,6 +6156,13 @@ export function FarmLedgerDashboard() {
                   </div>
                 </Field>
               </div>
+              {historyForm.newStatus === 'completed' &&
+                selectedChecklist.some((item) => !item.isCompleted) && (
+                  <p className="rounded-xl bg-[#fff1ec] px-3 py-2 text-xs text-[#9d4e34]">
+                    미완료 체크리스트가 있습니다. 모두 확인한 뒤 업무를 완료해
+                    주세요.
+                  </p>
+                )}
               {formError && <FieldError>{formError}</FieldError>}
               <DialogFooter className="mx-0 mb-0 px-0 pb-0 pt-4">
                 <Button

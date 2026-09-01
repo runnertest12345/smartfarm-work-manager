@@ -1,10 +1,18 @@
 export const FARM_PROJECT_TYPES = ['general', 'research'] as const;
 export type FarmProjectType = (typeof FARM_PROJECT_TYPES)[number];
 
-export const FARM_PROJECT_STATUSES = ['active', 'completed', 'on_hold'] as const;
+export const FARM_PROJECT_STATUSES = [
+  'active',
+  'completed',
+  'on_hold',
+] as const;
 export type FarmProjectStatus = (typeof FARM_PROJECT_STATUSES)[number];
 
-export const SUBSCRIPTION_STATUSES = ['active', 'expired', 'unregistered'] as const;
+export const SUBSCRIPTION_STATUSES = [
+  'active',
+  'expired',
+  'unregistered',
+] as const;
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 
 export const FARM_WORK_TYPES = [
@@ -17,8 +25,24 @@ export const FARM_WORK_TYPES = [
 ] as const;
 export type FarmWorkType = (typeof FARM_WORK_TYPES)[number];
 
-export const FARM_WORK_STATUSES = ['open', 'in_progress', 'waiting', 'completed'] as const;
+export const FARM_WORK_STATUSES = [
+  'open',
+  'in_progress',
+  'waiting',
+  'completed',
+] as const;
 export type FarmWorkStatus = (typeof FARM_WORK_STATUSES)[number];
+
+export const FARM_WORK_PRIORITIES = ['high', 'medium', 'low'] as const;
+export type FarmWorkPriority = (typeof FARM_WORK_PRIORITIES)[number];
+
+export const FARM_INBOX_STATUSES = [
+  'unprocessed',
+  'converted',
+  'reference',
+  'discarded',
+] as const;
+export type FarmInboxStatus = (typeof FARM_INBOX_STATUSES)[number];
 
 export const FARM_HISTORY_CHANNELS = [
   'email',
@@ -62,6 +86,19 @@ export const FARM_WORK_STATUS_LABELS: Record<FarmWorkStatus, string> = {
   in_progress: '처리 중',
   waiting: '회신 대기',
   completed: '완료',
+};
+
+export const FARM_WORK_PRIORITY_LABELS: Record<FarmWorkPriority, string> = {
+  high: '높음',
+  medium: '보통',
+  low: '낮음',
+};
+
+export const FARM_INBOX_STATUS_LABELS: Record<FarmInboxStatus, string> = {
+  unprocessed: '정리 전',
+  converted: '업무 전환',
+  reference: '참고 보관',
+  discarded: '처리 제외',
 };
 
 export const FARM_HISTORY_CHANNEL_LABELS: Record<FarmHistoryChannel, string> = {
@@ -184,6 +221,10 @@ export interface FarmWorkItem {
   owner: string;
   dueDate: string;
   description: string;
+  expectedOutcome: string;
+  nextAction: string;
+  priority: FarmWorkPriority;
+  reviewDate: string;
   lastActivityAt: number;
   createdAt: number;
   updatedAt: number;
@@ -197,6 +238,45 @@ export interface FarmWorkItemInput {
   owner: string;
   dueDate: string;
   description: string;
+  expectedOutcome: string;
+  nextAction: string;
+  priority: FarmWorkPriority;
+  reviewDate: string;
+}
+
+export interface FarmWorkChecklistItem {
+  id: string;
+  workItemId: string;
+  content: string;
+  isCompleted: boolean;
+  sortOrder: number;
+  completedBy: string;
+  completedAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface FarmInboxItem {
+  id: string;
+  channel: FarmHistoryChannel;
+  sender: string;
+  content: string;
+  capturedBy: string;
+  receivedAt: number;
+  referenceUrl: string;
+  status: FarmInboxStatus;
+  convertedWorkItemId: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface FarmInboxItemInput {
+  channel: FarmHistoryChannel;
+  sender: string;
+  content: string;
+  capturedBy: string;
+  receivedAt: number;
+  referenceUrl: string;
 }
 
 export interface FarmHistoryEntry {
@@ -228,9 +308,19 @@ export interface FarmHistoryEntryInput {
 export interface AddFarmHistoryEntryInput extends FarmHistoryEntryInput {
   /** Command-only field; it updates the work item and is not persisted in history. */
   newStatus?: FarmWorkStatus;
+  /** Command-only GTD planning fields; they update the current work item. */
+  nextAction?: string;
+  reviewDate?: string;
+  priority?: FarmWorkPriority;
+  owner?: string;
+  dueDate?: string;
+  expectedOutcome?: string;
 }
 
-export type FarmInitialHistoryEntryInput = Omit<FarmHistoryEntryInput, 'workItemId'>;
+export type FarmInitialHistoryEntryInput = Omit<
+  FarmHistoryEntryInput,
+  'workItemId'
+>;
 
 export interface FarmWorkItemMutationResult {
   workItem: FarmWorkItem;
@@ -251,6 +341,8 @@ export interface FarmLedgerWorkspace {
   projects: FarmProject[];
   farms: Farm[];
   records: FarmRecord[];
+  inboxItems: FarmInboxItem[];
   workItems: FarmWorkItem[];
+  checklistItems: FarmWorkChecklistItem[];
   historyEntries: FarmHistoryEntry[];
 }
