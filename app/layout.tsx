@@ -1,7 +1,10 @@
 import type { Metadata } from 'next';
 import './globals.css';
 
+const siteUrl = new URL('https://workflow-team-board.dleorbs10.chatgpt.site');
+
 export const metadata: Metadata = {
+  metadataBase: siteUrl,
   title: {
     default: '워크플로우 | 팀 업무관리',
     template: '%s | 워크플로우',
@@ -14,13 +17,23 @@ export const metadata: Metadata = {
   openGraph: {
     type: 'website',
     locale: 'ko_KR',
+    url: siteUrl,
     title: '워크플로우 | 팀 업무관리',
     description: '오늘의 업무를 한눈에 확인하고 팀의 진행 상황을 관리하세요.',
+    images: [
+      {
+        url: new URL('/og.png', siteUrl),
+        width: 1731,
+        height: 909,
+        alt: '워크플로우 — 오늘의 업무를 한눈에',
+      },
+    ],
   },
   twitter: {
     card: 'summary_large_image',
     title: '워크플로우 | 팀 업무관리',
     description: '오늘의 업무를 한눈에 확인하고 팀의 진행 상황을 관리하세요.',
+    images: [new URL('/og.png', siteUrl)],
   },
 };
 
