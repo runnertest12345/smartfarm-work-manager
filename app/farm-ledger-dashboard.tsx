@@ -139,6 +139,10 @@ type View =
   | 'subscriptions'
   | 'service'
   | 'quality';
+type DetailTarget =
+  | { kind: 'project'; projectId: string }
+  | { kind: 'farm'; farmId: string }
+  | { kind: 'work'; farmId: string; workItemId: string };
 type DialogKind =
   | 'farm'
   | 'farm_edit'
@@ -900,6 +904,7 @@ export function FarmLedgerDashboard() {
   const [selectedFarmId, setSelectedFarmId] = useState('');
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [selectedWorkItemId, setSelectedWorkItemId] = useState('');
+  const [detailTrail, setDetailTrail] = useState<DetailTarget[]>([]);
   const [editingProjectId, setEditingProjectId] = useState('');
   const [editingProjectDocumentId, setEditingProjectDocumentId] = useState('');
   const [resolvingProjectUpdateId, setResolvingProjectUpdateId] = useState('');
@@ -2314,14 +2319,87 @@ export function FarmLedgerDashboard() {
     },
   ];
 
+  function currentDetailTarget(): DetailTarget | null {
+    if (selectedFarmId && selectedWorkItemId) {
+      return {
+        kind: 'work',
+        farmId: selectedFarmId,
+        workItemId: selectedWorkItemId,
+      };
+    }
+    if (selectedFarmId) return { kind: 'farm', farmId: selectedFarmId };
+    if (selectedProjectId)
+      return { kind: 'project', projectId: selectedProjectId };
+    return null;
+  }
+
+  function sameDetailTarget(left: DetailTarget | null, right: DetailTarget) {
+    if (!left || left.kind !== right.kind) return false;
+    if (left.kind === 'project' && right.kind === 'project')
+      return left.projectId === right.projectId;
+    if (left.kind === 'farm' && right.kind === 'farm')
+      return left.farmId === right.farmId;
+    return (
+      left.kind === 'work' &&
+      right.kind === 'work' &&
+      left.farmId === right.farmId &&
+      left.workItemId === right.workItemId
+    );
+  }
+
+  function applyDetailTarget(target: DetailTarget | null) {
+    if (!target) {
+      setSelectedProjectId('');
+      setSelectedFarmId('');
+      setSelectedWorkItemId('');
+      return;
+    }
+    if (target.kind === 'project') {
+      setSelectedProjectId(target.projectId);
+      setSelectedFarmId('');
+      setSelectedWorkItemId('');
+      return;
+    }
+    setSelectedProjectId('');
+    setSelectedFarmId(target.farmId);
+    setSelectedWorkItemId(target.kind === 'work' ? target.workItemId : '');
+  }
+
+  function openDetail(target: DetailTarget) {
+    const current = currentDetailTarget();
+    if (!sameDetailTarget(current, target) && current) {
+      setDetailTrail((trail) => [...trail, current]);
+    }
+    applyDetailTarget(target);
+  }
+
+  function closeDetails() {
+    setDetailTrail([]);
+    applyDetailTarget(null);
+  }
+
+  function backDetail() {
+    const previous = detailTrail.at(-1) ?? null;
+    setDetailTrail((trail) => trail.slice(0, -1));
+    applyDetailTarget(previous);
+  }
+
   function changeView(next: View) {
+    closeDetails();
     setView(next);
     if (next !== 'farms') setSearch('');
   }
 
+  function openProjectDetail(projectId: string) {
+    openDetail({ kind: 'project', projectId });
+  }
+
   function openFarm(farmId: string, workItemId = '') {
-    setSelectedFarmId(farmId);
-    setSelectedWorkItemId(workItemId);
+    openDetail(
+      workItemId
+        ? { kind: 'work', farmId, workItemId }
+        : { kind: 'farm', farmId },
+    );
   }
 
   function openFarmDialog() {
@@ -2517,8 +2595,7 @@ export function FarmLedgerDashboard() {
     workType: WorkType,
     title: string,
   ) {
-    setSelectedFarmId(record.farmId);
-    setSelectedWorkItemId('');
+    openFarm(record.farmId);
     setWorkItemForm({
       ...emptyWorkItemForm(record.id),
       workType,
@@ -2696,8 +2773,7 @@ export function FarmLedgerDashboard() {
       setFormError('농가와 연결 사업을 선택해 주세요.');
       return;
     }
-    setSelectedFarmId(inboxRouteFarmId);
-    setSelectedWorkItemId('');
+    openFarm(inboxRouteFarmId);
     setWorkItemForm({
       ...emptyWorkItemForm(record.id),
       title: inboxItem.content.replace(/\s+/g, ' ').slice(0, 70),
@@ -2945,7 +3021,7 @@ export function FarmLedgerDashboard() {
         throw new Error(data.error || '사업을 저장하지 못했습니다.');
       const saved = data.project as FarmProject;
       await loadWorkspace(true);
-      setSelectedProjectId(saved.id);
+      openProjectDetail(saved.id);
       setDialog(null);
       toast.add({
         title: editingProjectId
@@ -3176,7 +3252,7 @@ export function FarmLedgerDashboard() {
           ? (data.farm as { id: string }).id
           : selectedFarm?.id;
       await loadWorkspace(true);
-      if (createdFarmId) setSelectedFarmId(createdFarmId);
+      if (createdFarmId) openFarm(createdFarmId);
       setDialog(null);
       const title = isFarmCreate
         ? '농가를 등록했습니다'
@@ -3279,9 +3355,9 @@ export function FarmLedgerDashboard() {
       const data = await readResponse(response);
       if (!response.ok || !data.workItem)
         throw new Error(data.error || '업무를 등록하지 못했습니다.');
-      const workItemId = (data.workItem as { id: string }).id;
+      const savedWorkItem = data.workItem as FarmWorkItem;
       await loadWorkspace(true);
-      setSelectedWorkItemId(workItemId);
+      openFarm(savedWorkItem.farmId, savedWorkItem.id);
       setClarifyingInboxId('');
       setDialog(null);
       toast.add({
@@ -3458,11 +3534,7 @@ export function FarmLedgerDashboard() {
     return (
       <button
         type="button"
-        onClick={() => {
-          if (selectedFarm?.id === workItem.farmId)
-            setSelectedWorkItemId(workItem.id);
-          else openFarm(workItem.farmId, workItem.id);
-        }}
+        onClick={() => openFarm(workItem.farmId, workItem.id)}
         className={`w-full rounded-2xl border p-4 text-left transition-colors ${
           isSelected
             ? 'border-[#8ec5a1] bg-[#f3faf5] shadow-sm'
@@ -4251,7 +4323,7 @@ export function FarmLedgerDashboard() {
                                       size="sm"
                                       variant="outline"
                                       onClick={() =>
-                                        setSelectedProjectId(row.project.id)
+                                        openProjectDetail(row.project.id)
                                       }
                                     >
                                       <BriefcaseBusiness /> 프로젝트 상세
@@ -5833,7 +5905,7 @@ export function FarmLedgerDashboard() {
                               type="button"
                               key={project.id}
                               aria-label={`${project.name} 통합 현황 보기`}
-                              onClick={() => setSelectedProjectId(project.id)}
+                              onClick={() => openProjectDetail(project.id)}
                               className="w-full rounded-2xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4f9a70] focus-visible:ring-offset-2"
                             >
                               <Card className="h-full cursor-pointer border-0 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
@@ -7336,18 +7408,36 @@ export function FarmLedgerDashboard() {
         </div>
 
         <Sheet
+          modal={false}
           open={Boolean(selectedProject)}
           onOpenChange={(open) => {
-            if (!open) setSelectedProjectId('');
+            if (!open) backDetail();
           }}
         >
           <SheetContent
             side="right"
-            className="w-full gap-0 overflow-y-auto p-0 sm:max-w-[980px]"
+            displayMode="workspace"
+            showOverlay={false}
+            showCloseButton={false}
+            className="gap-0 overflow-y-auto border-0 bg-[#f4f7f2] p-0 shadow-none"
           >
             {selectedProject && selectedProjectSnapshot && (
               <>
-                <SheetHeader className="border-b border-[#e2e8e1] px-6 py-5 pr-14">
+                <div className="sticky top-0 z-20 flex min-h-14 items-center gap-3 border-b border-[#dfe7dc] bg-white/95 px-4 backdrop-blur sm:px-6">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={backDetail}
+                    className="-ml-2 min-h-11 rounded-xl text-[#315f43]"
+                  >
+                    <ArrowLeft />
+                    {detailTrail.length ? '이전 화면' : '목록으로'}
+                  </Button>
+                  <span className="text-xs font-semibold text-[#7d8981]">
+                    프로젝트 전체 상세
+                  </span>
+                </div>
+                <SheetHeader className="mx-auto w-full max-w-[1440px] border-b border-[#e2e8e1] px-6 py-5">
                   <div className="mb-2 flex flex-wrap gap-2">
                     <Badge variant="outline">{selectedProject.year}</Badge>
                     <Badge variant="outline">
@@ -7398,7 +7488,7 @@ export function FarmLedgerDashboard() {
                   </div>
                 </SheetHeader>
 
-                <div className="space-y-6 bg-[#f5f7f3] px-4 py-5 sm:px-6">
+                <div className="mx-auto w-full max-w-[1440px] space-y-6 bg-[#f5f7f3] px-4 py-5 sm:px-6">
                   <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     {[
                       {
@@ -7652,11 +7742,7 @@ export function FarmLedgerDashboard() {
                             <button
                               type="button"
                               key={item.id}
-                              onClick={() => {
-                                setSelectedProjectId('');
-                                setSelectedWorkItemId(item.id);
-                                setSelectedFarmId(item.farmId);
-                              }}
+                              onClick={() => openFarm(item.farmId, item.id)}
                               className="flex w-full items-start justify-between gap-3 rounded-xl border border-[#efd8c8] bg-[#fff8f3] p-3 text-left hover:bg-[#fff3eb]"
                             >
                               <div>
@@ -7766,10 +7852,7 @@ export function FarmLedgerDashboard() {
                                 <TableCell>
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      setSelectedProjectId('');
-                                      setSelectedFarmId(record.farmId);
-                                    }}
+                                    onClick={() => openFarm(record.farmId)}
                                     className="text-left font-semibold text-[#274f39] hover:underline focus-visible:rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4f9a70]"
                                   >
                                     {farm?.name ?? '농가 없음'}
@@ -8102,21 +8185,36 @@ export function FarmLedgerDashboard() {
         </Sheet>
 
         <Sheet
+          modal={false}
           open={Boolean(selectedFarm)}
           onOpenChange={(open) => {
-            if (!open) {
-              setSelectedFarmId('');
-              setSelectedWorkItemId('');
-            }
+            if (!open) backDetail();
           }}
         >
           <SheetContent
             side="right"
-            className="w-full gap-0 p-0 sm:max-w-[820px]"
+            displayMode="workspace"
+            showOverlay={false}
+            showCloseButton={false}
+            className="gap-0 border-0 bg-[#f4f7f2] p-0 shadow-none"
           >
             {selectedFarm && (
               <>
-                <SheetHeader className="border-b border-[#e2e8e1] px-6 py-5 pr-14">
+                <div className="flex min-h-14 items-center gap-3 border-b border-[#dfe7dc] bg-white/95 px-4 sm:px-6">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={backDetail}
+                    className="-ml-2 min-h-11 rounded-xl text-[#315f43]"
+                  >
+                    <ArrowLeft />
+                    {detailTrail.length ? '이전 화면' : '목록으로'}
+                  </Button>
+                  <span className="text-xs font-semibold text-[#7d8981]">
+                    {selectedWorkItem ? '업무 전체 상세' : '농가 전체 상세'}
+                  </span>
+                </div>
+                <SheetHeader className="mx-auto w-full max-w-[1400px] border-b border-[#e2e8e1] px-6 py-5">
                   <div className="mb-2 flex flex-wrap gap-2">
                     <Badge
                       variant="outline"
@@ -8152,201 +8250,205 @@ export function FarmLedgerDashboard() {
                     </span>
                   </SheetDescription>
                 </SheetHeader>
-                <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-                  <div className="flex flex-wrap gap-2">
-                    {selectedFarm.folderUrl && (
-                      <a
-                        href={selectedFarm.folderUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <Button variant="outline" size="sm">
-                          <FolderOpen />
-                          농장 폴더
-                        </Button>
-                      </a>
-                    )}
-                    {selectedFarm.locationUrl && (
-                      <a
-                        href={selectedFarm.locationUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <Button variant="outline" size="sm">
-                          <MapPin />
-                          위치도
-                        </Button>
-                      </a>
-                    )}
-                    <Button
-                      onClick={openFarmEditDialog}
-                      size="sm"
-                      variant="outline"
-                    >
-                      <Pencil />
-                      기본정보 수정
-                    </Button>
-                    <Button
-                      onClick={openRecordAddDialog}
-                      size="sm"
-                      variant="outline"
-                    >
-                      <Plus />
-                      참여 사업 추가
-                    </Button>
-                    <Button
-                      onClick={() => openWorkItemDialog()}
-                      size="sm"
-                      disabled={!selectedRecords.length}
-                      className="bg-[#2f7b59] hover:bg-[#286b4d]"
-                    >
-                      <Plus />새 업무 등록
-                    </Button>
-                  </div>
-                  {selectedFarm.specialNotes && (
-                    <div className="mt-4 rounded-2xl bg-[#f4f7f3] p-4">
-                      <p className="text-xs font-semibold text-[#65736a]">
-                        특이사항
-                      </p>
-                      <p className="mt-1 whitespace-pre-wrap text-sm leading-6">
-                        {selectedFarm.specialNotes}
-                      </p>
-                    </div>
-                  )}
-
-                  <section className="mt-6">
-                    <div>
-                      <h3 className="font-bold">참여 사업·설치 정보</h3>
-                      <p className="mt-0.5 text-xs text-[#89938c]">
-                        업무를 등록할 때 반드시 아래 사업 중 하나에 연결합니다.
-                      </p>
-                    </div>
-                    <div className="mt-3 space-y-3">
-                      {selectedRecords.map((record) => {
-                        const project = projectById.get(record.projectId);
-                        const progress = installProgress(record);
-                        return (
-                          <article
-                            key={record.id}
-                            className="rounded-2xl border border-[#dfe6dd] p-4"
+                <div
+                  key={selectedWorkItem?.id || 'farm-overview'}
+                  className="mx-auto min-h-0 w-full max-w-[1400px] flex-1 overflow-y-auto px-6 py-5"
+                >
+                  {!selectedWorkItem && (
+                    <>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedFarm.folderUrl && (
+                          <a
+                            href={selectedFarm.folderUrl}
+                            target="_blank"
+                            rel="noreferrer"
                           >
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <div className="flex flex-wrap gap-2">
-                                  <Badge variant="outline">
-                                    {project?.year ?? '-'}
-                                  </Badge>
-                                  <Badge
-                                    variant="outline"
-                                    className={subscriptionClass(
-                                      record.subscriptionStatus,
-                                    )}
-                                  >
-                                    {
-                                      SUBSCRIPTION_STATUS_LABELS[
-                                        record.subscriptionStatus
-                                      ]
-                                    }
-                                  </Badge>
-                                </div>
-                                <h4 className="mt-2 font-semibold">
-                                  {project?.name ?? '사업 없음'}
-                                </h4>
-                                <p className="mt-1 text-xs text-[#879088]">
-                                  {record.crop || '작물 미입력'} ·{' '}
-                                  {record.deviceType || '장비 미입력'} ·{' '}
-                                  {record.productType || '제품 미입력'}
-                                </p>
-                              </div>
-                              <div className="text-right">
-                                <p className="text-[11px] text-[#879088]">
-                                  설치 단계
-                                </p>
-                                <p className="mt-1 font-bold text-[#39795b]">
-                                  {progress.complete}/4
-                                </p>
-                              </div>
-                            </div>
-                            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                              <p className="text-xs text-[#68766d]">
-                                보증 {formatDate(record.warrantyExpiresAt)} ·
-                                구독{' '}
-                                {formatDate(
-                                  record.currentSubscriptionExpiresAt,
-                                )}
-                              </p>
-                              <div className="flex flex-wrap gap-2">
-                                <Button
-                                  onClick={() => openRecordEditDialog(record)}
-                                  size="sm"
-                                  variant="outline"
-                                >
-                                  <Pencil />
-                                  설치·구독 수정
-                                </Button>
-                                <Button
-                                  onClick={() => openWorkItemDialog(record.id)}
-                                  size="sm"
-                                  variant="outline"
-                                >
-                                  <Plus />이 사업에 업무 등록
-                                </Button>
-                              </div>
-                            </div>
-                          </article>
-                        );
-                      })}
-                    </div>
-                  </section>
-
-                  <section className="mt-7">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="font-bold">농가 업무</h3>
-                        <p className="mt-0.5 text-xs text-[#89938c]">
-                          현재 상태와 마지막 받은·처리 내용을 확인합니다.
-                        </p>
+                            <Button variant="outline" size="sm">
+                              <FolderOpen />
+                              농장 폴더
+                            </Button>
+                          </a>
+                        )}
+                        {selectedFarm.locationUrl && (
+                          <a
+                            href={selectedFarm.locationUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <Button variant="outline" size="sm">
+                              <MapPin />
+                              위치도
+                            </Button>
+                          </a>
+                        )}
+                        <Button
+                          onClick={openFarmEditDialog}
+                          size="sm"
+                          variant="outline"
+                        >
+                          <Pencil />
+                          기본정보 수정
+                        </Button>
+                        <Button
+                          onClick={openRecordAddDialog}
+                          size="sm"
+                          variant="outline"
+                        >
+                          <Plus />
+                          참여 사업 추가
+                        </Button>
+                        <Button
+                          onClick={() => openWorkItemDialog()}
+                          size="sm"
+                          disabled={!selectedRecords.length}
+                          className="bg-[#2f7b59] hover:bg-[#286b4d]"
+                        >
+                          <Plus />새 업무 등록
+                        </Button>
                       </div>
-                      <Button
-                        onClick={() => openWorkItemDialog()}
-                        size="sm"
-                        variant="outline"
-                      >
-                        <Plus />
-                        업무 등록
-                      </Button>
-                    </div>
-                    <div className="mt-4 grid gap-3">
-                      {selectedWorkItems.map((item) => (
-                        <WorkItemCard key={item.id} workItem={item} />
-                      ))}
-                      {!selectedWorkItems.length && (
-                        <div className="rounded-2xl border border-dashed border-[#d7dfd5] py-10 text-center">
-                          <FileText className="mx-auto size-7 text-[#9aa49d]" />
-                          <p className="mt-3 text-sm font-semibold">
-                            등록된 업무가 없습니다.
+                      {selectedFarm.specialNotes && (
+                        <div className="mt-4 rounded-2xl bg-[#f4f7f3] p-4">
+                          <p className="text-xs font-semibold text-[#65736a]">
+                            특이사항
                           </p>
-                          <p className="mt-1 text-xs text-[#89938c]">
-                            메일·카톡·전화·구두 내용을 첫 업무로 남겨보세요.
+                          <p className="mt-1 whitespace-pre-wrap text-sm leading-6">
+                            {selectedFarm.specialNotes}
                           </p>
                         </div>
                       )}
-                    </div>
-                  </section>
+
+                      <section className="mt-6">
+                        <div>
+                          <h3 className="font-bold">참여 사업·설치 정보</h3>
+                          <p className="mt-0.5 text-xs text-[#89938c]">
+                            업무를 등록할 때 반드시 아래 사업 중 하나에
+                            연결합니다.
+                          </p>
+                        </div>
+                        <div className="mt-3 space-y-3">
+                          {selectedRecords.map((record) => {
+                            const project = projectById.get(record.projectId);
+                            const progress = installProgress(record);
+                            return (
+                              <article
+                                key={record.id}
+                                className="rounded-2xl border border-[#dfe6dd] p-4"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <div className="flex flex-wrap gap-2">
+                                      <Badge variant="outline">
+                                        {project?.year ?? '-'}
+                                      </Badge>
+                                      <Badge
+                                        variant="outline"
+                                        className={subscriptionClass(
+                                          record.subscriptionStatus,
+                                        )}
+                                      >
+                                        {
+                                          SUBSCRIPTION_STATUS_LABELS[
+                                            record.subscriptionStatus
+                                          ]
+                                        }
+                                      </Badge>
+                                    </div>
+                                    <h4 className="mt-2 font-semibold">
+                                      {project?.name ?? '사업 없음'}
+                                    </h4>
+                                    <p className="mt-1 text-xs text-[#879088]">
+                                      {record.crop || '작물 미입력'} ·{' '}
+                                      {record.deviceType || '장비 미입력'} ·{' '}
+                                      {record.productType || '제품 미입력'}
+                                    </p>
+                                  </div>
+                                  <div className="text-right">
+                                    <p className="text-[11px] text-[#879088]">
+                                      설치 단계
+                                    </p>
+                                    <p className="mt-1 font-bold text-[#39795b]">
+                                      {progress.complete}/4
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                                  <p className="text-xs text-[#68766d]">
+                                    보증 {formatDate(record.warrantyExpiresAt)}{' '}
+                                    · 구독{' '}
+                                    {formatDate(
+                                      record.currentSubscriptionExpiresAt,
+                                    )}
+                                  </p>
+                                  <div className="flex flex-wrap gap-2">
+                                    <Button
+                                      onClick={() =>
+                                        openRecordEditDialog(record)
+                                      }
+                                      size="sm"
+                                      variant="outline"
+                                    >
+                                      <Pencil />
+                                      설치·구독 수정
+                                    </Button>
+                                    <Button
+                                      onClick={() =>
+                                        openWorkItemDialog(record.id)
+                                      }
+                                      size="sm"
+                                      variant="outline"
+                                    >
+                                      <Plus />이 사업에 업무 등록
+                                    </Button>
+                                  </div>
+                                </div>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      </section>
+
+                      <section className="mt-7">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h3 className="font-bold">농가 업무</h3>
+                            <p className="mt-0.5 text-xs text-[#89938c]">
+                              현재 상태와 마지막 받은·처리 내용을 확인합니다.
+                            </p>
+                          </div>
+                          <Button
+                            onClick={() => openWorkItemDialog()}
+                            size="sm"
+                            variant="outline"
+                          >
+                            <Plus />
+                            업무 등록
+                          </Button>
+                        </div>
+                        <div className="mt-4 grid gap-3">
+                          {selectedWorkItems.map((item) => (
+                            <WorkItemCard key={item.id} workItem={item} />
+                          ))}
+                          {!selectedWorkItems.length && (
+                            <div className="rounded-2xl border border-dashed border-[#d7dfd5] py-10 text-center">
+                              <FileText className="mx-auto size-7 text-[#9aa49d]" />
+                              <p className="mt-3 text-sm font-semibold">
+                                등록된 업무가 없습니다.
+                              </p>
+                              <p className="mt-1 text-xs text-[#89938c]">
+                                메일·카톡·전화·구두 내용을 첫 업무로 남겨보세요.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      </section>
+                    </>
+                  )}
 
                   {selectedWorkItem &&
                     selectedWorkItem.farmId === selectedFarm.id && (
                       <section className="mt-7 rounded-3xl border border-[#cfe0d1] bg-[#f8fbf7] p-4 sm:p-5">
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                           <div className="min-w-0">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedWorkItemId('')}
-                              className="mb-2 flex items-center gap-1 text-xs font-semibold text-[#66806d]"
-                            >
-                              <ArrowLeft className="size-3.5" />
-                              업무 목록으로
-                            </button>
                             <div className="flex flex-wrap gap-2">
                               <Badge variant="outline">
                                 {
@@ -8808,67 +8910,71 @@ export function FarmLedgerDashboard() {
                       </section>
                     )}
 
-                  <section className="mt-7">
-                    <div>
-                      <h3 className="font-bold">농가 전체 히스토리</h3>
-                      <p className="mt-0.5 text-xs text-[#89938c]">
-                        어느 사업과 업무에 속하는 기록인지 함께 표시합니다.
-                      </p>
-                    </div>
-                    <ol className="mt-4 space-y-3">
-                      {selectedFarmHistory.map(({ entry, workItem }) => (
-                        <li
-                          key={entry.id}
-                          className="rounded-2xl border border-[#e0e6df] bg-white p-4"
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Badge variant="outline">
-                                {projectForWorkItem(workItem)?.name ??
-                                  '사업 없음'}
-                              </Badge>
-                              <Badge variant="outline">
-                                {FARM_LOG_TYPE_LABELS[workItem.workType]}
-                              </Badge>
-                              <span className="text-xs font-semibold">
-                                {workItem.title}
-                              </span>
-                            </div>
-                            <time className="text-[11px] text-[#929b94]">
-                              {formatTimestamp(entry.occurredAt)}
-                            </time>
-                          </div>
-                          {entry.receivedContent && (
-                            <p className="mt-3 line-clamp-2 text-sm leading-6">
-                              <strong className="text-[#78847c]">
-                                받은 내용 ·{' '}
-                              </strong>
-                              {entry.receivedContent}
-                            </p>
-                          )}
-                          {entry.actionContent && (
-                            <p className="mt-2 line-clamp-2 text-sm leading-6 text-[#476752]">
-                              <strong>처리 내용 · </strong>
-                              {entry.actionContent}
-                            </p>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => setSelectedWorkItemId(workItem.id)}
-                            className="mt-3 flex items-center gap-1 text-xs font-semibold text-[#39795b]"
+                  {!selectedWorkItem && (
+                    <section className="mt-7">
+                      <div>
+                        <h3 className="font-bold">농가 전체 히스토리</h3>
+                        <p className="mt-0.5 text-xs text-[#89938c]">
+                          어느 사업과 업무에 속하는 기록인지 함께 표시합니다.
+                        </p>
+                      </div>
+                      <ol className="mt-4 space-y-3">
+                        {selectedFarmHistory.map(({ entry, workItem }) => (
+                          <li
+                            key={entry.id}
+                            className="rounded-2xl border border-[#e0e6df] bg-white p-4"
                           >
-                            업무 전체 과정 보기{' '}
-                            <ArrowRight className="size-3.5" />
-                          </button>
-                        </li>
-                      ))}
-                      {!selectedFarmHistory.length && (
-                        <li className="rounded-2xl border border-dashed py-8 text-center text-sm text-[#89938c]">
-                          아직 기록된 히스토리가 없습니다.
-                        </li>
-                      )}
-                    </ol>
-                  </section>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="outline">
+                                  {projectForWorkItem(workItem)?.name ??
+                                    '사업 없음'}
+                                </Badge>
+                                <Badge variant="outline">
+                                  {FARM_LOG_TYPE_LABELS[workItem.workType]}
+                                </Badge>
+                                <span className="text-xs font-semibold">
+                                  {workItem.title}
+                                </span>
+                              </div>
+                              <time className="text-[11px] text-[#929b94]">
+                                {formatTimestamp(entry.occurredAt)}
+                              </time>
+                            </div>
+                            {entry.receivedContent && (
+                              <p className="mt-3 line-clamp-2 text-sm leading-6">
+                                <strong className="text-[#78847c]">
+                                  받은 내용 ·{' '}
+                                </strong>
+                                {entry.receivedContent}
+                              </p>
+                            )}
+                            {entry.actionContent && (
+                              <p className="mt-2 line-clamp-2 text-sm leading-6 text-[#476752]">
+                                <strong>처리 내용 · </strong>
+                                {entry.actionContent}
+                              </p>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openFarm(workItem.farmId, workItem.id)
+                              }
+                              className="mt-3 flex items-center gap-1 text-xs font-semibold text-[#39795b]"
+                            >
+                              업무 전체 과정 보기{' '}
+                              <ArrowRight className="size-3.5" />
+                            </button>
+                          </li>
+                        ))}
+                        {!selectedFarmHistory.length && (
+                          <li className="rounded-2xl border border-dashed py-8 text-center text-sm text-[#89938c]">
+                            아직 기록된 히스토리가 없습니다.
+                          </li>
+                        )}
+                      </ol>
+                    </section>
+                  )}
                 </div>
               </>
             )}
