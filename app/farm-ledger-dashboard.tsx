@@ -542,6 +542,48 @@ function countValues(values: string[]) {
     );
 }
 
+function normalizedLedgerLabel(value: string, fallback: string) {
+  return value.trim().replace(/\s+/g, ' ') || fallback;
+}
+
+function farmCropLabels(records: FarmRecord[]) {
+  const labels = Array.from(
+    new Set(
+      records
+        .map((record) => normalizedLedgerLabel(record.crop, ''))
+        .filter(Boolean),
+    ),
+  );
+  return labels.length ? labels : ['작목 미입력'];
+}
+
+function effectiveFarmSubscriptionStatus(
+  records: FarmRecord[],
+  today: string,
+): SubscriptionStatus {
+  if (
+    records.some(
+      (record) =>
+        record.subscriptionStatus === 'active' &&
+        Boolean(record.currentSubscriptionExpiresAt) &&
+        record.currentSubscriptionExpiresAt >= today,
+    )
+  ) {
+    return 'active';
+  }
+  if (
+    records.some(
+      (record) =>
+        record.subscriptionStatus === 'expired' ||
+        (Boolean(record.currentSubscriptionExpiresAt) &&
+          record.currentSubscriptionExpiresAt < today),
+    )
+  ) {
+    return 'expired';
+  }
+  return 'unregistered';
+}
+
 function emptyProjectForm(): FarmProjectInput {
   return {
     name: '',
@@ -879,8 +921,10 @@ export function FarmLedgerDashboard() {
   >('all');
   const [projectFilter, setProjectFilter] = useState('all');
   const [subscriptionFilter, setSubscriptionFilter] = useState<
-    'all' | SubscriptionStatus
+    'all' | 'unsubscribed' | SubscriptionStatus
   >('all');
+  const [farmCropFilter, setFarmCropFilter] = useState('all');
+  const [farmRegionFilter, setFarmRegionFilter] = useState('all');
   const [workSearch, setWorkSearch] = useState('');
   const [workTypeFilter, setWorkTypeFilter] = useState<'all' | WorkType>('all');
   const [workStatusFilter, setWorkStatusFilter] = useState<'all' | WorkStatus>(
@@ -1007,6 +1051,57 @@ export function FarmLedgerDashboard() {
       records.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
     return map;
   }, [workspace.records]);
+
+  const subscriptionToday = localDateString(new Date(riskNow));
+  const farmLedgerSummary = useMemo(() => {
+    const cropFarmIds = new Map<string, Set<string>>();
+    const regionFarmIds = new Map<string, Set<string>>();
+    let subscribed = 0;
+    let expired = 0;
+    let unregistered = 0;
+
+    for (const farm of workspace.farms) {
+      const records = recordsByFarm.get(farm.id) ?? [];
+      const status = effectiveFarmSubscriptionStatus(
+        records,
+        subscriptionToday,
+      );
+      if (status === 'active') subscribed += 1;
+      else if (status === 'expired') expired += 1;
+      else unregistered += 1;
+
+      for (const crop of farmCropLabels(records)) {
+        const farmIds = cropFarmIds.get(crop) ?? new Set<string>();
+        farmIds.add(farm.id);
+        cropFarmIds.set(crop, farmIds);
+      }
+
+      const region = normalizedLedgerLabel(farm.region, '지역 미입력');
+      const regionIds = regionFarmIds.get(region) ?? new Set<string>();
+      regionIds.add(farm.id);
+      regionFarmIds.set(region, regionIds);
+    }
+
+    const breakdown = (source: Map<string, Set<string>>) =>
+      [...source.entries()]
+        .map(([label, farmIds]) => ({ label, count: farmIds.size }))
+        .sort(
+          (left, right) =>
+            right.count - left.count ||
+            left.label.localeCompare(right.label, 'ko-KR'),
+        );
+    const total = workspace.farms.length;
+    return {
+      total,
+      subscribed,
+      unsubscribed: total - subscribed,
+      expired,
+      unregistered,
+      subscriptionRate: total ? Math.round((subscribed / total) * 100) : 0,
+      crops: breakdown(cropFarmIds),
+      regions: breakdown(regionFarmIds),
+    };
+  }, [recordsByFarm, subscriptionToday, workspace.farms]);
 
   const workItemsByFarm = useMemo(() => {
     const map = new Map<string, FarmWorkItem[]>();
@@ -1481,6 +1576,10 @@ export function FarmLedgerDashboard() {
     return workspace.farms
       .filter((farm) => {
         const records = recordsByFarm.get(farm.id) ?? [];
+        const scopedRecords =
+          projectFilter === 'all'
+            ? records
+            : records.filter((record) => record.projectId === projectFilter);
         const workItems = workItemsByFarm.get(farm.id) ?? [];
         const histories = workItems.flatMap(
           (workItem) => historiesByWorkItem.get(workItem.id) ?? [],
@@ -1513,28 +1612,42 @@ export function FarmLedgerDashboard() {
           .join(' ')
           .toLocaleLowerCase('ko-KR');
         const matchesProject =
-          projectFilter === 'all' ||
-          records.some((record) => record.projectId === projectFilter);
+          projectFilter === 'all' || scopedRecords.length > 0;
+        const effectiveSubscriptionStatus = effectiveFarmSubscriptionStatus(
+          scopedRecords,
+          subscriptionToday,
+        );
         const matchesSubscription =
           subscriptionFilter === 'all' ||
-          records.some(
-            (record) => record.subscriptionStatus === subscriptionFilter,
-          );
+          (subscriptionFilter === 'unsubscribed'
+            ? effectiveSubscriptionStatus !== 'active'
+            : effectiveSubscriptionStatus === subscriptionFilter);
+        const crops = farmCropLabels(scopedRecords);
+        const matchesCrop =
+          farmCropFilter === 'all' || crops.includes(farmCropFilter);
+        const region = normalizedLedgerLabel(farm.region, '지역 미입력');
+        const matchesRegion =
+          farmRegionFilter === 'all' || region === farmRegionFilter;
         return (
           (!query || text.includes(query)) &&
           matchesProject &&
-          matchesSubscription
+          matchesSubscription &&
+          matchesCrop &&
+          matchesRegion
         );
       })
       .sort((a, b) => farmLastActivity(b) - farmLastActivity(a));
   }, [
     historiesByWorkItem,
     farmLastActivity,
+    farmCropFilter,
+    farmRegionFilter,
     projectById,
     projectFilter,
     recordsByFarm,
     search,
     subscriptionFilter,
+    subscriptionToday,
     workItemsByFarm,
     workspace.farms,
   ]);
@@ -2400,6 +2513,14 @@ export function FarmLedgerDashboard() {
     setView(next);
     if (next !== 'farms') setSearch('');
     requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'auto' }));
+  }
+
+  function resetFarmLedgerFilters() {
+    setSearch('');
+    setProjectFilter('all');
+    setSubscriptionFilter('all');
+    setFarmCropFilter('all');
+    setFarmRegionFilter('all');
   }
 
   function openProjectDetail(projectId: string) {
@@ -3517,10 +3638,19 @@ export function FarmLedgerDashboard() {
 
   function farmRow(farm: Farm) {
     const record = primaryRecordForFarm(farm);
+    const records = recordsByFarm.get(farm.id) ?? [];
+    const scopedRecords =
+      projectFilter === 'all'
+        ? records
+        : records.filter((item) => item.projectId === projectFilter);
     return {
       record,
       project: record ? projectById.get(record.projectId) : null,
       latestWorkItem: workItemsByFarm.get(farm.id)?.[0] ?? null,
+      subscriptionStatus: effectiveFarmSubscriptionStatus(
+        scopedRecords,
+        subscriptionToday,
+      ),
     };
   }
 
@@ -5648,7 +5778,237 @@ export function FarmLedgerDashboard() {
                           </Button>
                         </div>
                       </div>
-                      <div className="mb-4 grid gap-2 rounded-2xl border border-[#dfe6dd] bg-white p-4 sm:grid-cols-[1fr_190px_150px]">
+                      <div className="mb-4 grid gap-3 sm:grid-cols-3">
+                        <button
+                          type="button"
+                          aria-pressed={subscriptionFilter === 'all'}
+                          onClick={() => setSubscriptionFilter('all')}
+                          className={`rounded-2xl border bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+                            subscriptionFilter === 'all'
+                              ? 'border-[#76b48c] ring-2 ring-[#d8ecdf]'
+                              : 'border-[#dfe6dd]'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-sm font-semibold text-[#627269]">
+                              전체 농가
+                            </p>
+                            <span className="grid size-9 place-items-center rounded-xl bg-[#edf5ee] text-[#39795b]">
+                              <Warehouse className="size-[18px]" />
+                            </span>
+                          </div>
+                          <p className="mt-3">
+                            <strong className="text-3xl font-bold">
+                              {farmLedgerSummary.total}
+                            </strong>
+                            <span className="ml-1 text-sm text-[#758078]">
+                              곳
+                            </span>
+                          </p>
+                          <p className="mt-2 text-xs text-[#89938c]">
+                            전체 관리대장 등록 기준
+                          </p>
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={subscriptionFilter === 'active'}
+                          onClick={() => setSubscriptionFilter('active')}
+                          className={`rounded-2xl border bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+                            subscriptionFilter === 'active'
+                              ? 'border-[#76b48c] ring-2 ring-[#d8ecdf]'
+                              : 'border-[#dfe6dd]'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-sm font-semibold text-[#39745a]">
+                              구독 농가
+                            </p>
+                            <span className="grid size-9 place-items-center rounded-xl bg-[#e8f6ed] text-[#2f7b59]">
+                              <CheckCircle2 className="size-[18px]" />
+                            </span>
+                          </div>
+                          <p className="mt-3">
+                            <strong className="text-3xl font-bold text-[#246847]">
+                              {farmLedgerSummary.subscribed}
+                            </strong>
+                            <span className="ml-1 text-sm text-[#758078]">
+                              곳
+                            </span>
+                          </p>
+                          <p className="mt-2 text-xs text-[#748178]">
+                            전체 대비 {farmLedgerSummary.subscriptionRate}%
+                          </p>
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={subscriptionFilter === 'unsubscribed'}
+                          onClick={() => setSubscriptionFilter('unsubscribed')}
+                          className={`rounded-2xl border bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+                            subscriptionFilter === 'unsubscribed'
+                              ? 'border-[#d9a46e] ring-2 ring-[#f3e5d5]'
+                              : 'border-[#dfe6dd]'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-sm font-semibold text-[#8c643c]">
+                              미구독 농가
+                            </p>
+                            <span className="grid size-9 place-items-center rounded-xl bg-[#fff4e8] text-[#a56b35]">
+                              <CircleAlert className="size-[18px]" />
+                            </span>
+                          </div>
+                          <p className="mt-3">
+                            <strong className="text-3xl font-bold text-[#8f5f31]">
+                              {farmLedgerSummary.unsubscribed}
+                            </strong>
+                            <span className="ml-1 text-sm text-[#758078]">
+                              곳
+                            </span>
+                          </p>
+                          <p className="mt-2 text-xs text-[#8b7764]">
+                            만료 {farmLedgerSummary.expired} · 미등록{' '}
+                            {farmLedgerSummary.unregistered}
+                          </p>
+                        </button>
+                      </div>
+
+                      <div className="mb-5 grid gap-4 xl:grid-cols-2">
+                        <article className="rounded-2xl border border-[#dfe6dd] bg-white p-5 shadow-sm">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <Leaf className="size-[18px] text-[#39795b]" />
+                                <h2 className="font-bold">작목별 농가</h2>
+                              </div>
+                              <p className="mt-1 text-xs text-[#89938c]">
+                                복수 작목 농가는 각 작목에 포함됩니다.
+                              </p>
+                            </div>
+                            <Badge variant="outline">
+                              {farmLedgerSummary.crops.length}개 작목
+                            </Badge>
+                          </div>
+                          <div className="mt-4 max-h-[280px] space-y-1 overflow-y-auto pr-1">
+                            {farmLedgerSummary.crops.map((item) => {
+                              const percent = farmLedgerSummary.total
+                                ? Math.round(
+                                    (item.count / farmLedgerSummary.total) *
+                                      100,
+                                  )
+                                : 0;
+                              return (
+                                <button
+                                  key={item.label}
+                                  type="button"
+                                  aria-label={`${item.label} 농가 ${item.count}곳 목록 보기`}
+                                  aria-pressed={farmCropFilter === item.label}
+                                  onClick={() =>
+                                    setFarmCropFilter((current) =>
+                                      current === item.label
+                                        ? 'all'
+                                        : item.label,
+                                    )
+                                  }
+                                  className={`block w-full rounded-xl px-3 py-2.5 text-left transition ${
+                                    farmCropFilter === item.label
+                                      ? 'bg-[#edf7f0] ring-1 ring-[#b9d8c3]'
+                                      : 'hover:bg-[#f6f8f5]'
+                                  }`}
+                                >
+                                  <span className="flex items-center justify-between gap-3 text-sm">
+                                    <span className="truncate font-medium">
+                                      {item.label}
+                                    </span>
+                                    <span className="shrink-0 text-xs text-[#6f7c74]">
+                                      {item.count}곳 · {percent}%
+                                    </span>
+                                  </span>
+                                  <span className="mt-2 block h-1.5 overflow-hidden rounded-full bg-[#edf0ec]">
+                                    <span
+                                      className="block h-full rounded-full bg-[#5b9d73]"
+                                      style={{ width: `${percent}%` }}
+                                    />
+                                  </span>
+                                </button>
+                              );
+                            })}
+                            {!farmLedgerSummary.crops.length && (
+                              <p className="py-8 text-center text-sm text-[#89938c]">
+                                등록된 농가가 없습니다.
+                              </p>
+                            )}
+                          </div>
+                        </article>
+
+                        <article className="rounded-2xl border border-[#dfe6dd] bg-white p-5 shadow-sm">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <MapPin className="size-[18px] text-[#39795b]" />
+                                <h2 className="font-bold">지역별 농가</h2>
+                              </div>
+                              <p className="mt-1 text-xs text-[#89938c]">
+                                농가 관리대장에 등록된 지역 기준입니다.
+                              </p>
+                            </div>
+                            <Badge variant="outline">
+                              {farmLedgerSummary.regions.length}개 지역
+                            </Badge>
+                          </div>
+                          <div className="mt-4 max-h-[280px] space-y-1 overflow-y-auto pr-1">
+                            {farmLedgerSummary.regions.map((item) => {
+                              const percent = farmLedgerSummary.total
+                                ? Math.round(
+                                    (item.count / farmLedgerSummary.total) *
+                                      100,
+                                  )
+                                : 0;
+                              return (
+                                <button
+                                  key={item.label}
+                                  type="button"
+                                  aria-label={`${item.label} 지역 농가 ${item.count}곳 목록 보기`}
+                                  aria-pressed={farmRegionFilter === item.label}
+                                  onClick={() =>
+                                    setFarmRegionFilter((current) =>
+                                      current === item.label
+                                        ? 'all'
+                                        : item.label,
+                                    )
+                                  }
+                                  className={`block w-full rounded-xl px-3 py-2.5 text-left transition ${
+                                    farmRegionFilter === item.label
+                                      ? 'bg-[#edf7f0] ring-1 ring-[#b9d8c3]'
+                                      : 'hover:bg-[#f6f8f5]'
+                                  }`}
+                                >
+                                  <span className="flex items-center justify-between gap-3 text-sm">
+                                    <span className="truncate font-medium">
+                                      {item.label}
+                                    </span>
+                                    <span className="shrink-0 text-xs text-[#6f7c74]">
+                                      {item.count}곳 · {percent}%
+                                    </span>
+                                  </span>
+                                  <span className="mt-2 block h-1.5 overflow-hidden rounded-full bg-[#edf0ec]">
+                                    <span
+                                      className="block h-full rounded-full bg-[#7aa083]"
+                                      style={{ width: `${percent}%` }}
+                                    />
+                                  </span>
+                                </button>
+                              );
+                            })}
+                            {!farmLedgerSummary.regions.length && (
+                              <p className="py-8 text-center text-sm text-[#89938c]">
+                                등록된 농가가 없습니다.
+                              </p>
+                            )}
+                          </div>
+                        </article>
+                      </div>
+
+                      <div className="mb-3 grid gap-2 rounded-2xl border border-[#dfe6dd] bg-white p-4 sm:grid-cols-2 xl:grid-cols-[minmax(260px,1fr)_180px_150px_160px_160px]">
                         <div className="relative">
                           <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#99a39c]" />
                           <Input
@@ -5689,11 +6049,82 @@ export function FarmLedgerDashboard() {
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="all">모든 구독</SelectItem>
-                            <SelectItem value="active">사용중</SelectItem>
+                            <SelectItem value="active">구독 중</SelectItem>
+                            <SelectItem value="unsubscribed">
+                              미구독 전체
+                            </SelectItem>
                             <SelectItem value="expired">만료</SelectItem>
                             <SelectItem value="unregistered">미등록</SelectItem>
                           </SelectContent>
                         </Select>
+                        <Select
+                          value={farmCropFilter}
+                          onValueChange={(value) =>
+                            setFarmCropFilter(value ?? 'all')
+                          }
+                        >
+                          <SelectTrigger
+                            className="h-10 w-full"
+                            aria-label="농가 작목 필터"
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">모든 작목</SelectItem>
+                            {farmLedgerSummary.crops.map((item) => (
+                              <SelectItem key={item.label} value={item.label}>
+                                {item.label} · {item.count}곳
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Select
+                          value={farmRegionFilter}
+                          onValueChange={(value) =>
+                            setFarmRegionFilter(value ?? 'all')
+                          }
+                        >
+                          <SelectTrigger
+                            className="h-10 w-full"
+                            aria-label="농가 지역 필터"
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">모든 지역</SelectItem>
+                            {farmLedgerSummary.regions.map((item) => (
+                              <SelectItem key={item.label} value={item.label}>
+                                {item.label} · {item.count}곳
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1">
+                        <p className="text-sm text-[#69766e]">
+                          현재 조건{' '}
+                          <strong className="text-[#285f43]">
+                            {filteredFarms.length}곳
+                          </strong>{' '}
+                          <span className="text-[#9aa39d]">
+                            / 전체 {farmLedgerSummary.total}곳
+                          </span>
+                        </p>
+                        {(search ||
+                          projectFilter !== 'all' ||
+                          subscriptionFilter !== 'all' ||
+                          farmCropFilter !== 'all' ||
+                          farmRegionFilter !== 'all') && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={resetFarmLedgerFilters}
+                            className="text-[#39795b]"
+                          >
+                            전체 조건 초기화
+                          </Button>
+                        )}
                       </div>
                       <div className="overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
                         <Table>
@@ -5701,7 +6132,7 @@ export function FarmLedgerDashboard() {
                             <TableRow className="bg-[#f7f9f6]">
                               <TableHead className="pl-5">농가</TableHead>
                               <TableHead>사업</TableHead>
-                              <TableHead>지역·장비</TableHead>
+                              <TableHead>지역·작목</TableHead>
                               <TableHead>최근 업무</TableHead>
                               <TableHead>업무 상태</TableHead>
                               <TableHead>구독</TableHead>
@@ -5712,8 +6143,12 @@ export function FarmLedgerDashboard() {
                           </TableHeader>
                           <TableBody>
                             {filteredFarms.map((farm) => {
-                              const { record, project, latestWorkItem } =
-                                farmRow(farm);
+                              const {
+                                record,
+                                project,
+                                latestWorkItem,
+                                subscriptionStatus,
+                              } = farmRow(farm);
                               return (
                                 <TableRow key={farm.id}>
                                   <TableCell className="pl-5">
@@ -5742,6 +6177,7 @@ export function FarmLedgerDashboard() {
                                   <TableCell>
                                     <p>{farm.region}</p>
                                     <p className="mt-1 text-xs text-[#8b958e]">
+                                      {record?.crop || '작목 미입력'} ·{' '}
                                       {record?.deviceType || '장비 미입력'}
                                     </p>
                                   </TableCell>
@@ -5775,20 +6211,18 @@ export function FarmLedgerDashboard() {
                                     )}
                                   </TableCell>
                                   <TableCell>
-                                    {record && (
-                                      <Badge
-                                        variant="outline"
-                                        className={subscriptionClass(
-                                          record.subscriptionStatus,
-                                        )}
-                                      >
-                                        {
-                                          SUBSCRIPTION_STATUS_LABELS[
-                                            record.subscriptionStatus
-                                          ]
-                                        }
-                                      </Badge>
-                                    )}
+                                    <Badge
+                                      variant="outline"
+                                      className={subscriptionClass(
+                                        subscriptionStatus,
+                                      )}
+                                    >
+                                      {
+                                        SUBSCRIPTION_STATUS_LABELS[
+                                          subscriptionStatus
+                                        ]
+                                      }
+                                    </Badge>
                                   </TableCell>
                                   <TableCell className="pr-5 text-right text-xs text-[#89938c]">
                                     {formatTimestamp(
