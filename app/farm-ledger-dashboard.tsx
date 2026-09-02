@@ -751,6 +751,14 @@ function subscriptionClass(status: SubscriptionStatus) {
   return 'border-[#d9dfda] bg-[#f5f7f5] text-[#707b73]';
 }
 
+function projectStatusClass(status: FarmProjectStatus) {
+  if (status === 'active')
+    return 'border-[#bfe3cb] bg-[#edf8f1] text-[#28744f]';
+  if (status === 'on_hold')
+    return 'border-[#ead9b8] bg-[#fff9ed] text-[#94601c]';
+  return 'border-[#d6dde8] bg-[#f2f5f9] text-[#5f6f83]';
+}
+
 function workStatusClass(status: WorkStatus) {
   if (status === 'completed')
     return 'border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]';
@@ -857,6 +865,12 @@ export function FarmLedgerDashboard() {
   const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
   const [projectSearch, setProjectSearch] = useState('');
+  const [overviewSearch, setOverviewSearch] = useState('');
+  const [overviewProjectStatus, setOverviewProjectStatus] = useState<
+    'all' | FarmProjectStatus
+  >('all');
+  const [overviewExpandedTaskProjects, setOverviewExpandedTaskProjects] =
+    useState<string[]>([]);
   const [projectYearFilter, setProjectYearFilter] = useState('all');
   const [projectRiskFilter, setProjectRiskFilter] = useState<
     'all' | 'blocked' | 'documents' | 'subscription' | 'settlement'
@@ -1288,6 +1302,146 @@ export function FarmLedgerDashboard() {
   const projectSnapshots = new Map(
     workspace.projects.map((project) => [project.id, projectSnapshot(project)]),
   );
+
+  const overviewQuery = overviewSearch.trim().toLocaleLowerCase('ko-KR');
+  const overviewAllProjectRows = workspace.projects
+    .map((project) => {
+      const snapshot = projectSnapshots.get(project.id)!;
+      const workItems = [...snapshot.workItems].sort((left, right) => {
+        const leftDays = daysUntil(left.dueDate);
+        const rightDays = daysUntil(right.dueDate);
+        const leftOverdue =
+          left.status !== 'completed' && leftDays !== null && leftDays < 0;
+        const rightOverdue =
+          right.status !== 'completed' && rightDays !== null && rightDays < 0;
+        const statusRank: Record<WorkStatus, number> = {
+          waiting: 0,
+          in_progress: 1,
+          open: 2,
+          completed: 3,
+        };
+        return (
+          Number(rightOverdue) - Number(leftOverdue) ||
+          statusRank[left.status] - statusRank[right.status] ||
+          (left.dueDate || '9999').localeCompare(right.dueDate || '9999') ||
+          right.lastActivityAt - left.lastActivityAt
+        );
+      });
+      const counts = {
+        open: workItems.filter((item) => item.status === 'open').length,
+        inProgress: workItems.filter((item) => item.status === 'in_progress')
+          .length,
+        waiting: workItems.filter((item) => item.status === 'waiting').length,
+        completed: workItems.filter((item) => item.status === 'completed')
+          .length,
+      };
+      const overdue = workItems.filter((item) => {
+        const days = daysUntil(item.dueDate);
+        return item.status !== 'completed' && days !== null && days < 0;
+      }).length;
+      const dueSoon = workItems.filter((item) => {
+        const days = daysUntil(item.dueDate);
+        return (
+          item.status !== 'completed' && days !== null && days >= 0 && days <= 7
+        );
+      }).length;
+      const riskWorkItemCount = workItems.filter((item) => {
+        const days = daysUntil(item.dueDate);
+        return (
+          item.status === 'waiting' ||
+          (item.status !== 'completed' && days !== null && days < 0)
+        );
+      }).length;
+      const completionRate = workItems.length
+        ? Math.round((counts.completed / workItems.length) * 100)
+        : null;
+      const projectSearchableText = [
+        project.name,
+        project.institution,
+        project.manager,
+        FARM_PROJECT_STAGE_LABELS[project.currentStage],
+      ]
+        .join(' ')
+        .toLocaleLowerCase('ko-KR');
+      const searchableText = [
+        projectSearchableText,
+        ...workItems.flatMap((item) => [
+          item.title,
+          item.owner,
+          item.nextAction,
+          item.blockedReason,
+          farmById.get(item.farmId)?.name ?? '',
+        ]),
+      ]
+        .join(' ')
+        .toLocaleLowerCase('ko-KR');
+      return {
+        project,
+        snapshot,
+        workItems,
+        counts,
+        overdue,
+        dueSoon,
+        completionRate,
+        riskCount: riskWorkItemCount + snapshot.openProjectBlockers.length,
+        projectSearchableText,
+        searchableText,
+      };
+    })
+    .sort((left, right) => {
+      const projectRank: Record<FarmProjectStatus, number> = {
+        active: 0,
+        on_hold: 1,
+        completed: 2,
+      };
+      return (
+        projectRank[left.project.status] - projectRank[right.project.status] ||
+        right.riskCount - left.riskCount ||
+        right.snapshot.latestActivityAt - left.snapshot.latestActivityAt ||
+        left.project.name.localeCompare(right.project.name, 'ko-KR')
+      );
+    });
+
+  const overviewProjectRows = overviewAllProjectRows.filter(
+    (row) =>
+      (overviewProjectStatus === 'all' ||
+        row.project.status === overviewProjectStatus) &&
+      (!overviewQuery || row.searchableText.includes(overviewQuery)),
+  );
+
+  const overviewProjectWorkItems = Array.from(
+    new Map(
+      overviewAllProjectRows.flatMap((row) =>
+        row.workItems.map((item) => [item.id, item] as const),
+      ),
+    ).values(),
+  );
+
+  const overviewCompletedWorkItems = overviewProjectWorkItems.filter(
+    (item) => item.status === 'completed',
+  ).length;
+  const overviewOpenWorkItems = overviewProjectWorkItems.filter(
+    (item) => item.status === 'open',
+  ).length;
+  const overviewInProgressWorkItems = overviewProjectWorkItems.filter(
+    (item) => item.status === 'in_progress',
+  ).length;
+  const overviewWaitingWorkItems = overviewProjectWorkItems.filter(
+    (item) => item.status === 'waiting',
+  ).length;
+  const overviewIncompleteWorkItems =
+    overviewOpenWorkItems +
+    overviewInProgressWorkItems +
+    overviewWaitingWorkItems;
+  const overviewCompletionRate = overviewProjectWorkItems.length
+    ? Math.round(
+        (overviewCompletedWorkItems / overviewProjectWorkItems.length) * 100,
+      )
+    : null;
+  const projectsWithoutWorkItems = workspace.projects.filter(
+    (project) =>
+      (projectSnapshots.get(project.id)?.workItems.length ?? 0) === 0,
+  ).length;
 
   function latestEntryWith(
     workItem: FarmWorkItem,
@@ -3731,55 +3885,79 @@ export function FarmLedgerDashboard() {
                       <div className="mb-7 flex flex-col justify-between gap-4 xl:flex-row xl:items-end">
                         <div>
                           <p className="mb-1 text-sm font-medium text-[#647568]">
-                            프로그램 등록 현황
+                            프로젝트 중심 통합 현황
                           </p>
                           <h1 className="text-[27px] font-bold tracking-[-0.04em] sm:text-[32px]">
-                            스마트팜 업무 관리대장
+                            프로젝트·하위 업무 처리 현황
                           </h1>
                           <p className="mt-2 text-sm text-[#77847b]">
-                            사업별 업무의 마지막 수신 내용, 처리 결과와 전체
-                            과정을 연결합니다.
+                            전체 프로젝트 수부터 프로젝트별 하위 업무와 현재
+                            처리 상태까지 한 화면에서 확인합니다.
                           </p>
                         </div>
-                        <div className="relative w-full xl:w-80">
-                          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#99a39c]" />
-                          <Input
-                            value={search}
-                            onChange={(event) => setSearch(event.target.value)}
-                            onFocus={() => setView('farms')}
-                            placeholder="농가명, 사업, 업무, 장비 검색"
-                            className="h-10 rounded-xl border-[#dbe3d9] bg-white pl-9"
-                          />
+                        <div className="flex w-full flex-col gap-2 xl:w-[430px]">
+                          <div className="relative">
+                            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#99a39c]" />
+                            <Input
+                              value={overviewSearch}
+                              onChange={(event) =>
+                                setOverviewSearch(event.target.value)
+                              }
+                              placeholder="프로젝트, 하위 업무, 농가, 담당자 검색"
+                              className="h-10 rounded-xl border-[#dbe3d9] bg-white pl-9"
+                            />
+                          </div>
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => setView('work')}
+                            >
+                              <List />
+                              전체 업무
+                            </Button>
+                            <Button
+                              type="button"
+                              onClick={openProjectDialog}
+                              className="bg-[#2f7b59] hover:bg-[#286b4d]"
+                            >
+                              <Plus />
+                              프로젝트 등록
+                            </Button>
+                          </div>
                         </div>
                       </div>
                       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                         {[
                           {
-                            label: '등록 농가',
-                            value: `${workspace.farms.length}곳`,
-                            note: `활성 구독 ${activeSubscriptions}곳`,
-                            icon: Warehouse,
+                            label: '전체 프로젝트',
+                            value: `${workspace.projects.length}개`,
+                            note: `진행 ${activeProjects} · 보류 ${workspace.projects.filter((project) => project.status === 'on_hold').length} · 완료 ${workspace.projects.filter((project) => project.status === 'completed').length}`,
+                            icon: BriefcaseBusiness,
                             tone: 'bg-[#e6f3ea] text-[#2f7b59]',
                           },
                           {
-                            label: '진행 사업',
-                            value: `${activeProjects}개`,
-                            note: `전체 사업 ${workspace.projects.length}개`,
-                            icon: BriefcaseBusiness,
+                            label: '프로젝트 하위 업무',
+                            value: `${overviewProjectWorkItems.length}건`,
+                            note: `업무 미등록 프로젝트 ${projectsWithoutWorkItems}개`,
+                            icon: ClipboardList,
                             tone: 'bg-[#e9f0df] text-[#66843d]',
                           },
                           {
-                            label: '처리할 업무',
-                            value: `${openWorkItems}건`,
-                            note: `마감 지연 ${overdueWorkItems.length}건`,
+                            label: '처리 필요 업무',
+                            value: `${overviewIncompleteWorkItems}건`,
+                            note: `접수 ${overviewOpenWorkItems} · 처리 중 ${overviewInProgressWorkItems} · 대기·막힘 ${overviewWaitingWorkItems}`,
                             icon: CalendarClock,
                             tone: 'bg-[#fff0e6] text-[#b46438]',
                           },
                           {
-                            label: '입금 기록',
-                            value: formatMoney(paymentTotal),
-                            note: `구독 만료 ${expiredSubscriptions}곳`,
-                            icon: CreditCard,
+                            label: '하위 업무 완료율',
+                            value:
+                              overviewCompletionRate === null
+                                ? '-'
+                                : `${overviewCompletionRate}%`,
+                            note: `완료 ${overviewCompletedWorkItems}/${overviewProjectWorkItems.length}건`,
+                            icon: CheckCircle2,
                             tone: 'bg-[#edf5e8] text-[#5c823e]',
                           },
                         ].map((metric) => (
@@ -3808,6 +3986,433 @@ export function FarmLedgerDashboard() {
                           </Card>
                         ))}
                       </section>
+
+                      <section className="mt-5 overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
+                        <div className="flex flex-col gap-4 border-b border-[#e5ebe3] px-5 py-4 xl:flex-row xl:items-end xl:justify-between">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h2 className="font-bold">
+                                프로젝트별 하위 업무 처리 현황
+                              </h2>
+                              <Badge
+                                variant="outline"
+                                className="border-[#cfe0d1] bg-[#f2f8f2] text-[#39795b]"
+                              >
+                                {overviewProjectRows.length}개 프로젝트 표시
+                              </Badge>
+                            </div>
+                            <p className="mt-1 text-xs leading-5 text-[#7d8981]">
+                              프로젝트를 펼치면 연결된 하위 업무의 상태, 담당자,
+                              마감일과 마지막 처리 내용을 볼 수 있습니다.
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {(
+                              [
+                                {
+                                  value: 'all',
+                                  label: '전체',
+                                  count: workspace.projects.length,
+                                },
+                                {
+                                  value: 'active',
+                                  label: '진행',
+                                  count: workspace.projects.filter(
+                                    (project) => project.status === 'active',
+                                  ).length,
+                                },
+                                {
+                                  value: 'on_hold',
+                                  label: '보류',
+                                  count: workspace.projects.filter(
+                                    (project) => project.status === 'on_hold',
+                                  ).length,
+                                },
+                                {
+                                  value: 'completed',
+                                  label: '완료',
+                                  count: workspace.projects.filter(
+                                    (project) => project.status === 'completed',
+                                  ).length,
+                                },
+                              ] as const
+                            ).map((option) => (
+                              <button
+                                key={option.value}
+                                type="button"
+                                onClick={() =>
+                                  setOverviewProjectStatus(option.value)
+                                }
+                                className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                                  overviewProjectStatus === option.value
+                                    ? 'border-[#4f8f68] bg-[#eaf5ed] text-[#2f6f4d]'
+                                    : 'border-[#dbe3d9] bg-white text-[#6f7b73] hover:bg-[#f5f8f4]'
+                                }`}
+                              >
+                                {option.label} {option.count}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="space-y-3 bg-[#f6f8f5] p-3 sm:p-4">
+                          {overviewProjectRows.map((row) => {
+                            const projectMatches =
+                              !overviewQuery ||
+                              row.projectSearchableText.includes(overviewQuery);
+                            const matchedWorkItems = projectMatches
+                              ? row.workItems
+                              : row.workItems.filter((item) =>
+                                  [
+                                    item.title,
+                                    item.owner,
+                                    item.nextAction,
+                                    item.blockedReason,
+                                    farmById.get(item.farmId)?.name ?? '',
+                                  ]
+                                    .join(' ')
+                                    .toLocaleLowerCase('ko-KR')
+                                    .includes(overviewQuery),
+                                );
+                            const showAllTasks =
+                              overviewExpandedTaskProjects.includes(
+                                row.project.id,
+                              );
+                            const visibleWorkItems = showAllTasks
+                              ? matchedWorkItems
+                              : matchedWorkItems.slice(0, 8);
+
+                            return (
+                              <details
+                                key={row.project.id}
+                                className="group overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-[0_1px_2px_rgba(32,58,39,0.04)]"
+                              >
+                                <summary className="cursor-pointer list-none px-4 py-4 marker:content-none sm:px-5 [&::-webkit-details-marker]:hidden">
+                                  <div className="grid items-center gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(510px,0.9fr)_28px]">
+                                    <div className="min-w-0">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <Badge
+                                          variant="outline"
+                                          className={projectStatusClass(
+                                            row.project.status,
+                                          )}
+                                        >
+                                          {
+                                            FARM_PROJECT_STATUS_LABELS[
+                                              row.project.status
+                                            ]
+                                          }
+                                        </Badge>
+                                        <Badge variant="outline">
+                                          {
+                                            FARM_PROJECT_STAGE_LABELS[
+                                              row.project.currentStage
+                                            ]
+                                          }
+                                        </Badge>
+                                        {(row.overdue > 0 ||
+                                          row.snapshot.openProjectBlockers
+                                            .length > 0) && (
+                                          <Badge
+                                            variant="outline"
+                                            className="border-[#efc8bb] bg-[#fff1ec] text-[#a94f32]"
+                                          >
+                                            확인 필요
+                                          </Badge>
+                                        )}
+                                      </div>
+                                      <p className="mt-2 truncate text-base font-bold text-[#29382f]">
+                                        {row.project.name}
+                                      </p>
+                                      <p className="mt-1 truncate text-xs text-[#7d8981]">
+                                        {row.project.year}년 ·{' '}
+                                        {row.project.institution ||
+                                          '기관 미입력'}{' '}
+                                        · 담당 {row.project.manager || '미지정'}
+                                      </p>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                                      {[
+                                        {
+                                          label: '전체',
+                                          value: row.workItems.length,
+                                          tone: 'bg-[#f2f5f1] text-[#4f5e54]',
+                                        },
+                                        {
+                                          label: '접수',
+                                          value: row.counts.open,
+                                          tone: 'bg-[#fff4ed] text-[#9e5a36]',
+                                        },
+                                        {
+                                          label: '처리 중',
+                                          value: row.counts.inProgress,
+                                          tone: 'bg-[#f0f5fb] text-[#416c9c]',
+                                        },
+                                        {
+                                          label: '대기·막힘',
+                                          value: row.counts.waiting,
+                                          tone: 'bg-[#fff9ed] text-[#94601c]',
+                                        },
+                                        {
+                                          label: '완료',
+                                          value: row.counts.completed,
+                                          tone: 'bg-[#eef8f1] text-[#2e7650]',
+                                        },
+                                      ].map((metric) => (
+                                        <div
+                                          key={metric.label}
+                                          className={`rounded-xl px-3 py-2 text-center ${metric.tone}`}
+                                        >
+                                          <p className="text-[10px] font-medium opacity-80">
+                                            {metric.label}
+                                          </p>
+                                          <p className="mt-0.5 text-sm font-bold">
+                                            {metric.value}
+                                          </p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    <ArrowRight className="hidden size-5 text-[#7f8b83] transition-transform group-open:rotate-90 xl:block" />
+                                  </div>
+                                </summary>
+
+                                <div className="border-t border-[#e8ede7] bg-white px-4 py-4 sm:px-5">
+                                  <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+                                    <div>
+                                      <div className="flex items-center justify-between gap-3 text-xs">
+                                        <span className="font-semibold text-[#536158]">
+                                          하위 업무 완료율
+                                        </span>
+                                        <strong className="text-[#316e4c]">
+                                          {row.completionRate === null
+                                            ? '업무 없음'
+                                            : `${row.completionRate}% · ${row.counts.completed}/${row.workItems.length}건`}
+                                        </strong>
+                                      </div>
+                                      <div className="mt-2 h-2 overflow-hidden rounded-full bg-[#edf1ec]">
+                                        <div
+                                          className="h-full rounded-full bg-[#62b982]"
+                                          style={{
+                                            width: `${row.completionRate ?? 0}%`,
+                                          }}
+                                        />
+                                      </div>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      <Badge variant="outline">
+                                        참여 농가 {row.snapshot.records.length}
+                                        곳
+                                      </Badge>
+                                      <Badge
+                                        variant="outline"
+                                        className={
+                                          row.overdue
+                                            ? 'border-[#efc4b7] bg-[#fff1ed] text-[#aa4e30]'
+                                            : undefined
+                                        }
+                                      >
+                                        기한초과 {row.overdue}건
+                                      </Badge>
+                                      <Badge variant="outline">
+                                        7일 내 마감 {row.dueSoon}건
+                                      </Badge>
+                                      <Badge
+                                        variant="outline"
+                                        className={
+                                          row.snapshot.openProjectBlockers
+                                            .length
+                                            ? 'border-[#ead9b8] bg-[#fff9ed] text-[#94601c]'
+                                            : undefined
+                                        }
+                                      >
+                                        프로젝트 직접 막힘{' '}
+                                        {
+                                          row.snapshot.openProjectBlockers
+                                            .length
+                                        }
+                                        건
+                                      </Badge>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-5 flex flex-wrap items-end justify-between gap-3">
+                                    <div>
+                                      <h3 className="text-sm font-bold">
+                                        하위 업무
+                                      </h3>
+                                      <p className="mt-1 text-xs text-[#7d8981]">
+                                        업무를 선택하면 농가의 처리 이력과 상세
+                                        내용을 바로 확인합니다.
+                                      </p>
+                                    </div>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() =>
+                                        setSelectedProjectId(row.project.id)
+                                      }
+                                    >
+                                      <BriefcaseBusiness /> 프로젝트 상세
+                                    </Button>
+                                  </div>
+
+                                  {visibleWorkItems.length ? (
+                                    <div className="mt-3 space-y-2">
+                                      {visibleWorkItems.map((item) => {
+                                        const farm = farmById.get(item.farmId);
+                                        const latestAction = latestEntryWith(
+                                          item,
+                                          'actionContent',
+                                        );
+                                        return (
+                                          <button
+                                            key={item.id}
+                                            type="button"
+                                            aria-label={`${item.title} 업무 상세 열기`}
+                                            onClick={() =>
+                                              openFarm(item.farmId, item.id)
+                                            }
+                                            className="grid w-full gap-3 rounded-xl border border-[#e3e8e2] bg-[#fbfcfa] p-3 text-left transition-colors hover:border-[#b9d5c1] hover:bg-[#f5faf6] sm:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)_auto] sm:items-center"
+                                          >
+                                            <div className="min-w-0">
+                                              <div className="flex flex-wrap items-center gap-2">
+                                                <Badge
+                                                  variant="outline"
+                                                  className={workStatusClass(
+                                                    item.status,
+                                                  )}
+                                                >
+                                                  {
+                                                    FARM_WORK_STATUS_LABELS[
+                                                      item.status
+                                                    ]
+                                                  }
+                                                </Badge>
+                                                <span className="text-[11px] text-[#7d8981]">
+                                                  {
+                                                    FARM_WORK_TYPE_LABELS[
+                                                      item.workType
+                                                    ]
+                                                  }
+                                                </span>
+                                              </div>
+                                              <p className="mt-2 truncate text-sm font-semibold text-[#29382f]">
+                                                {item.title}
+                                              </p>
+                                              <p className="mt-1 truncate text-xs text-[#7d8981]">
+                                                {farm?.name ?? '농가 없음'} ·
+                                                담당 {item.owner || '미지정'}
+                                              </p>
+                                            </div>
+                                            <div className="min-w-0 rounded-lg bg-white px-3 py-2">
+                                              <p className="text-[10px] font-semibold text-[#4f765b]">
+                                                마지막 처리 내용
+                                              </p>
+                                              <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#536158]">
+                                                {latestAction?.actionContent ||
+                                                  item.nextAction ||
+                                                  '처리 내용이 없습니다.'}
+                                              </p>
+                                            </div>
+                                            <div className="flex items-center justify-between gap-3 sm:block sm:text-right">
+                                              <Badge
+                                                variant="outline"
+                                                className={dueClass(
+                                                  item.dueDate,
+                                                  item.status === 'completed',
+                                                )}
+                                              >
+                                                {dueLabel(
+                                                  item.dueDate,
+                                                  item.status === 'completed',
+                                                )}
+                                              </Badge>
+                                              <p className="mt-1 text-[10px] text-[#89938c]">
+                                                {formatDate(item.dueDate)}
+                                              </p>
+                                            </div>
+                                          </button>
+                                        );
+                                      })}
+                                      {matchedWorkItems.length > 8 && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setOverviewExpandedTaskProjects(
+                                              (current) =>
+                                                current.includes(row.project.id)
+                                                  ? current.filter(
+                                                      (projectId) =>
+                                                        projectId !==
+                                                        row.project.id,
+                                                    )
+                                                  : [
+                                                      ...current,
+                                                      row.project.id,
+                                                    ],
+                                            )
+                                          }
+                                          className="w-full rounded-xl border border-dashed border-[#cfd9ce] py-2.5 text-xs font-semibold text-[#39795b] hover:bg-[#f2f8f2]"
+                                        >
+                                          {showAllTasks
+                                            ? '하위 업무 접기'
+                                            : `나머지 ${matchedWorkItems.length - 8}건 더 보기`}
+                                        </button>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <div className="mt-3 rounded-xl border border-dashed border-[#d7dfd5] bg-[#fafbf9] px-4 py-8 text-center">
+                                      <ClipboardList className="mx-auto size-6 text-[#97a29a]" />
+                                      <p className="mt-2 text-sm font-semibold">
+                                        {row.workItems.length
+                                          ? '검색 조건에 맞는 하위 업무가 없습니다.'
+                                          : '등록된 하위 업무가 없습니다.'}
+                                      </p>
+                                      <p className="mt-1 text-xs text-[#89938c]">
+                                        {row.workItems.length
+                                          ? '검색어를 바꾸면 전체 업무를 확인할 수 있습니다.'
+                                          : '참여 농가 상세에서 첫 업무를 등록할 수 있습니다.'}
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+                              </details>
+                            );
+                          })}
+
+                          {!overviewProjectRows.length && (
+                            <div className="rounded-2xl border border-dashed border-[#d7dfd5] bg-white px-4 py-12 text-center">
+                              <BriefcaseBusiness className="mx-auto size-8 text-[#97a29a]" />
+                              <p className="mt-3 font-semibold">
+                                {workspace.projects.length
+                                  ? '검색·상태 조건에 맞는 프로젝트가 없습니다.'
+                                  : '아직 등록된 프로젝트가 없습니다.'}
+                              </p>
+                              <p className="mt-1 text-sm text-[#89938c]">
+                                {workspace.projects.length
+                                  ? '검색어를 지우거나 프로젝트 상태를 전체로 바꿔 보세요.'
+                                  : '프로젝트를 등록하면 하위 업무 처리 현황이 여기에 표시됩니다.'}
+                              </p>
+                              {workspace.projects.length > 0 && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="mt-4"
+                                  onClick={() => {
+                                    setOverviewSearch('');
+                                    setOverviewProjectStatus('all');
+                                  }}
+                                >
+                                  필터 초기화
+                                </Button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </section>
+
                       <div className="mt-5 grid gap-5 2xl:grid-cols-[1fr_320px]">
                         <section className="overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
                           <div className="flex items-center justify-between border-b border-[#e5ebe3] px-5 py-4">
