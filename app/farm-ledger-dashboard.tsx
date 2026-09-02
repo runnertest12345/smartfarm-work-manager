@@ -815,6 +815,7 @@ export function FarmLedgerDashboard() {
   const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
   const [projectSearch, setProjectSearch] = useState('');
+  const [projectYearFilter, setProjectYearFilter] = useState('all');
   const [projectRiskFilter, setProjectRiskFilter] = useState<
     'all' | 'blocked' | 'documents' | 'subscription' | 'settlement'
   >('all');
@@ -1150,6 +1151,7 @@ export function FarmLedgerDashboard() {
       records.filter((record) => record.educationDate).length,
       records.length,
     );
+    const subscriptionRate = rate(activeSubscriptions.length, records.length);
     const documentRate = rate(
       approvedDocuments.length,
       requiredDocuments.length,
@@ -1217,6 +1219,7 @@ export function FarmLedgerDashboard() {
       installationRate,
       commissioningRate,
       educationRate,
+      subscriptionRate,
       documentRate,
       settlementProgress: settlementProgress[project.settlementStatus],
       overallProgress,
@@ -1227,6 +1230,10 @@ export function FarmLedgerDashboard() {
       latestActivityAt,
     };
   }
+
+  const projectSnapshots = new Map(
+    workspace.projects.map((project) => [project.id, projectSnapshot(project)]),
+  );
 
   function latestEntryWith(
     workItem: FarmWorkItem,
@@ -1555,23 +1562,19 @@ export function FarmLedgerDashboard() {
   const businessYears = [
     ...new Set(workspace.projects.map((project) => project.year)),
   ].sort((a, b) => b - a);
-  const businessProjects = workspace.projects.filter(
+  const businessBaseProjects = workspace.projects.filter(
     (project) =>
-      (businessYearFilter === 'all' ||
-        project.year === Number(businessYearFilter)) &&
-      (businessTypeFilter === 'all' ||
-        project.projectType === businessTypeFilter),
+      businessTypeFilter === 'all' ||
+      project.projectType === businessTypeFilter,
   );
-  const businessProjectIds = new Set(
-    businessProjects.map((project) => project.id),
+  const businessProjects = businessBaseProjects.filter(
+    (project) =>
+      businessYearFilter === 'all' ||
+      project.year === Number(businessYearFilter),
   );
-  const businessRecords = workspace.records.filter((record) =>
-    businessProjectIds.has(record.projectId),
-  );
-  const businessProjectSummaries = businessProjects.map((project) => {
-    const records = businessRecords.filter(
-      (record) => record.projectId === project.id,
-    );
+  const summarizeBusinessProject = (project: FarmProject) => {
+    const snapshot = projectSnapshots.get(project.id)!;
+    const records = snapshot.records;
     const production = records.filter(
       (record) => record.productionSetupDate,
     ).length;
@@ -1582,13 +1585,14 @@ export function FarmLedgerDashboard() {
       (record) => record.commissioningDate,
     ).length;
     const education = records.filter((record) => record.educationDate).length;
-    const progress = records.length
-      ? Math.round(
-          ((production + installation + commissioning + education) /
-            (records.length * 4)) *
-            100,
-        )
-      : 0;
+    const subscription = snapshot.activeSubscriptions.length;
+    const progress =
+      averageRates(
+        snapshot.installationRate,
+        snapshot.commissioningRate,
+        snapshot.educationRate,
+        snapshot.subscriptionRate,
+      ) ?? 0;
     return {
       project,
       records,
@@ -1596,9 +1600,104 @@ export function FarmLedgerDashboard() {
       installation,
       commissioning,
       education,
+      subscription,
+      installationRate: snapshot.installationRate,
+      commissioningRate: snapshot.commissioningRate,
+      educationRate: snapshot.educationRate,
+      subscriptionRate: snapshot.subscriptionRate,
       progress,
     };
-  });
+  };
+  const businessProjectSummaries = businessProjects.map(
+    summarizeBusinessProject,
+  );
+  const businessRecords = businessProjectSummaries.flatMap(
+    (summary) => summary.records,
+  );
+  const businessRate = (complete: number, total: number) =>
+    total ? Math.round((complete / total) * 100) : null;
+  const businessInstallation = businessProjectSummaries.reduce(
+    (sum, summary) => sum + summary.installation,
+    0,
+  );
+  const businessCommissioning = businessProjectSummaries.reduce(
+    (sum, summary) => sum + summary.commissioning,
+    0,
+  );
+  const businessEducation = businessProjectSummaries.reduce(
+    (sum, summary) => sum + summary.education,
+    0,
+  );
+  const businessSubscriptions = businessProjectSummaries.reduce(
+    (sum, summary) => sum + summary.subscription,
+    0,
+  );
+  const businessInstallationRate = businessRate(
+    businessInstallation,
+    businessRecords.length,
+  );
+  const businessCommissioningRate = businessRate(
+    businessCommissioning,
+    businessRecords.length,
+  );
+  const businessEducationRate = businessRate(
+    businessEducation,
+    businessRecords.length,
+  );
+  const businessSubscriptionRate = businessRate(
+    businessSubscriptions,
+    businessRecords.length,
+  );
+  const annualBusinessSummaries = businessYears
+    .map((year) => {
+      const projects = businessBaseProjects.filter(
+        (project) => project.year === year,
+      );
+      const summaries = projects.map(summarizeBusinessProject);
+      const participationCount = summaries.reduce(
+        (sum, summary) => sum + summary.records.length,
+        0,
+      );
+      const installation = summaries.reduce(
+        (sum, summary) => sum + summary.installation,
+        0,
+      );
+      const commissioning = summaries.reduce(
+        (sum, summary) => sum + summary.commissioning,
+        0,
+      );
+      const education = summaries.reduce(
+        (sum, summary) => sum + summary.education,
+        0,
+      );
+      const subscription = summaries.reduce(
+        (sum, summary) => sum + summary.subscription,
+        0,
+      );
+      return {
+        year,
+        projects,
+        participationCount,
+        activeProjects: projects.filter(
+          (project) => project.status === 'active',
+        ).length,
+        completedProjects: projects.filter(
+          (project) => project.status === 'completed',
+        ).length,
+        onHoldProjects: projects.filter(
+          (project) => project.status === 'on_hold',
+        ).length,
+        installation,
+        commissioning,
+        education,
+        subscription,
+        installationRate: businessRate(installation, participationCount),
+        commissioningRate: businessRate(commissioning, participationCount),
+        educationRate: businessRate(education, participationCount),
+        subscriptionRate: businessRate(subscription, participationCount),
+      };
+    })
+    .filter((summary) => summary.projects.length > 0);
   const regionBreakdown = countValues(
     businessRecords.map((record) => farmById.get(record.farmId)?.region ?? ''),
   );
@@ -2985,9 +3084,6 @@ export function FarmLedgerDashboard() {
     );
   }
 
-  const projectSnapshots = new Map(
-    workspace.projects.map((project) => [project.id, projectSnapshot(project)]),
-  );
   const projectHasSettlementRisk = (project: FarmProject) => {
     const due = daysUntil(project.settlementDueDate);
     return (
@@ -3014,6 +3110,9 @@ export function FarmLedgerDashboard() {
   const filteredProjects = workspace.projects
     .filter((project) => {
       const snapshot = projectSnapshots.get(project.id);
+      const matchesYear =
+        projectYearFilter === 'all' ||
+        project.year === Number(projectYearFilter);
       const matchesSearch =
         !normalizedProjectSearch ||
         [
@@ -3025,7 +3124,7 @@ export function FarmLedgerDashboard() {
           .join(' ')
           .toLocaleLowerCase()
           .includes(normalizedProjectSearch);
-      if (!matchesSearch || !snapshot) return false;
+      if (!matchesYear || !matchesSearch || !snapshot) return false;
       if (projectRiskFilter === 'blocked')
         return (
           snapshot.openProjectBlockers.length + snapshot.blockedItems.length > 0
@@ -4706,8 +4805,8 @@ export function FarmLedgerDashboard() {
                             프로젝트 통합관리
                           </h1>
                           <p className="mt-2 text-sm text-[#77847b]">
-                            진행 단계, 막힘, 참여 농가, 구독, 서류와 정산을
-                            한곳에서 확인합니다.
+                            연도별 사업과 설치·시운전·교육·구독률, 막힘, 서류와
+                            정산을 한곳에서 확인합니다.
                           </p>
                         </div>
                         <Button
@@ -4718,7 +4817,7 @@ export function FarmLedgerDashboard() {
                           프로젝트 추가
                         </Button>
                       </div>
-                      <div className="mb-5 grid gap-3 rounded-2xl border border-[#dfe6dd] bg-white p-3 sm:grid-cols-[1fr_220px]">
+                      <div className="mb-5 grid gap-3 rounded-2xl border border-[#dfe6dd] bg-white p-3 sm:grid-cols-2 xl:grid-cols-[1fr_180px_220px]">
                         <div className="relative">
                           <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#879088]" />
                           <Input
@@ -4732,6 +4831,31 @@ export function FarmLedgerDashboard() {
                           />
                         </div>
                         <Select
+                          value={projectYearFilter}
+                          onValueChange={(value) =>
+                            setProjectYearFilter(value ?? 'all')
+                          }
+                        >
+                          <SelectTrigger
+                            className="h-10 w-full"
+                            aria-label="프로젝트 사업연도 필터"
+                          >
+                            <SelectValue>
+                              {projectYearFilter === 'all'
+                                ? '전체 사업연도'
+                                : `${projectYearFilter}년 사업`}
+                            </SelectValue>
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">전체 사업연도</SelectItem>
+                            {businessYears.map((year) => (
+                              <SelectItem key={year} value={String(year)}>
+                                {year}년 사업
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Select
                           value={projectRiskFilter}
                           onValueChange={(value) =>
                             setProjectRiskFilter(
@@ -4739,8 +4863,21 @@ export function FarmLedgerDashboard() {
                             )
                           }
                         >
-                          <SelectTrigger className="h-10 w-full">
-                            <SelectValue />
+                          <SelectTrigger
+                            className="h-10 w-full"
+                            aria-label="프로젝트 위험 필터"
+                          >
+                            <SelectValue>
+                              {projectRiskFilter === 'all'
+                                ? '모든 프로젝트'
+                                : projectRiskFilter === 'blocked'
+                                  ? '막힘 있음'
+                                  : projectRiskFilter === 'documents'
+                                    ? '서류 위험'
+                                    : projectRiskFilter === 'subscription'
+                                      ? '구독 위험'
+                                      : '정산 위험'}
+                            </SelectValue>
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="all">모든 프로젝트</SelectItem>
@@ -4854,6 +4991,70 @@ export function FarmLedgerDashboard() {
                                       }}
                                     />
                                   </div>
+                                  <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                    {[
+                                      {
+                                        label: '설치',
+                                        complete:
+                                          projectCardSnapshot.records.filter(
+                                            (record) => record.installationDate,
+                                          ).length,
+                                        rate: projectCardSnapshot.installationRate,
+                                      },
+                                      {
+                                        label: '시운전',
+                                        complete:
+                                          projectCardSnapshot.records.filter(
+                                            (record) =>
+                                              record.commissioningDate,
+                                          ).length,
+                                        rate: projectCardSnapshot.commissioningRate,
+                                      },
+                                      {
+                                        label: '교육',
+                                        complete:
+                                          projectCardSnapshot.records.filter(
+                                            (record) => record.educationDate,
+                                          ).length,
+                                        rate: projectCardSnapshot.educationRate,
+                                      },
+                                      {
+                                        label: '유효 구독',
+                                        complete:
+                                          projectCardSnapshot
+                                            .activeSubscriptions.length,
+                                        rate: projectCardSnapshot.subscriptionRate,
+                                      },
+                                    ].map((metric) => (
+                                      <div
+                                        key={metric.label}
+                                        className="rounded-xl bg-[#f6f8f5] px-3 py-2.5"
+                                      >
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="text-[11px] font-medium text-[#7d8981]">
+                                            {metric.label}
+                                          </span>
+                                          <strong className="text-xs text-[#315f43]">
+                                            {metric.rate === null
+                                              ? '-'
+                                              : `${metric.rate}%`}
+                                          </strong>
+                                        </div>
+                                        <p className="mt-1 text-[11px] text-[#89938c]">
+                                          {metric.complete}/
+                                          {projectCardSnapshot.records.length}곳
+                                        </p>
+                                        <div className="mt-2 h-1 overflow-hidden rounded-full bg-[#e3e9e2]">
+                                          <div
+                                            className="h-full rounded-full bg-[#6ab27e]"
+                                            style={{
+                                              width: `${metric.rate ?? 0}%`,
+                                            }}
+                                          />
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
                                   <div className="mt-4 flex flex-wrap gap-2">
                                     <Badge
                                       variant="outline"
@@ -4951,8 +5152,8 @@ export function FarmLedgerDashboard() {
                             사업 집계
                           </h1>
                           <p className="mt-2 text-sm text-[#77847b]">
-                            사업별 제작·설치·시운전·교육 진행률과 지역·작물·제품
-                            분포를 비교합니다.
+                            전체 연도와 연도별 사업 수,
+                            설치·시운전·교육·구독률을 비교합니다.
                           </p>
                         </div>
                         <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-[430px]">
@@ -4962,8 +5163,15 @@ export function FarmLedgerDashboard() {
                               setBusinessYearFilter(value ?? 'all')
                             }
                           >
-                            <SelectTrigger className="h-10 w-full bg-white">
-                              <SelectValue />
+                            <SelectTrigger
+                              className="h-10 w-full bg-white"
+                              aria-label="사업 집계 연도 필터"
+                            >
+                              <SelectValue>
+                                {businessYearFilter === 'all'
+                                  ? '모든 사업연도'
+                                  : `${businessYearFilter}년`}
+                              </SelectValue>
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="all">모든 사업연도</SelectItem>
@@ -4982,8 +5190,17 @@ export function FarmLedgerDashboard() {
                               )
                             }
                           >
-                            <SelectTrigger className="h-10 w-full bg-white">
-                              <SelectValue />
+                            <SelectTrigger
+                              className="h-10 w-full bg-white"
+                              aria-label="사업 유형 필터"
+                            >
+                              <SelectValue>
+                                {businessTypeFilter === 'all'
+                                  ? '모든 사업 유형'
+                                  : FARM_PROJECT_TYPE_LABELS[
+                                      businessTypeFilter
+                                    ]}
+                              </SelectValue>
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="all">
@@ -5000,27 +5217,58 @@ export function FarmLedgerDashboard() {
                           </Select>
                         </div>
                       </div>
-                      <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
                         {[
                           {
                             label: '대상 사업',
                             value: `${businessProjects.length}개`,
+                            note:
+                              businessYearFilter === 'all'
+                                ? '전체 사업연도'
+                                : `${businessYearFilter}년 사업`,
                             icon: BriefcaseBusiness,
                           },
                           {
                             label: '참여 농가',
                             value: `${new Set(businessRecords.map((record) => record.farmId)).size}곳`,
+                            note: `사업 참여 ${businessRecords.length}건`,
                             icon: Warehouse,
                           },
                           {
-                            label: '설치 완료',
-                            value: `${businessRecords.filter((record) => record.installationDate).length}곳`,
+                            label: '설치율',
+                            value:
+                              businessInstallationRate === null
+                                ? '-'
+                                : `${businessInstallationRate}%`,
+                            note: `${businessInstallation}/${businessRecords.length}곳`,
                             icon: CalendarCheck2,
                           },
                           {
-                            label: '교육 완료',
-                            value: `${businessRecords.filter((record) => record.educationDate).length}곳`,
+                            label: '시운전율',
+                            value:
+                              businessCommissioningRate === null
+                                ? '-'
+                                : `${businessCommissioningRate}%`,
+                            note: `${businessCommissioning}/${businessRecords.length}곳`,
+                            icon: Wrench,
+                          },
+                          {
+                            label: '교육률',
+                            value:
+                              businessEducationRate === null
+                                ? '-'
+                                : `${businessEducationRate}%`,
+                            note: `${businessEducation}/${businessRecords.length}곳`,
                             icon: TrendingUp,
+                          },
+                          {
+                            label: '유효 구독률',
+                            value:
+                              businessSubscriptionRate === null
+                                ? '-'
+                                : `${businessSubscriptionRate}%`,
+                            note: `${businessSubscriptions}/${businessRecords.length}곳`,
+                            icon: CalendarClock,
                           },
                         ].map((metric) => (
                           <Card
@@ -5035,6 +5283,9 @@ export function FarmLedgerDashboard() {
                                 <p className="mt-1 text-2xl font-bold">
                                   {metric.value}
                                 </p>
+                                <p className="mt-1 text-[11px] text-[#89938c]">
+                                  {metric.note}
+                                </p>
                               </div>
                               <div className="grid size-10 place-items-center rounded-xl bg-[#edf5e8] text-[#4d7b50]">
                                 <metric.icon className="size-5" />
@@ -5043,14 +5294,144 @@ export function FarmLedgerDashboard() {
                           </Card>
                         ))}
                       </div>
-                      <div className="overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
+                      <div className="mb-5 overflow-x-auto rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
+                        <div className="flex min-w-[900px] items-center justify-between gap-4 border-b border-[#e5ebe3] px-5 py-4">
+                          <div>
+                            <h2 className="font-bold">연도별 사업 현황</h2>
+                            <p className="mt-0.5 text-xs text-[#89938c]">
+                              같은 농가가 여러 사업에 참여하면 사업별로 1건씩
+                              집계합니다.
+                            </p>
+                          </div>
+                          {businessYearFilter !== 'all' && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setBusinessYearFilter('all')}
+                            >
+                              전체 연도 보기
+                            </Button>
+                          )}
+                        </div>
+                        <Table className="min-w-[900px]">
+                          <TableHeader>
+                            <TableRow className="bg-[#f7f9f6]">
+                              <TableHead className="pl-5">사업연도</TableHead>
+                              <TableHead>사업 상태</TableHead>
+                              <TableHead>농가 참여</TableHead>
+                              <TableHead>설치율</TableHead>
+                              <TableHead>시운전율</TableHead>
+                              <TableHead>교육률</TableHead>
+                              <TableHead className="pr-5">
+                                유효 구독률
+                              </TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {annualBusinessSummaries.map((summary) => (
+                              <TableRow key={summary.year}>
+                                <TableCell className="pl-5">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    aria-pressed={
+                                      businessYearFilter ===
+                                      String(summary.year)
+                                    }
+                                    onClick={() =>
+                                      setBusinessYearFilter(
+                                        businessYearFilter ===
+                                          String(summary.year)
+                                          ? 'all'
+                                          : String(summary.year),
+                                      )
+                                    }
+                                    className={
+                                      businessYearFilter ===
+                                      String(summary.year)
+                                        ? 'border-[#7bb38b] bg-[#edf7ef] text-[#2f704c]'
+                                        : ''
+                                    }
+                                  >
+                                    {summary.year}년
+                                  </Button>
+                                </TableCell>
+                                <TableCell>
+                                  <p className="font-semibold">
+                                    {summary.projects.length}개
+                                  </p>
+                                  <p className="mt-1 text-[11px] text-[#89938c]">
+                                    진행 {summary.activeProjects} · 보류{' '}
+                                    {summary.onHoldProjects} · 완료{' '}
+                                    {summary.completedProjects}
+                                  </p>
+                                </TableCell>
+                                <TableCell>
+                                  {summary.participationCount}건
+                                </TableCell>
+                                {[
+                                  {
+                                    label: '설치',
+                                    complete: summary.installation,
+                                    rate: summary.installationRate,
+                                  },
+                                  {
+                                    label: '시운전',
+                                    complete: summary.commissioning,
+                                    rate: summary.commissioningRate,
+                                  },
+                                  {
+                                    label: '교육',
+                                    complete: summary.education,
+                                    rate: summary.educationRate,
+                                  },
+                                  {
+                                    label: '유효 구독',
+                                    complete: summary.subscription,
+                                    rate: summary.subscriptionRate,
+                                  },
+                                ].map((metric, index) => (
+                                  <TableCell
+                                    key={metric.label}
+                                    className={index === 3 ? 'pr-5' : ''}
+                                  >
+                                    <p className="font-semibold">
+                                      {metric.rate === null
+                                        ? '-'
+                                        : `${metric.rate}%`}
+                                    </p>
+                                    <p className="mt-1 text-[11px] text-[#89938c]">
+                                      {metric.complete}/
+                                      {summary.participationCount}건
+                                    </p>
+                                  </TableCell>
+                                ))}
+                              </TableRow>
+                            ))}
+                            {!annualBusinessSummaries.length && (
+                              <TableRow>
+                                <TableCell
+                                  colSpan={7}
+                                  className="h-28 text-center text-[#89938c]"
+                                >
+                                  집계할 사업연도 정보가 없습니다.
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          </TableBody>
+                        </Table>
+                      </div>
+                      <div className="overflow-x-auto rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
                         <div className="border-b border-[#e5ebe3] px-5 py-4">
                           <h2 className="font-bold">사업별 설치 진행</h2>
                           <p className="mt-0.5 text-xs text-[#89938c]">
-                            날짜가 입력된 단계만 완료로 집계합니다.
+                            날짜가 입력된 설치·시운전·교육과 만료 전 사용중
+                            구독만 완료로 집계합니다.
                           </p>
                         </div>
-                        <Table>
+                        <Table className="min-w-[1050px]">
                           <TableHeader>
                             <TableRow className="bg-[#f7f9f6]">
                               <TableHead className="pl-5">사업</TableHead>
@@ -5059,8 +5440,9 @@ export function FarmLedgerDashboard() {
                               <TableHead>설치</TableHead>
                               <TableHead>시운전</TableHead>
                               <TableHead>교육</TableHead>
+                              <TableHead>유효 구독</TableHead>
                               <TableHead className="pr-5">
-                                전체 진행률
+                                구축·운영 평균
                               </TableHead>
                             </TableRow>
                           </TableHeader>
@@ -5073,6 +5455,11 @@ export function FarmLedgerDashboard() {
                                 installation,
                                 commissioning,
                                 education,
+                                subscription,
+                                installationRate,
+                                commissioningRate,
+                                educationRate,
+                                subscriptionRate,
                                 progress,
                               }) => (
                                 <TableRow key={project.id}>
@@ -5091,9 +5478,39 @@ export function FarmLedgerDashboard() {
                                   </TableCell>
                                   <TableCell>{records.length}곳</TableCell>
                                   <TableCell>{production}곳</TableCell>
-                                  <TableCell>{installation}곳</TableCell>
-                                  <TableCell>{commissioning}곳</TableCell>
-                                  <TableCell>{education}곳</TableCell>
+                                  {[
+                                    {
+                                      label: '설치',
+                                      complete: installation,
+                                      rate: installationRate,
+                                    },
+                                    {
+                                      label: '시운전',
+                                      complete: commissioning,
+                                      rate: commissioningRate,
+                                    },
+                                    {
+                                      label: '교육',
+                                      complete: education,
+                                      rate: educationRate,
+                                    },
+                                    {
+                                      label: '유효 구독',
+                                      complete: subscription,
+                                      rate: subscriptionRate,
+                                    },
+                                  ].map((metric) => (
+                                    <TableCell key={metric.label}>
+                                      <p className="font-semibold">
+                                        {metric.rate === null
+                                          ? '-'
+                                          : `${metric.rate}%`}
+                                      </p>
+                                      <p className="mt-1 text-[11px] text-[#89938c]">
+                                        {metric.complete}/{records.length}곳
+                                      </p>
+                                    </TableCell>
+                                  ))}
                                   <TableCell className="pr-5">
                                     <div className="flex min-w-[130px] items-center gap-3">
                                       <div className="h-2 flex-1 overflow-hidden rounded-full bg-[#edf1ec]">
@@ -5113,7 +5530,7 @@ export function FarmLedgerDashboard() {
                             {!businessProjectSummaries.length && (
                               <TableRow>
                                 <TableCell
-                                  colSpan={7}
+                                  colSpan={8}
                                   className="h-32 text-center text-[#89938c]"
                                 >
                                   선택한 조건의 사업이 없습니다.
@@ -5737,9 +6154,10 @@ export function FarmLedgerDashboard() {
                       },
                       {
                         label: '유효 구독률',
-                        value: selectedProjectSnapshot.records.length
-                          ? `${Math.round((selectedProjectSnapshot.activeSubscriptions.length / selectedProjectSnapshot.records.length) * 100)}%`
-                          : '-',
+                        value:
+                          selectedProjectSnapshot.subscriptionRate === null
+                            ? '-'
+                            : `${selectedProjectSnapshot.subscriptionRate}%`,
                         note: `90일 내 만료 ${selectedProjectSnapshot.expiringSoon.length}곳 · 만료 ${selectedProjectSnapshot.expiredSubscriptions.length}곳`,
                         icon: CalendarClock,
                       },
@@ -5782,6 +6200,85 @@ export function FarmLedgerDashboard() {
                         </CardContent>
                       </Card>
                     ))}
+                  </section>
+
+                  <section className="rounded-2xl bg-white p-5 shadow-sm">
+                    <div className="mb-4">
+                      <h3 className="font-bold">설치·운영 완료율</h3>
+                      <p className="mt-1 text-xs text-[#7d8981]">
+                        참여 농가 중 완료일이 입력된 농가와 현재 유효한 구독을
+                        기준으로 계산합니다.
+                      </p>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      {[
+                        {
+                          label: '설치',
+                          complete: selectedProjectSnapshot.records.filter(
+                            (record) => record.installationDate,
+                          ).length,
+                          rate: selectedProjectSnapshot.installationRate,
+                          note: '설치일 입력 기준',
+                          icon: CalendarCheck2,
+                        },
+                        {
+                          label: '시운전',
+                          complete: selectedProjectSnapshot.records.filter(
+                            (record) => record.commissioningDate,
+                          ).length,
+                          rate: selectedProjectSnapshot.commissioningRate,
+                          note: '시운전일 입력 기준',
+                          icon: Wrench,
+                        },
+                        {
+                          label: '교육',
+                          complete: selectedProjectSnapshot.records.filter(
+                            (record) => record.educationDate,
+                          ).length,
+                          rate: selectedProjectSnapshot.educationRate,
+                          note: '교육일 입력 기준',
+                          icon: TrendingUp,
+                        },
+                        {
+                          label: '유효 구독',
+                          complete:
+                            selectedProjectSnapshot.activeSubscriptions.length,
+                          rate: selectedProjectSnapshot.subscriptionRate,
+                          note: `90일 내 만료 ${selectedProjectSnapshot.expiringSoon.length}곳`,
+                          icon: CalendarClock,
+                        },
+                      ].map((metric) => (
+                        <div
+                          key={metric.label}
+                          className="rounded-xl border border-[#e2e8e1] p-4"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs font-semibold text-[#657269]">
+                                {metric.label}
+                              </p>
+                              <p className="mt-1 text-2xl font-bold text-[#315f43]">
+                                {metric.rate === null ? '-' : `${metric.rate}%`}
+                              </p>
+                            </div>
+                            <div className="grid size-9 place-items-center rounded-xl bg-[#edf5ec] text-[#4b8057]">
+                              <metric.icon className="size-4" />
+                            </div>
+                          </div>
+                          <p className="mt-2 text-xs text-[#768179]">
+                            {metric.complete}/
+                            {selectedProjectSnapshot.records.length}곳 ·{' '}
+                            {metric.note}
+                          </p>
+                          <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#edf1ec]">
+                            <div
+                              className="h-full rounded-full bg-[#62b982]"
+                              style={{ width: `${metric.rate ?? 0}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </section>
 
                   <section className="rounded-2xl bg-white p-5 shadow-sm">
