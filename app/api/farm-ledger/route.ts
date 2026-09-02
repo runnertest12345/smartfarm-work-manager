@@ -5,6 +5,7 @@ import {
   createFarmProjectDocument,
   createFarmProjectUpdate,
   createFarmRecord,
+  createFarmSubscriptionEvent,
   createFarmWithRecord,
   createFarmWorkItem,
   listFarmLedgerWorkspace,
@@ -27,6 +28,7 @@ import {
   FARM_PROJECT_TYPES,
   FARM_PROJECT_UPDATE_KINDS,
   FARM_SETTLEMENT_STATUSES,
+  FARM_SUBSCRIPTION_EVENT_TYPES,
   FARM_VISIT_STATUSES,
   FARM_WORK_PRIORITIES,
   FARM_WORK_STATUSES,
@@ -41,6 +43,7 @@ import {
   type FarmProjectDocumentInput,
   type FarmProjectUpdateInput,
   type FarmRecordInput,
+  type FarmSubscriptionEventInput,
   type FarmWorkVisitInput,
   type FarmWorkItemInput,
   type FarmWorkPriority,
@@ -683,6 +686,76 @@ function parseRecordInput(value: unknown): FarmRecordInput | string {
   };
 }
 
+function parseSubscriptionEventInput(
+  value: unknown,
+): FarmSubscriptionEventInput | string {
+  const body = objectValue(value);
+  if (!body) return '구독 처리 정보를 확인해 주세요.';
+  if (
+    !hasStringFields(body, [
+      'farmRecordId',
+      'basisExpiryDate',
+      'processedAt',
+      'newExpiryDate',
+      'recorder',
+      'note',
+    ])
+  ) {
+    return '구독 처리의 문자 항목을 확인해 주세요.';
+  }
+
+  const farmRecordId = trimmed(body, 'farmRecordId');
+  const basisExpiryDate = trimmed(body, 'basisExpiryDate');
+  const processedAt = trimmed(body, 'processedAt');
+  const newExpiryDate = trimmed(body, 'newExpiryDate');
+  const recorder = trimmed(body, 'recorder');
+  const note = trimmed(body, 'note');
+  const eventType = body.eventType;
+
+  if (!farmRecordId || farmRecordId.length > 100)
+    return '농가·사업 구독을 선택해 주세요.';
+  if (
+    !FARM_SUBSCRIPTION_EVENT_TYPES.includes(
+      eventType as FarmSubscriptionEventInput['eventType'],
+    )
+  ) {
+    return '구독 처리 구분을 확인해 주세요.';
+  }
+  if (
+    !basisExpiryDate ||
+    !processedAt ||
+    !validDate(basisExpiryDate) ||
+    !validDate(processedAt)
+  ) {
+    return '기준 만료일과 처리일을 확인해 주세요.';
+  }
+  if (processedAt > todayInSeoul())
+    return '구독 처리일은 미래 날짜일 수 없습니다.';
+  if (eventType === 'churned' && newExpiryDate)
+    return '이탈 처리에는 새 만료일을 입력하지 않습니다.';
+  if (
+    (eventType === 'renewed' || eventType === 'rejoined') &&
+    (!newExpiryDate ||
+      !validDate(newExpiryDate) ||
+      newExpiryDate <= basisExpiryDate)
+  ) {
+    return '갱신·재가입의 새 만료일은 기준 만료일보다 이후여야 합니다.';
+  }
+  if (!recorder || recorder.length > 50)
+    return '처리 담당자는 1~50자로 입력해 주세요.';
+  if (note.length > 1500) return '처리 메모는 1,500자 이내로 입력해 주세요.';
+
+  return {
+    farmRecordId,
+    eventType: eventType as FarmSubscriptionEventInput['eventType'],
+    basisExpiryDate,
+    processedAt,
+    newExpiryDate,
+    recorder,
+    note,
+  };
+}
+
 function parseWorkItemInput(value: unknown): FarmWorkItemInput | string {
   const body = objectValue(value);
   if (!body) return '업무 정보를 확인해 주세요.';
@@ -1260,6 +1333,18 @@ function knownErrorResponse(error: unknown) {
       '이 농가는 이미 같은 프로젝트에 등록되어 있습니다.',
       409,
     ],
+    FARM_SUBSCRIPTION_EVENT_MANAGED: [
+      '구독 처리 이력이 있는 농가는 구독 처리 등록에서 상태와 만료일을 변경해 주세요.',
+      409,
+    ],
+    FARM_SUBSCRIPTION_BASIS_INVALID: [
+      '기준 만료일이 현재 구독 만료일보다 늦습니다. 구독 정보를 다시 확인해 주세요.',
+      409,
+    ],
+    FARM_SUBSCRIPTION_REJOIN_REQUIRES_CHURN: [
+      '재가입은 만료 또는 이탈 이력이 있는 구독에만 등록할 수 있습니다.',
+      409,
+    ],
   };
   const known = Object.entries(responses).find(([code]) =>
     error.message.includes(code),
@@ -1272,6 +1357,16 @@ function knownErrorResponse(error: unknown) {
     error.message.includes('UNIQUE constraint failed: farm_inbox_conversions')
   ) {
     return errorResponse('이미 다른 업무로 정리된 수신함 항목입니다.', 409);
+  }
+  if (
+    error.message.includes(
+      'UNIQUE constraint failed: farm_subscription_events.farm_record_id, farm_subscription_events.basis_expiry_date',
+    )
+  ) {
+    return errorResponse(
+      '이 만료 회차의 갱신 또는 이탈 결과가 이미 등록되어 있습니다.',
+      409,
+    );
   }
   if (error.message.includes('FARM_INBOX_ALREADY_PROCESSED')) {
     return errorResponse('이미 정리된 수신함 항목입니다.', 409);
@@ -1384,6 +1479,15 @@ export async function POST(request: Request) {
       return Response.json(await createFarmRecord(farmId, input, recorder), {
         status: 201,
       });
+    }
+
+    if (body.kind === 'subscription_event') {
+      const input = parseSubscriptionEventInput(body.subscriptionEvent);
+      if (typeof input === 'string') return errorResponse(input);
+      return Response.json(
+        { subscriptionEvent: await createFarmSubscriptionEvent(input) },
+        { status: 201 },
+      );
     }
 
     if (body.kind === 'inbox') {

@@ -23,6 +23,7 @@ import type {
   FarmProjectType,
   FarmProjectUpdateKind,
   FarmSettlementStatus,
+  FarmSubscriptionEventType,
   FarmInboxStatus,
   FarmVisitStatus,
   FarmWorkPriority,
@@ -292,6 +293,55 @@ export const farmRecords = sqliteTable(
       table.currentSubscriptionExpiresAt,
     ),
     index('idx_farm_records_last_activity').on(table.lastActivityAt),
+  ],
+);
+
+export const farmSubscriptionEvents = sqliteTable(
+  'farm_subscription_events',
+  {
+    id: text('id').primaryKey(),
+    farmRecordId: text('farm_record_id')
+      .notNull()
+      .references(() => farmRecords.id, { onDelete: 'restrict' }),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => smartfarmProjects.id, { onDelete: 'restrict' }),
+    eventType: text('event_type').$type<FarmSubscriptionEventType>().notNull(),
+    basisExpiryDate: text('basis_expiry_date').notNull(),
+    processedAt: text('processed_at').notNull(),
+    newExpiryDate: text('new_expiry_date').notNull().default(''),
+    recorder: text('recorder').notNull(),
+    note: text('note').notNull().default(''),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    check(
+      'chk_farm_subscription_events_type',
+      sql`${table.eventType} IN ('renewed', 'churned', 'rejoined')`,
+    ),
+    check(
+      'chk_farm_subscription_events_dates',
+      sql`trim(${table.basisExpiryDate}) != '' AND trim(${table.processedAt}) != ''`,
+    ),
+    check(
+      'chk_farm_subscription_events_new_expiry',
+      sql`(${table.eventType} = 'churned' AND ${table.newExpiryDate} = '') OR (${table.eventType} IN ('renewed', 'rejoined') AND ${table.newExpiryDate} > ${table.basisExpiryDate})`,
+    ),
+    index('idx_farm_subscription_events_basis').on(
+      table.basisExpiryDate,
+      table.eventType,
+    ),
+    index('idx_farm_subscription_events_record_processed').on(
+      table.farmRecordId,
+      table.processedAt,
+    ),
+    index('idx_farm_subscription_events_project_basis').on(
+      table.projectId,
+      table.basisExpiryDate,
+    ),
+    uniqueIndex('idx_farm_subscription_events_outcome_once')
+      .on(table.farmRecordId, table.basisExpiryDate)
+      .where(sql`${table.eventType} IN ('renewed', 'churned')`),
   ],
 );
 

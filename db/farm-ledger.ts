@@ -28,6 +28,9 @@ import type {
   FarmRecordMutationResult,
   FarmVisitStatus,
   FarmSettlementStatus,
+  FarmSubscriptionEvent,
+  FarmSubscriptionEventInput,
+  FarmSubscriptionEventType,
   FarmWorkItem,
   FarmWorkChecklistItem,
   FarmWorkItemInput,
@@ -149,6 +152,19 @@ interface FarmRecordRow {
   last_activity_at: number;
   created_at: number;
   updated_at: number;
+}
+
+interface FarmSubscriptionEventRow {
+  id: string;
+  farm_record_id: string;
+  project_id: string;
+  event_type: FarmSubscriptionEventType;
+  basis_expiry_date: string;
+  processed_at: string;
+  new_expiry_date: string;
+  recorder: string;
+  note: string;
+  created_at: number;
 }
 
 interface FarmWorkItemRow {
@@ -443,6 +459,23 @@ function mapRecord(row: FarmRecordRow): FarmRecord {
     lastActivityAt: row.last_activity_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapSubscriptionEvent(
+  row: FarmSubscriptionEventRow,
+): FarmSubscriptionEvent {
+  return {
+    id: row.id,
+    farmRecordId: row.farm_record_id,
+    projectId: row.project_id,
+    eventType: row.event_type,
+    basisExpiryDate: row.basis_expiry_date,
+    processedAt: row.processed_at,
+    newExpiryDate: row.new_expiry_date,
+    recorder: row.recorder,
+    note: row.note,
+    createdAt: row.created_at,
   };
 }
 
@@ -2157,6 +2190,7 @@ export async function listFarmLedgerWorkspace(): Promise<FarmLedgerWorkspace> {
     projectUpdateResult,
     farmResult,
     recordResult,
+    subscriptionEventResult,
     inboxResult,
     workItemResult,
     blockerEpisodeResult,
@@ -2220,6 +2254,15 @@ export async function listFarmLedgerWorkspace(): Promise<FarmLedgerWorkspace> {
       LIMIT 10000
     `)
       .all<FarmRecordRow>(),
+    db
+      .prepare(`
+      SELECT id, farm_record_id, project_id, event_type, basis_expiry_date,
+             processed_at, new_expiry_date, recorder, note, created_at
+      FROM farm_subscription_events
+      ORDER BY processed_at DESC, created_at DESC
+      LIMIT 30000
+    `)
+      .all<FarmSubscriptionEventRow>(),
     db
       .prepare(`
       SELECT i.id, i.channel, i.sender, i.content, i.captured_by, i.received_at,
@@ -2290,6 +2333,8 @@ export async function listFarmLedgerWorkspace(): Promise<FarmLedgerWorkspace> {
     projectUpdates: projectUpdateResult.results.map(mapProjectUpdate),
     farms: farmResult.results.map(mapFarm),
     records: recordResult.results.map(mapRecord),
+    subscriptionEvents:
+      subscriptionEventResult.results.map(mapSubscriptionEvent),
     inboxItems: inboxResult.results.map(mapInboxItem),
     workItems: workItemResult.results.map(mapWorkItem),
     blockerEpisodes: blockerEpisodeResult.results.map(mapBlockerEpisode),
@@ -3253,7 +3298,7 @@ export async function updateFarmRecord(
 ): Promise<FarmRecordMutationResult> {
   await ensureFarmLedgerStore();
   const db = getD1();
-  const [existingRow, project] = await Promise.all([
+  const [existingRow, project, subscriptionEvent] = await Promise.all([
     db
       .prepare(`
       SELECT id, farm_id, project_id, crop, device_type, product_type, vendor,
@@ -3270,6 +3315,12 @@ export async function updateFarmRecord(
       .prepare('SELECT id, status FROM smartfarm_projects WHERE id = ?')
       .bind(input.projectId)
       .first<{ id: string; status: FarmProjectStatus }>(),
+    db
+      .prepare(
+        'SELECT id FROM farm_subscription_events WHERE farm_record_id = ? LIMIT 1',
+      )
+      .bind(recordId)
+      .first<{ id: string }>(),
   ]);
   if (!existingRow) throw new Error('FARM_RECORD_NOT_FOUND');
   if (!project) throw new Error('SMARTFARM_PROJECT_NOT_FOUND');
@@ -3296,6 +3347,15 @@ export async function updateFarmRecord(
   }
 
   const existing = mapRecord(existingRow);
+  if (
+    subscriptionEvent &&
+    (existing.currentSubscriptionExpiresAt !==
+      input.currentSubscriptionExpiresAt ||
+      existing.renewalCount !== input.renewalCount ||
+      existing.subscriptionStatus !== input.subscriptionStatus)
+  ) {
+    throw new Error('FARM_SUBSCRIPTION_EVENT_MANAGED');
+  }
   const now = Date.now();
   const record: FarmRecord = {
     ...existing,
@@ -3423,6 +3483,195 @@ export async function updateFarmRecord(
   ]);
 
   return { record, workItem, historyEntry };
+}
+
+export async function createFarmSubscriptionEvent(
+  input: FarmSubscriptionEventInput,
+): Promise<FarmSubscriptionEvent> {
+  await ensureFarmLedgerStore();
+  const db = getD1();
+  const [record, priorChurn] = await Promise.all([
+    db
+      .prepare(`
+        SELECT fr.id, fr.farm_id, fr.project_id,
+               fr.current_subscription_expires_at, fr.renewal_count,
+               fr.subscription_status, f.name AS farm_name,
+               p.name AS project_name
+        FROM farm_records fr
+        INNER JOIN farms f ON f.id = fr.farm_id
+        INNER JOIN smartfarm_projects p ON p.id = fr.project_id
+        WHERE fr.id = ?
+      `)
+      .bind(input.farmRecordId)
+      .first<{
+        id: string;
+        farm_id: string;
+        project_id: string;
+        current_subscription_expires_at: string;
+        renewal_count: number;
+        subscription_status: SubscriptionStatus;
+        farm_name: string;
+        project_name: string;
+      }>(),
+    db
+      .prepare(`
+        SELECT id FROM farm_subscription_events
+        WHERE farm_record_id = ? AND event_type = 'churned'
+        LIMIT 1
+      `)
+      .bind(input.farmRecordId)
+      .first<{ id: string }>(),
+  ]);
+  if (!record) throw new Error('FARM_RECORD_NOT_FOUND');
+
+  if (
+    input.eventType !== 'rejoined' &&
+    record.current_subscription_expires_at &&
+    input.basisExpiryDate > record.current_subscription_expires_at
+  ) {
+    throw new Error('FARM_SUBSCRIPTION_BASIS_INVALID');
+  }
+  if (
+    input.eventType === 'rejoined' &&
+    record.subscription_status !== 'expired' &&
+    !priorChurn
+  ) {
+    throw new Error('FARM_SUBSCRIPTION_REJOIN_REQUIRES_CHURN');
+  }
+
+  const now = Date.now();
+  const event: FarmSubscriptionEvent = {
+    id: crypto.randomUUID(),
+    farmRecordId: record.id,
+    projectId: record.project_id,
+    eventType: input.eventType,
+    basisExpiryDate: input.basisExpiryDate,
+    processedAt: input.processedAt,
+    newExpiryDate: input.newExpiryDate,
+    recorder: input.recorder,
+    note: input.note,
+    createdAt: now,
+  };
+
+  let nextExpiry = record.current_subscription_expires_at;
+  let nextStatus = record.subscription_status;
+  let nextRenewalCount = record.renewal_count;
+  if (
+    (event.eventType === 'renewed' || event.eventType === 'rejoined') &&
+    event.newExpiryDate > nextExpiry
+  ) {
+    nextExpiry = event.newExpiryDate;
+    nextStatus = 'active';
+    if (event.eventType === 'renewed') nextRenewalCount += 1;
+  } else if (
+    event.eventType === 'churned' &&
+    (!nextExpiry || event.basisExpiryDate >= nextExpiry)
+  ) {
+    nextExpiry ||= event.basisExpiryDate;
+    nextStatus = 'expired';
+  }
+
+  const label = {
+    renewed: '갱신',
+    churned: '이탈',
+    rejoined: '재가입',
+  }[event.eventType];
+  const resultText = event.newExpiryDate
+    ? `${event.basisExpiryDate} 만료 구독을 ${event.newExpiryDate}까지 ${label} 처리했습니다.`
+    : `${event.basisExpiryDate} 만료 구독을 ${label} 처리했습니다.`;
+  const { workItem, historyEntry } = auditArtifacts(
+    record.farm_id,
+    record.id,
+    event.recorder,
+    `구독 ${label} 처리`,
+    event.note ? `${resultText}\n메모: ${event.note}` : resultText,
+    Date.parse(`${event.processedAt}T00:00:00+09:00`),
+  );
+  workItem.workType = 'subscription';
+
+  await db.batch([
+    db
+      .prepare(`
+        INSERT INTO farm_subscription_events (
+          id, farm_record_id, project_id, event_type, basis_expiry_date,
+          processed_at, new_expiry_date, recorder, note, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .bind(
+        event.id,
+        event.farmRecordId,
+        event.projectId,
+        event.eventType,
+        event.basisExpiryDate,
+        event.processedAt,
+        event.newExpiryDate,
+        event.recorder,
+        event.note,
+        event.createdAt,
+      ),
+    db
+      .prepare(`
+        UPDATE farm_records SET
+          current_subscription_expires_at = ?, renewal_count = ?,
+          subscription_status = ?, last_activity_at = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .bind(nextExpiry, nextRenewalCount, nextStatus, now, now, record.id),
+    db
+      .prepare(`
+        INSERT INTO farm_work_items (
+          id, farm_record_id, work_type, title, status, owner, due_date,
+          description, expected_outcome, next_action, priority, review_date,
+          completed_at, last_activity_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .bind(
+        workItem.id,
+        workItem.farmRecordId,
+        workItem.workType,
+        workItem.title,
+        workItem.status,
+        workItem.owner,
+        workItem.dueDate,
+        workItem.description,
+        workItem.expectedOutcome,
+        workItem.nextAction,
+        workItem.priority,
+        workItem.reviewDate,
+        workItem.completedAt,
+        workItem.lastActivityAt,
+        workItem.createdAt,
+        workItem.updatedAt,
+      ),
+    db
+      .prepare(`
+        INSERT INTO farm_history_entries (
+          id, work_item_id, channel, sender, received_content, action_content,
+          amount, recorder, occurred_at, reference_url, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .bind(
+        historyEntry.id,
+        historyEntry.workItemId,
+        historyEntry.channel,
+        historyEntry.sender,
+        historyEntry.receivedContent,
+        historyEntry.actionContent,
+        historyEntry.amount,
+        historyEntry.recorder,
+        historyEntry.occurredAt,
+        historyEntry.referenceUrl,
+        historyEntry.createdAt,
+      ),
+    db
+      .prepare('UPDATE farms SET updated_at = ? WHERE id = ?')
+      .bind(now, record.farm_id),
+    db
+      .prepare('UPDATE smartfarm_projects SET updated_at = ? WHERE id = ?')
+      .bind(now, record.project_id),
+  ]);
+
+  return event;
 }
 
 export async function createFarmWorkItem(

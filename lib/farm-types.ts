@@ -68,6 +68,14 @@ export const SUBSCRIPTION_STATUSES = [
 ] as const;
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 
+export const FARM_SUBSCRIPTION_EVENT_TYPES = [
+  'renewed',
+  'churned',
+  'rejoined',
+] as const;
+export type FarmSubscriptionEventType =
+  (typeof FARM_SUBSCRIPTION_EVENT_TYPES)[number];
+
 export const FARM_WORK_TYPES = [
   'communication',
   'installation',
@@ -182,6 +190,15 @@ export const FARM_PROJECT_UPDATE_KIND_LABELS: Record<
   decision: '결정·변경',
   blocker: '프로젝트 막힘',
   system: '시스템 기록',
+};
+
+export const FARM_SUBSCRIPTION_EVENT_TYPE_LABELS: Record<
+  FarmSubscriptionEventType,
+  string
+> = {
+  renewed: '갱신',
+  churned: '이탈',
+  rejoined: '재가입',
 };
 
 export const SUBSCRIPTION_STATUS_LABELS: Record<SubscriptionStatus, string> = {
@@ -433,6 +450,29 @@ export interface FarmRecordInput {
   notes: string;
 }
 
+export interface FarmSubscriptionEvent {
+  id: string;
+  farmRecordId: string;
+  projectId: string;
+  eventType: FarmSubscriptionEventType;
+  basisExpiryDate: string;
+  processedAt: string;
+  newExpiryDate: string;
+  recorder: string;
+  note: string;
+  createdAt: number;
+}
+
+export interface FarmSubscriptionEventInput {
+  farmRecordId: string;
+  eventType: FarmSubscriptionEventType;
+  basisExpiryDate: string;
+  processedAt: string;
+  newExpiryDate: string;
+  recorder: string;
+  note: string;
+}
+
 export interface FarmWorkItem {
   id: string;
   farmRecordId: string;
@@ -625,6 +665,7 @@ export interface FarmLedgerWorkspace {
   projectUpdates: FarmProjectUpdate[];
   farms: Farm[];
   records: FarmRecord[];
+  subscriptionEvents: FarmSubscriptionEvent[];
   inboxItems: FarmInboxItem[];
   workItems: FarmWorkItem[];
   blockerEpisodes: FarmBlockerEpisode[];

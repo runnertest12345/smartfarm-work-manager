@@ -57,6 +57,13 @@
       "when": 1788255370259,
       "tag": "0007_eager_calypso",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1788310524746,
+      "tag": "0008_rich_forge",
+      "breakpoints": true
     }
   ]
 }
