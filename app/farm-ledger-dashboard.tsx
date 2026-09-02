@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentProps,
 } from 'react';
@@ -71,13 +72,6 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet';
-import {
   Table,
   TableBody,
   TableCell,
@@ -143,6 +137,10 @@ type DetailTarget =
   | { kind: 'project'; projectId: string }
   | { kind: 'farm'; farmId: string }
   | { kind: 'work'; farmId: string; workItemId: string };
+type DetailTrailEntry = {
+  target: DetailTarget;
+  scrollY: number;
+};
 type DialogKind =
   | 'farm'
   | 'farm_edit'
@@ -904,7 +902,8 @@ export function FarmLedgerDashboard() {
   const [selectedFarmId, setSelectedFarmId] = useState('');
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [selectedWorkItemId, setSelectedWorkItemId] = useState('');
-  const [detailTrail, setDetailTrail] = useState<DetailTarget[]>([]);
+  const [detailTrail, setDetailTrail] = useState<DetailTrailEntry[]>([]);
+  const listScrollYRef = useRef(0);
   const [editingProjectId, setEditingProjectId] = useState('');
   const [editingProjectDocumentId, setEditingProjectDocumentId] = useState('');
   const [resolvingProjectUpdateId, setResolvingProjectUpdateId] = useState('');
@@ -2368,9 +2367,15 @@ export function FarmLedgerDashboard() {
   function openDetail(target: DetailTarget) {
     const current = currentDetailTarget();
     if (!sameDetailTarget(current, target) && current) {
-      setDetailTrail((trail) => [...trail, current]);
+      setDetailTrail((trail) => [
+        ...trail,
+        { target: current, scrollY: window.scrollY },
+      ]);
+    } else if (!current) {
+      listScrollYRef.current = window.scrollY;
     }
     applyDetailTarget(target);
+    requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'auto' }));
   }
 
   function closeDetails() {
@@ -2381,13 +2386,20 @@ export function FarmLedgerDashboard() {
   function backDetail() {
     const previous = detailTrail.at(-1) ?? null;
     setDetailTrail((trail) => trail.slice(0, -1));
-    applyDetailTarget(previous);
+    applyDetailTarget(previous?.target ?? null);
+    requestAnimationFrame(() =>
+      window.scrollTo({
+        top: previous?.scrollY ?? listScrollYRef.current,
+        behavior: 'auto',
+      }),
+    );
   }
 
   function changeView(next: View) {
     closeDetails();
     setView(next);
     if (next !== 'farms') setSearch('');
+    requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'auto' }));
   }
 
   function openProjectDetail(projectId: string) {
@@ -3899,7 +3911,13 @@ export function FarmLedgerDashboard() {
               </div>
             </header>
 
-            <div className="px-5 py-7 sm:px-8 lg:px-10">
+            <div
+              className={
+                selectedProject || selectedFarm
+                  ? 'hidden'
+                  : 'px-5 py-7 sm:px-8 lg:px-10'
+              }
+            >
               {loading ? (
                 <div className="grid min-h-[60vh] place-items-center">
                   <div className="text-center">
@@ -7404,1582 +7422,1601 @@ export function FarmLedgerDashboard() {
                 </>
               )}
             </div>
-          </section>
-        </div>
 
-        <Sheet
-          modal={false}
-          open={Boolean(selectedProject)}
-          onOpenChange={(open) => {
-            if (!open) backDetail();
-          }}
-        >
-          <SheetContent
-            side="right"
-            displayMode="workspace"
-            showOverlay={false}
-            showCloseButton={false}
-            className="gap-0 overflow-y-auto border-0 bg-[#f4f7f2] p-0 shadow-none"
-          >
-            {selectedProject && selectedProjectSnapshot && (
-              <>
-                <div className="sticky top-0 z-20 flex min-h-14 items-center gap-3 border-b border-[#dfe7dc] bg-white/95 px-4 backdrop-blur sm:px-6">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={backDetail}
-                    className="-ml-2 min-h-11 rounded-xl text-[#315f43]"
-                  >
-                    <ArrowLeft />
-                    {detailTrail.length ? '이전 화면' : '목록으로'}
-                  </Button>
-                  <span className="text-xs font-semibold text-[#7d8981]">
-                    프로젝트 전체 상세
-                  </span>
-                </div>
-                <SheetHeader className="mx-auto w-full max-w-[1440px] border-b border-[#e2e8e1] px-6 py-5">
-                  <div className="mb-2 flex flex-wrap gap-2">
-                    <Badge variant="outline">{selectedProject.year}</Badge>
-                    <Badge variant="outline">
-                      {FARM_PROJECT_TYPE_LABELS[selectedProject.projectType]}
-                    </Badge>
-                    <Badge
-                      variant="outline"
-                      className="border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]"
+            <div
+              className={
+                selectedProject || selectedFarm
+                  ? 'px-5 py-7 sm:px-8 lg:px-10'
+                  : 'hidden'
+              }
+            >
+              {selectedProject && selectedProjectSnapshot && (
+                <section
+                  aria-label="프로젝트 전체 상세"
+                  className="w-full bg-[#f4f7f2]"
+                >
+                  <div className="sticky top-[84px] z-10 mb-5 flex min-h-14 items-center gap-3 rounded-2xl border border-[#dfe7dc] bg-white/95 px-4 shadow-[0_6px_20px_rgba(48,82,58,0.07)] backdrop-blur sm:px-5">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={backDetail}
+                      className="-ml-2 min-h-11 rounded-xl text-[#315f43]"
                     >
-                      {FARM_PROJECT_STAGE_LABELS[selectedProject.currentStage]}
-                    </Badge>
-                    <Badge variant="outline">
-                      {FARM_PROJECT_STATUS_LABELS[selectedProject.status]}
-                    </Badge>
+                      <ArrowLeft />
+                      {detailTrail.length ? '이전 화면' : '목록으로'}
+                    </Button>
+                    <span className="text-xs font-semibold text-[#7d8981]">
+                      프로젝트 전체 상세
+                    </span>
                   </div>
-                  <SheetTitle className="text-left text-xl">
-                    {selectedProject.name}
-                  </SheetTitle>
-                  <SheetDescription className="text-left">
-                    {selectedProject.institution} · 담당{' '}
-                    {selectedProject.manager || '미지정'} ·{' '}
-                    {selectedProject.startDate || '시작일 미입력'} ~{' '}
-                    {selectedProject.endDate || '종료일 미입력'}
-                  </SheetDescription>
-                  <div className="flex flex-wrap gap-2 pt-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => openProjectUpdateDialog(selectedProject)}
-                    >
-                      <MessageSquareText /> 프로젝트 기록 추가
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => openProjectEditDialog(selectedProject)}
-                    >
-                      <Pencil /> 사업·정산 수정
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => openProjectDocumentDialog(selectedProject)}
-                      disabled={selectedProject.status === 'completed'}
-                      className="bg-[#2f7b59] hover:bg-[#286b4d]"
-                    >
-                      <Plus /> 제출서류 추가
-                    </Button>
-                  </div>
-                </SheetHeader>
-
-                <div className="mx-auto w-full max-w-[1440px] space-y-6 bg-[#f5f7f3] px-4 py-5 sm:px-6">
-                  <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                    {[
-                      {
-                        label: '증빙기반 진행률',
-                        value: `${selectedProjectSnapshot.overallProgress}%`,
-                        note: `현재 ${FARM_PROJECT_STAGE_LABELS[selectedProject.currentStage]}`,
-                        icon: TrendingUp,
-                      },
-                      {
-                        label: '참여 농가',
-                        value: `${selectedProjectSnapshot.records.length}/${selectedProject.targetFarmCount || '-'}곳`,
-                        note:
-                          selectedProjectSnapshot.farmCoverage === null
-                            ? '목표 농가 수를 입력해 주세요'
-                            : `목표 대비 ${selectedProjectSnapshot.farmCoverage}%`,
-                        icon: Warehouse,
-                      },
-                      {
-                        label: '현재 막힘',
-                        value: `${selectedProjectSnapshot.openProjectBlockers.length + selectedProjectSnapshot.blockedItems.length + selectedProjectSnapshot.documentRisks.length}건`,
-                        note: selectedProjectSnapshot.openProjectBlockers.length
-                          ? `프로젝트 막힘 ${selectedProjectSnapshot.openProjectBlockers.length}건`
-                          : selectedProjectSnapshot.blockedItems.length
-                            ? `농가 업무 막힘 ${selectedProjectSnapshot.blockedItems.length}건`
-                            : selectedProjectSnapshot.documentRisks.length
-                              ? `서류 위험 ${selectedProjectSnapshot.documentRisks.length}건`
-                              : '현재 막힌 항목 없음',
-                        icon: CircleAlert,
-                      },
-                      {
-                        label: '유효 구독률',
-                        value:
-                          selectedProjectSnapshot.subscriptionRate === null
-                            ? '-'
-                            : `${selectedProjectSnapshot.subscriptionRate}%`,
-                        note: `90일 내 만료 ${selectedProjectSnapshot.expiringSoon.length}곳 · 만료 ${selectedProjectSnapshot.expiredSubscriptions.length}곳`,
-                        icon: CalendarClock,
-                      },
-                      {
-                        label: '필수 제출서류',
-                        value: `${selectedProjectSnapshot.submittedDocuments.length}/${selectedProjectSnapshot.requiredDocuments.length}건`,
-                        note: `승인 ${selectedProjectSnapshot.approvedDocuments.length}건 · 위험 ${selectedProjectSnapshot.documentRisks.length}건`,
-                        icon: FileText,
-                      },
-                      {
-                        label: '정산',
-                        value:
-                          FARM_SETTLEMENT_STATUS_LABELS[
-                            selectedProject.settlementStatus
-                          ],
-                        note: selectedProject.settlementDueDate
-                          ? `${selectedProject.settlementDueDate} · ${dueLabel(selectedProject.settlementDueDate, ['paid', 'closed'].includes(selectedProject.settlementStatus))}`
-                          : '정산기한 미입력',
-                        icon: CreditCard,
-                      },
-                    ].map((item) => (
-                      <Card key={item.label} className="border-0 bg-white">
-                        <CardContent className="px-4 py-1">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className="text-xs text-[#7f8a82]">
-                                {item.label}
-                              </p>
-                              <p className="mt-1 text-xl font-bold">
-                                {item.value}
-                              </p>
-                              <p className="mt-1 text-xs text-[#768179]">
-                                {item.note}
-                              </p>
-                            </div>
-                            <div className="grid size-9 place-items-center rounded-xl bg-[#edf5ec] text-[#4b8057]">
-                              <item.icon className="size-4" />
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </section>
-
-                  <section className="rounded-2xl bg-white p-5 shadow-sm">
-                    <div className="mb-4">
-                      <h3 className="font-bold">설치·운영 완료율</h3>
-                      <p className="mt-1 text-xs text-[#7d8981]">
-                        참여 농가 중 완료일이 입력된 농가와 현재 유효한 구독을
-                        기준으로 계산합니다.
-                      </p>
+                  <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-0.5 border-b border-[#e2e8e1] px-6 py-5">
+                    <div className="mb-2 flex flex-wrap gap-2">
+                      <Badge variant="outline">{selectedProject.year}</Badge>
+                      <Badge variant="outline">
+                        {FARM_PROJECT_TYPE_LABELS[selectedProject.projectType]}
+                      </Badge>
+                      <Badge
+                        variant="outline"
+                        className="border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]"
+                      >
+                        {
+                          FARM_PROJECT_STAGE_LABELS[
+                            selectedProject.currentStage
+                          ]
+                        }
+                      </Badge>
+                      <Badge variant="outline">
+                        {FARM_PROJECT_STATUS_LABELS[selectedProject.status]}
+                      </Badge>
                     </div>
-                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <h1 className="cn-font-heading text-left text-xl font-medium text-foreground">
+                      {selectedProject.name}
+                    </h1>
+                    <p className="text-left text-sm text-muted-foreground">
+                      {selectedProject.institution} · 담당{' '}
+                      {selectedProject.manager || '미지정'} ·{' '}
+                      {selectedProject.startDate || '시작일 미입력'} ~{' '}
+                      {selectedProject.endDate || '종료일 미입력'}
+                    </p>
+                    <div className="flex flex-wrap gap-2 pt-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => openProjectUpdateDialog(selectedProject)}
+                      >
+                        <MessageSquareText /> 프로젝트 기록 추가
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => openProjectEditDialog(selectedProject)}
+                      >
+                        <Pencil /> 사업·정산 수정
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={() =>
+                          openProjectDocumentDialog(selectedProject)
+                        }
+                        disabled={selectedProject.status === 'completed'}
+                        className="bg-[#2f7b59] hover:bg-[#286b4d]"
+                      >
+                        <Plus /> 제출서류 추가
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="mx-auto w-full max-w-[1440px] space-y-6 bg-[#f5f7f3] px-4 py-5 sm:px-6">
+                    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                       {[
                         {
-                          label: '설치',
-                          complete: selectedProjectSnapshot.records.filter(
-                            (record) => record.installationDate,
-                          ).length,
-                          rate: selectedProjectSnapshot.installationRate,
-                          note: '설치일 입력 기준',
-                          icon: CalendarCheck2,
-                        },
-                        {
-                          label: '시운전',
-                          complete: selectedProjectSnapshot.records.filter(
-                            (record) => record.commissioningDate,
-                          ).length,
-                          rate: selectedProjectSnapshot.commissioningRate,
-                          note: '시운전일 입력 기준',
-                          icon: Wrench,
-                        },
-                        {
-                          label: '교육',
-                          complete: selectedProjectSnapshot.records.filter(
-                            (record) => record.educationDate,
-                          ).length,
-                          rate: selectedProjectSnapshot.educationRate,
-                          note: '교육일 입력 기준',
+                          label: '증빙기반 진행률',
+                          value: `${selectedProjectSnapshot.overallProgress}%`,
+                          note: `현재 ${FARM_PROJECT_STAGE_LABELS[selectedProject.currentStage]}`,
                           icon: TrendingUp,
                         },
                         {
-                          label: '유효 구독',
-                          complete:
-                            selectedProjectSnapshot.activeSubscriptions.length,
-                          rate: selectedProjectSnapshot.subscriptionRate,
-                          note: `90일 내 만료 ${selectedProjectSnapshot.expiringSoon.length}곳`,
+                          label: '참여 농가',
+                          value: `${selectedProjectSnapshot.records.length}/${selectedProject.targetFarmCount || '-'}곳`,
+                          note:
+                            selectedProjectSnapshot.farmCoverage === null
+                              ? '목표 농가 수를 입력해 주세요'
+                              : `목표 대비 ${selectedProjectSnapshot.farmCoverage}%`,
+                          icon: Warehouse,
+                        },
+                        {
+                          label: '현재 막힘',
+                          value: `${selectedProjectSnapshot.openProjectBlockers.length + selectedProjectSnapshot.blockedItems.length + selectedProjectSnapshot.documentRisks.length}건`,
+                          note: selectedProjectSnapshot.openProjectBlockers
+                            .length
+                            ? `프로젝트 막힘 ${selectedProjectSnapshot.openProjectBlockers.length}건`
+                            : selectedProjectSnapshot.blockedItems.length
+                              ? `농가 업무 막힘 ${selectedProjectSnapshot.blockedItems.length}건`
+                              : selectedProjectSnapshot.documentRisks.length
+                                ? `서류 위험 ${selectedProjectSnapshot.documentRisks.length}건`
+                                : '현재 막힌 항목 없음',
+                          icon: CircleAlert,
+                        },
+                        {
+                          label: '유효 구독률',
+                          value:
+                            selectedProjectSnapshot.subscriptionRate === null
+                              ? '-'
+                              : `${selectedProjectSnapshot.subscriptionRate}%`,
+                          note: `90일 내 만료 ${selectedProjectSnapshot.expiringSoon.length}곳 · 만료 ${selectedProjectSnapshot.expiredSubscriptions.length}곳`,
                           icon: CalendarClock,
                         },
-                      ].map((metric) => (
-                        <div
-                          key={metric.label}
-                          className="rounded-xl border border-[#e2e8e1] p-4"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className="text-xs font-semibold text-[#657269]">
-                                {metric.label}
-                              </p>
-                              <p className="mt-1 text-2xl font-bold text-[#315f43]">
-                                {metric.rate === null ? '-' : `${metric.rate}%`}
-                              </p>
+                        {
+                          label: '필수 제출서류',
+                          value: `${selectedProjectSnapshot.submittedDocuments.length}/${selectedProjectSnapshot.requiredDocuments.length}건`,
+                          note: `승인 ${selectedProjectSnapshot.approvedDocuments.length}건 · 위험 ${selectedProjectSnapshot.documentRisks.length}건`,
+                          icon: FileText,
+                        },
+                        {
+                          label: '정산',
+                          value:
+                            FARM_SETTLEMENT_STATUS_LABELS[
+                              selectedProject.settlementStatus
+                            ],
+                          note: selectedProject.settlementDueDate
+                            ? `${selectedProject.settlementDueDate} · ${dueLabel(selectedProject.settlementDueDate, ['paid', 'closed'].includes(selectedProject.settlementStatus))}`
+                            : '정산기한 미입력',
+                          icon: CreditCard,
+                        },
+                      ].map((item) => (
+                        <Card key={item.label} className="border-0 bg-white">
+                          <CardContent className="px-4 py-1">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-xs text-[#7f8a82]">
+                                  {item.label}
+                                </p>
+                                <p className="mt-1 text-xl font-bold">
+                                  {item.value}
+                                </p>
+                                <p className="mt-1 text-xs text-[#768179]">
+                                  {item.note}
+                                </p>
+                              </div>
+                              <div className="grid size-9 place-items-center rounded-xl bg-[#edf5ec] text-[#4b8057]">
+                                <item.icon className="size-4" />
+                              </div>
                             </div>
-                            <div className="grid size-9 place-items-center rounded-xl bg-[#edf5ec] text-[#4b8057]">
-                              <metric.icon className="size-4" />
-                            </div>
-                          </div>
-                          <p className="mt-2 text-xs text-[#768179]">
-                            {metric.complete}/
-                            {selectedProjectSnapshot.records.length}곳 ·{' '}
-                            {metric.note}
-                          </p>
-                          <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#edf1ec]">
-                            <div
-                              className="h-full rounded-full bg-[#62b982]"
-                              style={{ width: `${metric.rate ?? 0}%` }}
-                            />
-                          </div>
-                        </div>
+                          </CardContent>
+                        </Card>
                       ))}
-                    </div>
-                  </section>
+                    </section>
 
-                  <section className="rounded-2xl bg-white p-5 shadow-sm">
-                    <div className="mb-4 flex items-center justify-between">
-                      <div>
-                        <h3 className="font-bold">사업 진행 단계</h3>
+                    <section className="rounded-2xl bg-white p-5 shadow-sm">
+                      <div className="mb-4">
+                        <h3 className="font-bold">설치·운영 완료율</h3>
                         <p className="mt-1 text-xs text-[#7d8981]">
-                          저장된 날짜·농가·서류·정산을 근거로 계산합니다.
+                          참여 농가 중 완료일이 입력된 농가와 현재 유효한 구독을
+                          기준으로 계산합니다.
                         </p>
                       </div>
-                      <span className="text-xs text-[#89938c]">
-                        최근 활동{' '}
-                        {formatTimestamp(
-                          selectedProjectSnapshot.latestActivityAt,
-                        )}
-                      </span>
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                      {selectedProjectStageCards.map((stage) => (
-                        <div
-                          key={stage.label}
-                          className="rounded-xl border border-[#e2e8e1] p-3"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-sm font-semibold">
-                              {stage.label}
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                        {[
+                          {
+                            label: '설치',
+                            complete: selectedProjectSnapshot.records.filter(
+                              (record) => record.installationDate,
+                            ).length,
+                            rate: selectedProjectSnapshot.installationRate,
+                            note: '설치일 입력 기준',
+                            icon: CalendarCheck2,
+                          },
+                          {
+                            label: '시운전',
+                            complete: selectedProjectSnapshot.records.filter(
+                              (record) => record.commissioningDate,
+                            ).length,
+                            rate: selectedProjectSnapshot.commissioningRate,
+                            note: '시운전일 입력 기준',
+                            icon: Wrench,
+                          },
+                          {
+                            label: '교육',
+                            complete: selectedProjectSnapshot.records.filter(
+                              (record) => record.educationDate,
+                            ).length,
+                            rate: selectedProjectSnapshot.educationRate,
+                            note: '교육일 입력 기준',
+                            icon: TrendingUp,
+                          },
+                          {
+                            label: '유효 구독',
+                            complete:
+                              selectedProjectSnapshot.activeSubscriptions
+                                .length,
+                            rate: selectedProjectSnapshot.subscriptionRate,
+                            note: `90일 내 만료 ${selectedProjectSnapshot.expiringSoon.length}곳`,
+                            icon: CalendarClock,
+                          },
+                        ].map((metric) => (
+                          <div
+                            key={metric.label}
+                            className="rounded-xl border border-[#e2e8e1] p-4"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-xs font-semibold text-[#657269]">
+                                  {metric.label}
+                                </p>
+                                <p className="mt-1 text-2xl font-bold text-[#315f43]">
+                                  {metric.rate === null
+                                    ? '-'
+                                    : `${metric.rate}%`}
+                                </p>
+                              </div>
+                              <div className="grid size-9 place-items-center rounded-xl bg-[#edf5ec] text-[#4b8057]">
+                                <metric.icon className="size-4" />
+                              </div>
+                            </div>
+                            <p className="mt-2 text-xs text-[#768179]">
+                              {metric.complete}/
+                              {selectedProjectSnapshot.records.length}곳 ·{' '}
+                              {metric.note}
                             </p>
-                            <span className="text-sm font-bold text-[#347454]">
-                              {stage.progress === null
-                                ? '미설정'
-                                : `${stage.progress}%`}
-                            </span>
+                            <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#edf1ec]">
+                              <div
+                                className="h-full rounded-full bg-[#62b982]"
+                                style={{ width: `${metric.rate ?? 0}%` }}
+                              />
+                            </div>
                           </div>
-                          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#edf1ec]">
-                            <div
-                              className="h-full rounded-full bg-[#62b982]"
-                              style={{
-                                width: `${stage.progress ?? 0}%`,
-                              }}
-                            />
-                          </div>
-                          <p className="mt-2 text-[11px] leading-5 text-[#7d8981]">
-                            {stage.evidence}
+                        ))}
+                      </div>
+                    </section>
+
+                    <section className="rounded-2xl bg-white p-5 shadow-sm">
+                      <div className="mb-4 flex items-center justify-between">
+                        <div>
+                          <h3 className="font-bold">사업 진행 단계</h3>
+                          <p className="mt-1 text-xs text-[#7d8981]">
+                            저장된 날짜·농가·서류·정산을 근거로 계산합니다.
                           </p>
                         </div>
-                      ))}
-                    </div>
-                  </section>
-
-                  <section className="rounded-2xl bg-white p-5 shadow-sm">
-                    <h3 className="font-bold">현재 막힌 곳</h3>
-                    <p className="mt-1 text-xs text-[#7d8981]">
-                      프로젝트 직접 막힘, 농가 업무와 기한초과·보완·반려 서류를
-                      함께 봅니다.
-                    </p>
-                    {selectedProjectSnapshot.openProjectBlockers.length ||
-                    selectedProjectSnapshot.blockedItems.length ||
-                    selectedProjectSnapshot.documentRisks.length ? (
-                      <div className="mt-4 space-y-2">
-                        {selectedProjectSnapshot.openProjectBlockers.map(
-                          (update) => (
-                            <div
-                              key={update.id}
-                              className="flex flex-col justify-between gap-3 rounded-xl border border-[#efc8bb] bg-[#fff1ec] p-3 sm:flex-row sm:items-start"
-                            >
-                              <div>
-                                <p className="text-sm font-semibold">
-                                  프로젝트 · {update.title}
-                                </p>
-                                <p className="mt-1 text-xs leading-5 text-[#8b5e45]">
-                                  {update.blockedReason} · 해결 주체{' '}
-                                  {update.blockedBy}
-                                </p>
-                                <p className="mt-1 text-[11px] text-[#94715d]">
-                                  막힌 지 {elapsedDays(update.occurredAt)}일 ·
-                                  예상 해제{' '}
-                                  {update.expectedUnblockDate || '미정'}
-                                </p>
-                              </div>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() =>
-                                  openProjectBlockerResolveDialog(update)
-                                }
-                              >
-                                <Check /> 해결 처리
-                              </Button>
+                        <span className="text-xs text-[#89938c]">
+                          최근 활동{' '}
+                          {formatTimestamp(
+                            selectedProjectSnapshot.latestActivityAt,
+                          )}
+                        </span>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                        {selectedProjectStageCards.map((stage) => (
+                          <div
+                            key={stage.label}
+                            className="rounded-xl border border-[#e2e8e1] p-3"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-sm font-semibold">
+                                {stage.label}
+                              </p>
+                              <span className="text-sm font-bold text-[#347454]">
+                                {stage.progress === null
+                                  ? '미설정'
+                                  : `${stage.progress}%`}
+                              </span>
                             </div>
-                          ),
-                        )}
-                        {selectedProjectSnapshot.blockedItems.map((item) => {
-                          const farm = farmById.get(item.farmId);
-                          return (
-                            <button
-                              type="button"
-                              key={item.id}
-                              onClick={() => openFarm(item.farmId, item.id)}
-                              className="flex w-full items-start justify-between gap-3 rounded-xl border border-[#efd8c8] bg-[#fff8f3] p-3 text-left hover:bg-[#fff3eb]"
-                            >
-                              <div>
-                                <p className="text-sm font-semibold">
-                                  {farm?.name ?? '농가'} · {item.title}
-                                </p>
-                                <p className="mt-1 text-xs leading-5 text-[#8b5e45]">
-                                  {item.blockedReason || '막힘 사유 미입력'} ·
-                                  해결 주체 {item.blockedBy || '미입력'}
-                                </p>
-                                <p className="mt-1 text-[11px] text-[#94715d]">
-                                  막힌 지 {elapsedDays(item.blockedAt)}일 · 예상
-                                  해제 {item.expectedUnblockDate || '미정'}
-                                </p>
+                            <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#edf1ec]">
+                              <div
+                                className="h-full rounded-full bg-[#62b982]"
+                                style={{
+                                  width: `${stage.progress ?? 0}%`,
+                                }}
+                              />
+                            </div>
+                            <p className="mt-2 text-[11px] leading-5 text-[#7d8981]">
+                              {stage.evidence}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+
+                    <section className="rounded-2xl bg-white p-5 shadow-sm">
+                      <h3 className="font-bold">현재 막힌 곳</h3>
+                      <p className="mt-1 text-xs text-[#7d8981]">
+                        프로젝트 직접 막힘, 농가 업무와 기한초과·보완·반려
+                        서류를 함께 봅니다.
+                      </p>
+                      {selectedProjectSnapshot.openProjectBlockers.length ||
+                      selectedProjectSnapshot.blockedItems.length ||
+                      selectedProjectSnapshot.documentRisks.length ? (
+                        <div className="mt-4 space-y-2">
+                          {selectedProjectSnapshot.openProjectBlockers.map(
+                            (update) => (
+                              <div
+                                key={update.id}
+                                className="flex flex-col justify-between gap-3 rounded-xl border border-[#efc8bb] bg-[#fff1ec] p-3 sm:flex-row sm:items-start"
+                              >
+                                <div>
+                                  <p className="text-sm font-semibold">
+                                    프로젝트 · {update.title}
+                                  </p>
+                                  <p className="mt-1 text-xs leading-5 text-[#8b5e45]">
+                                    {update.blockedReason} · 해결 주체{' '}
+                                    {update.blockedBy}
+                                  </p>
+                                  <p className="mt-1 text-[11px] text-[#94715d]">
+                                    막힌 지 {elapsedDays(update.occurredAt)}
+                                    일 · 예상 해제{' '}
+                                    {update.expectedUnblockDate || '미정'}
+                                  </p>
+                                </div>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
+                                    openProjectBlockerResolveDialog(update)
+                                  }
+                                >
+                                  <Check /> 해결 처리
+                                </Button>
                               </div>
-                              <ArrowRight className="mt-1 size-4 shrink-0" />
-                            </button>
-                          );
-                        })}
-                        {selectedProjectSnapshot.documentRisks.map(
-                          (document) => (
+                            ),
+                          )}
+                          {selectedProjectSnapshot.blockedItems.map((item) => {
+                            const farm = farmById.get(item.farmId);
+                            return (
+                              <button
+                                type="button"
+                                key={item.id}
+                                onClick={() => openFarm(item.farmId, item.id)}
+                                className="flex w-full items-start justify-between gap-3 rounded-xl border border-[#efd8c8] bg-[#fff8f3] p-3 text-left hover:bg-[#fff3eb]"
+                              >
+                                <div>
+                                  <p className="text-sm font-semibold">
+                                    {farm?.name ?? '농가'} · {item.title}
+                                  </p>
+                                  <p className="mt-1 text-xs leading-5 text-[#8b5e45]">
+                                    {item.blockedReason || '막힘 사유 미입력'} ·
+                                    해결 주체 {item.blockedBy || '미입력'}
+                                  </p>
+                                  <p className="mt-1 text-[11px] text-[#94715d]">
+                                    막힌 지 {elapsedDays(item.blockedAt)}
+                                    일 · 예상 해제{' '}
+                                    {item.expectedUnblockDate || '미정'}
+                                  </p>
+                                </div>
+                                <ArrowRight className="mt-1 size-4 shrink-0" />
+                              </button>
+                            );
+                          })}
+                          {selectedProjectSnapshot.documentRisks.map(
+                            (document) => (
+                              <button
+                                type="button"
+                                key={document.id}
+                                onClick={() =>
+                                  openProjectDocumentDialog(
+                                    selectedProject,
+                                    document,
+                                  )
+                                }
+                                className="flex w-full items-start justify-between gap-3 rounded-xl border border-[#ead9b8] bg-[#fffaf0] p-3 text-left hover:bg-[#fff6e4]"
+                              >
+                                <div>
+                                  <p className="text-sm font-semibold">
+                                    제출서류 · {document.title}
+                                  </p>
+                                  <p className="mt-1 text-xs text-[#8b6d36]">
+                                    {
+                                      FARM_PROJECT_DOCUMENT_STATUS_LABELS[
+                                        document.status
+                                      ]
+                                    }{' '}
+                                    · 현재 처리자 {document.currentHandler}
+                                    {document.dueDate
+                                      ? ` · ${dueLabel(document.dueDate)}`
+                                      : ''}
+                                  </p>
+                                </div>
+                                <Pencil className="mt-1 size-4 shrink-0" />
+                              </button>
+                            ),
+                          )}
+                        </div>
+                      ) : (
+                        <div className="mt-4 flex items-center gap-3 rounded-xl border border-[#cfe0d1] bg-[#f2f8f2] p-4 text-sm text-[#36714d]">
+                          <CheckCircle2 className="size-5" /> 현재 막힌 항목이
+                          없습니다.
+                        </div>
+                      )}
+                    </section>
+
+                    <section className="rounded-2xl bg-white p-5 shadow-sm">
+                      <div className="flex items-end justify-between gap-3">
+                        <div>
+                          <h3 className="font-bold">참여 농가·구독</h3>
+                          <p className="mt-1 text-xs text-[#7d8981]">
+                            농가별 설치 단계와 실제 만료일 기준 구독 상태입니다.
+                          </p>
+                        </div>
+                        {selectedProjectSnapshot.missingSubscriptionExpiry
+                          .length > 0 && (
+                          <Badge
+                            variant="outline"
+                            className="border-[#ead9b8] bg-[#fff9ed] text-[#94601c]"
+                          >
+                            만료일 미입력{' '}
+                            {
+                              selectedProjectSnapshot.missingSubscriptionExpiry
+                                .length
+                            }
+                            곳
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="mt-4 overflow-x-auto rounded-xl border border-[#e3e8e2]">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>농가</TableHead>
+                              <TableHead>설치 단계</TableHead>
+                              <TableHead>구독</TableHead>
+                              <TableHead>만료일</TableHead>
+                              <TableHead className="text-right">
+                                남은 기간
+                              </TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {selectedProjectSnapshot.records.map((record) => {
+                              const farm = farmById.get(record.farmId);
+                              const install = installProgress(record);
+                              const days = daysUntil(
+                                record.currentSubscriptionExpiresAt,
+                              );
+                              return (
+                                <TableRow key={record.id}>
+                                  <TableCell>
+                                    <button
+                                      type="button"
+                                      onClick={() => openFarm(record.farmId)}
+                                      className="text-left font-semibold text-[#274f39] hover:underline focus-visible:rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4f9a70]"
+                                    >
+                                      {farm?.name ?? '농가 없음'}
+                                    </button>
+                                    <p className="mt-1 text-xs text-[#89938c]">
+                                      {record.crop || '작물 미입력'} ·{' '}
+                                      {record.productType || '제품 미입력'}
+                                    </p>
+                                  </TableCell>
+                                  <TableCell>
+                                    {install.complete}/{install.total} 완료
+                                  </TableCell>
+                                  <TableCell>
+                                    <Badge
+                                      variant="outline"
+                                      className={subscriptionClass(
+                                        days !== null && days < 0
+                                          ? 'expired'
+                                          : record.subscriptionStatus,
+                                      )}
+                                    >
+                                      {days !== null && days < 0
+                                        ? '만료'
+                                        : SUBSCRIPTION_STATUS_LABELS[
+                                            record.subscriptionStatus
+                                          ]}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell>
+                                    {record.currentSubscriptionExpiresAt ||
+                                      '미입력'}
+                                  </TableCell>
+                                  <TableCell className="text-right font-semibold">
+                                    {days === null
+                                      ? '-'
+                                      : days < 0
+                                        ? `${Math.abs(days)}일 지남`
+                                        : `D-${days}`}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                            {!selectedProjectSnapshot.records.length && (
+                              <TableRow>
+                                <TableCell
+                                  colSpan={5}
+                                  className="h-28 text-center text-[#89938c]"
+                                >
+                                  이 사업에 연결된 농가가 없습니다.
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </section>
+
+                    <section className="grid gap-4 xl:grid-cols-2">
+                      <div className="rounded-2xl bg-white p-5 shadow-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <h3 className="font-bold">제출서류 대장</h3>
+                            <p className="mt-1 text-xs text-[#7d8981]">
+                              책임자와 현재 처리자를 분리해 관리합니다.
+                            </p>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={selectedProject.status === 'completed'}
+                            onClick={() =>
+                              openProjectDocumentDialog(selectedProject)
+                            }
+                          >
+                            <Plus /> 추가
+                          </Button>
+                        </div>
+                        <div className="mt-4 space-y-2">
+                          {selectedProjectSnapshot.documents.map((document) => (
                             <button
                               type="button"
                               key={document.id}
+                              disabled={selectedProject.status === 'completed'}
                               onClick={() =>
                                 openProjectDocumentDialog(
                                   selectedProject,
                                   document,
                                 )
                               }
-                              className="flex w-full items-start justify-between gap-3 rounded-xl border border-[#ead9b8] bg-[#fffaf0] p-3 text-left hover:bg-[#fff6e4]"
+                              className="w-full rounded-xl border border-[#e2e8e1] p-3 text-left hover:bg-[#f7f9f6] disabled:cursor-not-allowed disabled:opacity-70"
                             >
-                              <div>
-                                <p className="text-sm font-semibold">
-                                  제출서류 · {document.title}
-                                </p>
-                                <p className="mt-1 text-xs text-[#8b6d36]">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-semibold">
+                                      {document.title}
+                                    </p>
+                                    {document.isRequired && (
+                                      <Badge variant="outline">필수</Badge>
+                                    )}
+                                  </div>
+                                  <p className="mt-1 text-xs text-[#7d8981]">
+                                    {
+                                      FARM_PROJECT_DOCUMENT_CATEGORY_LABELS[
+                                        document.category
+                                      ]
+                                    }{' '}
+                                    · 책임 {document.owner} · 현재{' '}
+                                    {document.currentHandler}
+                                  </p>
+                                </div>
+                                <Badge variant="outline">
                                   {
                                     FARM_PROJECT_DOCUMENT_STATUS_LABELS[
                                       document.status
                                     ]
-                                  }{' '}
-                                  · 현재 처리자 {document.currentHandler}
-                                  {document.dueDate
-                                    ? ` · ${dueLabel(document.dueDate)}`
-                                    : ''}
-                                </p>
+                                  }
+                                </Badge>
                               </div>
-                              <Pencil className="mt-1 size-4 shrink-0" />
+                              <p className="mt-2 text-[11px] text-[#8a958d]">
+                                기한 {document.dueDate || '미입력'} · 개정{' '}
+                                {document.revision}차
+                              </p>
                             </button>
-                          ),
-                        )}
-                      </div>
-                    ) : (
-                      <div className="mt-4 flex items-center gap-3 rounded-xl border border-[#cfe0d1] bg-[#f2f8f2] p-4 text-sm text-[#36714d]">
-                        <CheckCircle2 className="size-5" /> 현재 막힌 항목이
-                        없습니다.
-                      </div>
-                    )}
-                  </section>
-
-                  <section className="rounded-2xl bg-white p-5 shadow-sm">
-                    <div className="flex items-end justify-between gap-3">
-                      <div>
-                        <h3 className="font-bold">참여 농가·구독</h3>
-                        <p className="mt-1 text-xs text-[#7d8981]">
-                          농가별 설치 단계와 실제 만료일 기준 구독 상태입니다.
-                        </p>
-                      </div>
-                      {selectedProjectSnapshot.missingSubscriptionExpiry
-                        .length > 0 && (
-                        <Badge
-                          variant="outline"
-                          className="border-[#ead9b8] bg-[#fff9ed] text-[#94601c]"
-                        >
-                          만료일 미입력{' '}
-                          {
-                            selectedProjectSnapshot.missingSubscriptionExpiry
-                              .length
-                          }
-                          곳
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="mt-4 overflow-x-auto rounded-xl border border-[#e3e8e2]">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>농가</TableHead>
-                            <TableHead>설치 단계</TableHead>
-                            <TableHead>구독</TableHead>
-                            <TableHead>만료일</TableHead>
-                            <TableHead className="text-right">
-                              남은 기간
-                            </TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {selectedProjectSnapshot.records.map((record) => {
-                            const farm = farmById.get(record.farmId);
-                            const install = installProgress(record);
-                            const days = daysUntil(
-                              record.currentSubscriptionExpiresAt,
-                            );
-                            return (
-                              <TableRow key={record.id}>
-                                <TableCell>
-                                  <button
-                                    type="button"
-                                    onClick={() => openFarm(record.farmId)}
-                                    className="text-left font-semibold text-[#274f39] hover:underline focus-visible:rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4f9a70]"
-                                  >
-                                    {farm?.name ?? '농가 없음'}
-                                  </button>
-                                  <p className="mt-1 text-xs text-[#89938c]">
-                                    {record.crop || '작물 미입력'} ·{' '}
-                                    {record.productType || '제품 미입력'}
-                                  </p>
-                                </TableCell>
-                                <TableCell>
-                                  {install.complete}/{install.total} 완료
-                                </TableCell>
-                                <TableCell>
-                                  <Badge
-                                    variant="outline"
-                                    className={subscriptionClass(
-                                      days !== null && days < 0
-                                        ? 'expired'
-                                        : record.subscriptionStatus,
-                                    )}
-                                  >
-                                    {days !== null && days < 0
-                                      ? '만료'
-                                      : SUBSCRIPTION_STATUS_LABELS[
-                                          record.subscriptionStatus
-                                        ]}
-                                  </Badge>
-                                </TableCell>
-                                <TableCell>
-                                  {record.currentSubscriptionExpiresAt ||
-                                    '미입력'}
-                                </TableCell>
-                                <TableCell className="text-right font-semibold">
-                                  {days === null
-                                    ? '-'
-                                    : days < 0
-                                      ? `${Math.abs(days)}일 지남`
-                                      : `D-${days}`}
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                          {!selectedProjectSnapshot.records.length && (
-                            <TableRow>
-                              <TableCell
-                                colSpan={5}
-                                className="h-28 text-center text-[#89938c]"
-                              >
-                                이 사업에 연결된 농가가 없습니다.
-                              </TableCell>
-                            </TableRow>
+                          ))}
+                          {!selectedProjectSnapshot.documents.length && (
+                            <div className="rounded-xl border border-dashed border-[#d9dfd8] p-6 text-center text-sm text-[#89938c]">
+                              필수서류 목록이 아직 등록되지 않았습니다.
+                            </div>
                           )}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </section>
+                        </div>
+                      </div>
 
-                  <section className="grid gap-4 xl:grid-cols-2">
-                    <div className="rounded-2xl bg-white p-5 shadow-sm">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <h3 className="font-bold">제출서류 대장</h3>
-                          <p className="mt-1 text-xs text-[#7d8981]">
-                            책임자와 현재 처리자를 분리해 관리합니다.
+                      <div className="rounded-2xl bg-white p-5 shadow-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <h3 className="font-bold">최종 정산</h3>
+                            <p className="mt-1 text-xs text-[#7d8981]">
+                              현재 버전은 프로젝트별 최종정산 1건을 관리합니다.
+                            </p>
+                          </div>
+                          <Badge variant="outline">
+                            {
+                              FARM_SETTLEMENT_STATUS_LABELS[
+                                selectedProject.settlementStatus
+                              ]
+                            }
+                          </Badge>
+                        </div>
+                        <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                          {[
+                            ['계약금액', selectedProject.contractAmount],
+                            ['청구액', selectedProject.settlementClaimAmount],
+                            [
+                              '승인액',
+                              selectedProject.settlementApprovedAmount,
+                            ],
+                            ['입금액', selectedProject.settlementPaidAmount],
+                          ].map(([label, value]) => (
+                            <div
+                              key={String(label)}
+                              className="rounded-xl bg-[#f6f8f5] p-3"
+                            >
+                              <dt className="text-xs text-[#7d8981]">
+                                {label}
+                              </dt>
+                              <dd className="mt-1 font-bold">
+                                {formatMoney(Number(value))}
+                              </dd>
+                            </div>
+                          ))}
+                        </dl>
+                        <div className="mt-4 space-y-2 rounded-xl border border-[#e2e8e1] p-3 text-sm">
+                          <p>
+                            <span className="text-[#7d8981]">담당자</span>{' '}
+                            <strong>
+                              {selectedProject.settlementOwner || '미지정'}
+                            </strong>
+                          </p>
+                          <p>
+                            <span className="text-[#7d8981]">정산기한</span>{' '}
+                            <strong>
+                              {selectedProject.settlementDueDate || '미입력'}
+                            </strong>
+                          </p>
+                          <p>
+                            <span className="text-[#7d8981]">입금·마감일</span>{' '}
+                            <strong>
+                              {selectedProject.settledAt || '미입력'}
+                            </strong>
+                          </p>
+                          {selectedProject.settlementEvidenceUrl && (
+                            <a
+                              href={selectedProject.settlementEvidenceUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 font-semibold text-[#39795b] hover:underline"
+                            >
+                              <ExternalLink className="size-3.5" /> 정산 증빙
+                              열기
+                            </a>
+                          )}
+                          <p className="leading-6 text-[#657269]">
+                            {selectedProject.settlementNote ||
+                              '정산 메모가 없습니다.'}
                           </p>
                         </div>
                         <Button
-                          size="sm"
                           variant="outline"
-                          disabled={selectedProject.status === 'completed'}
-                          onClick={() =>
-                            openProjectDocumentDialog(selectedProject)
-                          }
+                          className="mt-4 w-full"
+                          onClick={() => openProjectEditDialog(selectedProject)}
                         >
-                          <Plus /> 추가
+                          <Pencil /> 정산 정보 수정
                         </Button>
                       </div>
-                      <div className="mt-4 space-y-2">
-                        {selectedProjectSnapshot.documents.map((document) => (
-                          <button
-                            type="button"
-                            key={document.id}
-                            disabled={selectedProject.status === 'completed'}
+                    </section>
+
+                    <section className="rounded-2xl bg-white p-5 shadow-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <h3 className="font-bold">프로젝트 최근 히스토리</h3>
+                          <p className="mt-1 text-xs text-[#7d8981]">
+                            프로젝트 연락·결정·막힘과 농가 업무 기록을
+                            시간순으로 모읍니다.
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
                             onClick={() =>
-                              openProjectDocumentDialog(
+                              openProjectUpdateDialog(
                                 selectedProject,
-                                document,
+                                'blocker',
                               )
                             }
-                            className="w-full rounded-xl border border-[#e2e8e1] p-3 text-left hover:bg-[#f7f9f6] disabled:cursor-not-allowed disabled:opacity-70"
+                            disabled={selectedProject.status === 'completed'}
                           >
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <p className="text-sm font-semibold">
-                                    {document.title}
-                                  </p>
-                                  {document.isRequired && (
-                                    <Badge variant="outline">필수</Badge>
-                                  )}
-                                </div>
-                                <p className="mt-1 text-xs text-[#7d8981]">
-                                  {
-                                    FARM_PROJECT_DOCUMENT_CATEGORY_LABELS[
-                                      document.category
-                                    ]
-                                  }{' '}
-                                  · 책임 {document.owner} · 현재{' '}
-                                  {document.currentHandler}
-                                </p>
-                              </div>
-                              <Badge variant="outline">
-                                {
-                                  FARM_PROJECT_DOCUMENT_STATUS_LABELS[
-                                    document.status
-                                  ]
-                                }
-                              </Badge>
-                            </div>
-                            <p className="mt-2 text-[11px] text-[#8a958d]">
-                              기한 {document.dueDate || '미입력'} · 개정{' '}
-                              {document.revision}차
-                            </p>
-                          </button>
-                        ))}
-                        {!selectedProjectSnapshot.documents.length && (
-                          <div className="rounded-xl border border-dashed border-[#d9dfd8] p-6 text-center text-sm text-[#89938c]">
-                            필수서류 목록이 아직 등록되지 않았습니다.
-                          </div>
-                        )}
+                            <CircleAlert /> 막힘 추가
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              openProjectUpdateDialog(selectedProject)
+                            }
+                          >
+                            <Plus /> 기록 추가
+                          </Button>
+                        </div>
                       </div>
-                    </div>
-
-                    <div className="rounded-2xl bg-white p-5 shadow-sm">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <h3 className="font-bold">최종 정산</h3>
-                          <p className="mt-1 text-xs text-[#7d8981]">
-                            현재 버전은 프로젝트별 최종정산 1건을 관리합니다.
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                        <div className="rounded-xl bg-[#f8f4ed] p-4">
+                          <p className="text-xs font-semibold text-[#7d6844]">
+                            마지막 받은 내용
+                          </p>
+                          <p className="mt-2 text-sm leading-6">
+                            {selectedProjectLatestReceived?.receivedContent ||
+                              '받은 내용이 없습니다.'}
                           </p>
                         </div>
-                        <Badge variant="outline">
-                          {
-                            FARM_SETTLEMENT_STATUS_LABELS[
-                              selectedProject.settlementStatus
-                            ]
-                          }
-                        </Badge>
+                        <div className="rounded-xl bg-[#eef6f0] p-4">
+                          <p className="text-xs font-semibold text-[#477356]">
+                            마지막 처리 내용
+                          </p>
+                          <p className="mt-2 text-sm leading-6">
+                            {selectedProjectLatestAction?.actionContent ||
+                              '처리 내용이 없습니다.'}
+                          </p>
+                        </div>
                       </div>
-                      <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                        {[
-                          ['계약금액', selectedProject.contractAmount],
-                          ['청구액', selectedProject.settlementClaimAmount],
-                          ['승인액', selectedProject.settlementApprovedAmount],
-                          ['입금액', selectedProject.settlementPaidAmount],
-                        ].map(([label, value]) => (
-                          <div
-                            key={String(label)}
-                            className="rounded-xl bg-[#f6f8f5] p-3"
-                          >
-                            <dt className="text-xs text-[#7d8981]">{label}</dt>
-                            <dd className="mt-1 font-bold">
-                              {formatMoney(Number(value))}
-                            </dd>
-                          </div>
-                        ))}
-                      </dl>
-                      <div className="mt-4 space-y-2 rounded-xl border border-[#e2e8e1] p-3 text-sm">
-                        <p>
-                          <span className="text-[#7d8981]">담당자</span>{' '}
-                          <strong>
-                            {selectedProject.settlementOwner || '미지정'}
-                          </strong>
-                        </p>
-                        <p>
-                          <span className="text-[#7d8981]">정산기한</span>{' '}
-                          <strong>
-                            {selectedProject.settlementDueDate || '미입력'}
-                          </strong>
-                        </p>
-                        <p>
-                          <span className="text-[#7d8981]">입금·마감일</span>{' '}
-                          <strong>
-                            {selectedProject.settledAt || '미입력'}
-                          </strong>
-                        </p>
-                        {selectedProject.settlementEvidenceUrl && (
-                          <a
-                            href={selectedProject.settlementEvidenceUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 font-semibold text-[#39795b] hover:underline"
-                          >
-                            <ExternalLink className="size-3.5" /> 정산 증빙 열기
-                          </a>
-                        )}
-                        <p className="leading-6 text-[#657269]">
-                          {selectedProject.settlementNote ||
-                            '정산 메모가 없습니다.'}
-                        </p>
-                      </div>
-                      <Button
-                        variant="outline"
-                        className="mt-4 w-full"
-                        onClick={() => openProjectEditDialog(selectedProject)}
-                      >
-                        <Pencil /> 정산 정보 수정
-                      </Button>
-                    </div>
-                  </section>
-
-                  <section className="rounded-2xl bg-white p-5 shadow-sm">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <h3 className="font-bold">프로젝트 최근 히스토리</h3>
-                        <p className="mt-1 text-xs text-[#7d8981]">
-                          프로젝트 연락·결정·막힘과 농가 업무 기록을 시간순으로
-                          모읍니다.
-                        </p>
-                      </div>
-                      <div className="flex gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() =>
-                            openProjectUpdateDialog(selectedProject, 'blocker')
-                          }
-                          disabled={selectedProject.status === 'completed'}
-                        >
-                          <CircleAlert /> 막힘 추가
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() =>
-                            openProjectUpdateDialog(selectedProject)
-                          }
-                        >
-                          <Plus /> 기록 추가
-                        </Button>
-                      </div>
-                    </div>
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-xl bg-[#f8f4ed] p-4">
-                        <p className="text-xs font-semibold text-[#7d6844]">
-                          마지막 받은 내용
-                        </p>
-                        <p className="mt-2 text-sm leading-6">
-                          {selectedProjectLatestReceived?.receivedContent ||
-                            '받은 내용이 없습니다.'}
-                        </p>
-                      </div>
-                      <div className="rounded-xl bg-[#eef6f0] p-4">
-                        <p className="text-xs font-semibold text-[#477356]">
-                          마지막 처리 내용
-                        </p>
-                        <p className="mt-2 text-sm leading-6">
-                          {selectedProjectLatestAction?.actionContent ||
-                            '처리 내용이 없습니다.'}
-                        </p>
-                      </div>
-                    </div>
-                    {selectedProjectSnapshot.recentActivity.length > 0 && (
-                      <div className="mt-3 space-y-2">
-                        {selectedProjectSnapshot.recentActivity
-                          .slice(0, 8)
-                          .map((entry) => {
-                            const isProjectUpdate = 'kind' in entry;
-                            const item = isProjectUpdate
-                              ? null
-                              : workItemById.get(entry.workItemId);
-                            const farm = item
-                              ? farmById.get(item.farmId)
-                              : null;
-                            return (
-                              <div
-                                key={entry.id}
-                                className="flex items-start justify-between gap-3 border-t border-[#edf1ec] pt-3 text-sm"
-                              >
-                                <div>
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <p className="font-semibold">
-                                      {isProjectUpdate
-                                        ? entry.title
-                                        : `${farm?.name ?? '농가'} · ${item?.title ?? '업무'}`}
-                                    </p>
-                                    {isProjectUpdate && (
-                                      <Badge variant="outline">
-                                        {
-                                          FARM_PROJECT_UPDATE_KIND_LABELS[
-                                            entry.kind
-                                          ]
-                                        }
-                                      </Badge>
-                                    )}
-                                    {isProjectUpdate &&
-                                      entry.kind === 'blocker' &&
-                                      entry.resolvedAt > 0 && (
-                                        <Badge
-                                          variant="outline"
-                                          className="border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]"
-                                        >
-                                          해결 완료
+                      {selectedProjectSnapshot.recentActivity.length > 0 && (
+                        <div className="mt-3 space-y-2">
+                          {selectedProjectSnapshot.recentActivity
+                            .slice(0, 8)
+                            .map((entry) => {
+                              const isProjectUpdate = 'kind' in entry;
+                              const item = isProjectUpdate
+                                ? null
+                                : workItemById.get(entry.workItemId);
+                              const farm = item
+                                ? farmById.get(item.farmId)
+                                : null;
+                              return (
+                                <div
+                                  key={entry.id}
+                                  className="flex items-start justify-between gap-3 border-t border-[#edf1ec] pt-3 text-sm"
+                                >
+                                  <div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <p className="font-semibold">
+                                        {isProjectUpdate
+                                          ? entry.title
+                                          : `${farm?.name ?? '농가'} · ${item?.title ?? '업무'}`}
+                                      </p>
+                                      {isProjectUpdate && (
+                                        <Badge variant="outline">
+                                          {
+                                            FARM_PROJECT_UPDATE_KIND_LABELS[
+                                              entry.kind
+                                            ]
+                                          }
                                         </Badge>
                                       )}
+                                      {isProjectUpdate &&
+                                        entry.kind === 'blocker' &&
+                                        entry.resolvedAt > 0 && (
+                                          <Badge
+                                            variant="outline"
+                                            className="border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]"
+                                          >
+                                            해결 완료
+                                          </Badge>
+                                        )}
+                                    </div>
+                                    <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#738078]">
+                                      {isProjectUpdate && entry.resolution
+                                        ? `해결: ${entry.resolution}`
+                                        : entry.actionContent ||
+                                          entry.receivedContent ||
+                                          (isProjectUpdate
+                                            ? entry.blockedReason
+                                            : '기록 내용 없음')}
+                                    </p>
                                   </div>
-                                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#738078]">
-                                    {isProjectUpdate && entry.resolution
-                                      ? `해결: ${entry.resolution}`
-                                      : entry.actionContent ||
-                                        entry.receivedContent ||
-                                        (isProjectUpdate
-                                          ? entry.blockedReason
-                                          : '기록 내용 없음')}
-                                  </p>
+                                  <span className="shrink-0 text-[11px] text-[#89938c]">
+                                    {formatTimestamp(entry.occurredAt, true)}
+                                  </span>
                                 </div>
-                                <span className="shrink-0 text-[11px] text-[#89938c]">
-                                  {formatTimestamp(entry.occurredAt, true)}
-                                </span>
-                              </div>
-                            );
-                          })}
-                      </div>
-                    )}
-                  </section>
-                </div>
-              </>
-            )}
-          </SheetContent>
-        </Sheet>
-
-        <Sheet
-          modal={false}
-          open={Boolean(selectedFarm)}
-          onOpenChange={(open) => {
-            if (!open) backDetail();
-          }}
-        >
-          <SheetContent
-            side="right"
-            displayMode="workspace"
-            showOverlay={false}
-            showCloseButton={false}
-            className="gap-0 border-0 bg-[#f4f7f2] p-0 shadow-none"
-          >
-            {selectedFarm && (
-              <>
-                <div className="flex min-h-14 items-center gap-3 border-b border-[#dfe7dc] bg-white/95 px-4 sm:px-6">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={backDetail}
-                    className="-ml-2 min-h-11 rounded-xl text-[#315f43]"
-                  >
-                    <ArrowLeft />
-                    {detailTrail.length ? '이전 화면' : '목록으로'}
-                  </Button>
-                  <span className="text-xs font-semibold text-[#7d8981]">
-                    {selectedWorkItem ? '업무 전체 상세' : '농가 전체 상세'}
-                  </span>
-                </div>
-                <SheetHeader className="mx-auto w-full max-w-[1400px] border-b border-[#e2e8e1] px-6 py-5">
-                  <div className="mb-2 flex flex-wrap gap-2">
-                    <Badge
-                      variant="outline"
-                      className="bg-[#f1f7ef] text-[#4a7448]"
-                    >
-                      {selectedFarm.farmCode}
-                    </Badge>
-                    <Badge variant="outline">{selectedFarm.region}</Badge>
-                    <Badge variant="outline">
-                      참여 사업 {selectedRecords.length}개
-                    </Badge>
-                    <Badge variant="outline">
-                      진행 업무{' '}
-                      {
-                        selectedWorkItems.filter(
-                          (item) => item.status !== 'completed',
-                        ).length
-                      }
-                      건
-                    </Badge>
-                  </div>
-                  <SheetTitle className="text-xl font-bold">
-                    {selectedFarm.name}
-                  </SheetTitle>
-                  <SheetDescription className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                    <span className="flex items-center gap-1">
-                      <Phone className="size-3.5" />
-                      {selectedFarm.phone || '연락처 미입력'}
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <MapPin className="size-3.5" />
-                      {selectedFarm.address || selectedFarm.region}
-                    </span>
-                  </SheetDescription>
-                </SheetHeader>
-                <div
-                  key={selectedWorkItem?.id || 'farm-overview'}
-                  className="mx-auto min-h-0 w-full max-w-[1400px] flex-1 overflow-y-auto px-6 py-5"
-                >
-                  {!selectedWorkItem && (
-                    <>
-                      <div className="flex flex-wrap gap-2">
-                        {selectedFarm.folderUrl && (
-                          <a
-                            href={selectedFarm.folderUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            <Button variant="outline" size="sm">
-                              <FolderOpen />
-                              농장 폴더
-                            </Button>
-                          </a>
-                        )}
-                        {selectedFarm.locationUrl && (
-                          <a
-                            href={selectedFarm.locationUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            <Button variant="outline" size="sm">
-                              <MapPin />
-                              위치도
-                            </Button>
-                          </a>
-                        )}
-                        <Button
-                          onClick={openFarmEditDialog}
-                          size="sm"
-                          variant="outline"
-                        >
-                          <Pencil />
-                          기본정보 수정
-                        </Button>
-                        <Button
-                          onClick={openRecordAddDialog}
-                          size="sm"
-                          variant="outline"
-                        >
-                          <Plus />
-                          참여 사업 추가
-                        </Button>
-                        <Button
-                          onClick={() => openWorkItemDialog()}
-                          size="sm"
-                          disabled={!selectedRecords.length}
-                          className="bg-[#2f7b59] hover:bg-[#286b4d]"
-                        >
-                          <Plus />새 업무 등록
-                        </Button>
-                      </div>
-                      {selectedFarm.specialNotes && (
-                        <div className="mt-4 rounded-2xl bg-[#f4f7f3] p-4">
-                          <p className="text-xs font-semibold text-[#65736a]">
-                            특이사항
-                          </p>
-                          <p className="mt-1 whitespace-pre-wrap text-sm leading-6">
-                            {selectedFarm.specialNotes}
-                          </p>
+                              );
+                            })}
                         </div>
                       )}
+                    </section>
+                  </div>
+                </section>
+              )}
 
-                      <section className="mt-6">
-                        <div>
-                          <h3 className="font-bold">참여 사업·설치 정보</h3>
-                          <p className="mt-0.5 text-xs text-[#89938c]">
-                            업무를 등록할 때 반드시 아래 사업 중 하나에
-                            연결합니다.
-                          </p>
-                        </div>
-                        <div className="mt-3 space-y-3">
-                          {selectedRecords.map((record) => {
-                            const project = projectById.get(record.projectId);
-                            const progress = installProgress(record);
-                            return (
-                              <article
-                                key={record.id}
-                                className="rounded-2xl border border-[#dfe6dd] p-4"
-                              >
-                                <div className="flex items-start justify-between gap-3">
-                                  <div>
-                                    <div className="flex flex-wrap gap-2">
-                                      <Badge variant="outline">
-                                        {project?.year ?? '-'}
-                                      </Badge>
-                                      <Badge
-                                        variant="outline"
-                                        className={subscriptionClass(
-                                          record.subscriptionStatus,
-                                        )}
-                                      >
-                                        {
-                                          SUBSCRIPTION_STATUS_LABELS[
-                                            record.subscriptionStatus
-                                          ]
-                                        }
-                                      </Badge>
-                                    </div>
-                                    <h4 className="mt-2 font-semibold">
-                                      {project?.name ?? '사업 없음'}
-                                    </h4>
-                                    <p className="mt-1 text-xs text-[#879088]">
-                                      {record.crop || '작물 미입력'} ·{' '}
-                                      {record.deviceType || '장비 미입력'} ·{' '}
-                                      {record.productType || '제품 미입력'}
-                                    </p>
-                                  </div>
-                                  <div className="text-right">
-                                    <p className="text-[11px] text-[#879088]">
-                                      설치 단계
-                                    </p>
-                                    <p className="mt-1 font-bold text-[#39795b]">
-                                      {progress.complete}/4
-                                    </p>
-                                  </div>
-                                </div>
-                                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                                  <p className="text-xs text-[#68766d]">
-                                    보증 {formatDate(record.warrantyExpiresAt)}{' '}
-                                    · 구독{' '}
-                                    {formatDate(
-                                      record.currentSubscriptionExpiresAt,
-                                    )}
-                                  </p>
-                                  <div className="flex flex-wrap gap-2">
-                                    <Button
-                                      onClick={() =>
-                                        openRecordEditDialog(record)
-                                      }
-                                      size="sm"
-                                      variant="outline"
-                                    >
-                                      <Pencil />
-                                      설치·구독 수정
-                                    </Button>
-                                    <Button
-                                      onClick={() =>
-                                        openWorkItemDialog(record.id)
-                                      }
-                                      size="sm"
-                                      variant="outline"
-                                    >
-                                      <Plus />이 사업에 업무 등록
-                                    </Button>
-                                  </div>
-                                </div>
-                              </article>
-                            );
-                          })}
-                        </div>
-                      </section>
-
-                      <section className="mt-7">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <h3 className="font-bold">농가 업무</h3>
-                            <p className="mt-0.5 text-xs text-[#89938c]">
-                              현재 상태와 마지막 받은·처리 내용을 확인합니다.
-                            </p>
-                          </div>
+              {selectedFarm && (
+                <section
+                  aria-label={
+                    selectedWorkItem ? '업무 전체 상세' : '농가 전체 상세'
+                  }
+                  className="w-full bg-[#f4f7f2]"
+                >
+                  <div className="sticky top-[84px] z-10 mb-5 flex min-h-14 items-center gap-3 rounded-2xl border border-[#dfe7dc] bg-white/95 px-4 shadow-[0_6px_20px_rgba(48,82,58,0.07)] backdrop-blur sm:px-5">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={backDetail}
+                      className="-ml-2 min-h-11 rounded-xl text-[#315f43]"
+                    >
+                      <ArrowLeft />
+                      {detailTrail.length ? '이전 화면' : '목록으로'}
+                    </Button>
+                    <span className="text-xs font-semibold text-[#7d8981]">
+                      {selectedWorkItem ? '업무 전체 상세' : '농가 전체 상세'}
+                    </span>
+                  </div>
+                  <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-0.5 border-b border-[#e2e8e1] px-6 py-5">
+                    <div className="mb-2 flex flex-wrap gap-2">
+                      <Badge
+                        variant="outline"
+                        className="bg-[#f1f7ef] text-[#4a7448]"
+                      >
+                        {selectedFarm.farmCode}
+                      </Badge>
+                      <Badge variant="outline">{selectedFarm.region}</Badge>
+                      <Badge variant="outline">
+                        참여 사업 {selectedRecords.length}개
+                      </Badge>
+                      <Badge variant="outline">
+                        진행 업무{' '}
+                        {
+                          selectedWorkItems.filter(
+                            (item) => item.status !== 'completed',
+                          ).length
+                        }
+                        건
+                      </Badge>
+                    </div>
+                    <h1 className="cn-font-heading text-xl font-bold text-foreground">
+                      {selectedFarm.name}
+                    </h1>
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
+                      <span className="flex items-center gap-1">
+                        <Phone className="size-3.5" />
+                        {selectedFarm.phone || '연락처 미입력'}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <MapPin className="size-3.5" />
+                        {selectedFarm.address || selectedFarm.region}
+                      </span>
+                    </div>
+                  </div>
+                  <div
+                    key={selectedWorkItem?.id || 'farm-overview'}
+                    className="mx-auto w-full max-w-[1400px] px-6 py-5"
+                  >
+                    {!selectedWorkItem && (
+                      <>
+                        <div className="flex flex-wrap gap-2">
+                          {selectedFarm.folderUrl && (
+                            <a
+                              href={selectedFarm.folderUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <Button variant="outline" size="sm">
+                                <FolderOpen />
+                                농장 폴더
+                              </Button>
+                            </a>
+                          )}
+                          {selectedFarm.locationUrl && (
+                            <a
+                              href={selectedFarm.locationUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <Button variant="outline" size="sm">
+                                <MapPin />
+                                위치도
+                              </Button>
+                            </a>
+                          )}
                           <Button
-                            onClick={() => openWorkItemDialog()}
+                            onClick={openFarmEditDialog}
+                            size="sm"
+                            variant="outline"
+                          >
+                            <Pencil />
+                            기본정보 수정
+                          </Button>
+                          <Button
+                            onClick={openRecordAddDialog}
                             size="sm"
                             variant="outline"
                           >
                             <Plus />
-                            업무 등록
+                            참여 사업 추가
                           </Button>
-                        </div>
-                        <div className="mt-4 grid gap-3">
-                          {selectedWorkItems.map((item) => (
-                            <WorkItemCard key={item.id} workItem={item} />
-                          ))}
-                          {!selectedWorkItems.length && (
-                            <div className="rounded-2xl border border-dashed border-[#d7dfd5] py-10 text-center">
-                              <FileText className="mx-auto size-7 text-[#9aa49d]" />
-                              <p className="mt-3 text-sm font-semibold">
-                                등록된 업무가 없습니다.
-                              </p>
-                              <p className="mt-1 text-xs text-[#89938c]">
-                                메일·카톡·전화·구두 내용을 첫 업무로 남겨보세요.
-                              </p>
-                            </div>
-                          )}
-                        </div>
-                      </section>
-                    </>
-                  )}
-
-                  {selectedWorkItem &&
-                    selectedWorkItem.farmId === selectedFarm.id && (
-                      <section className="mt-7 rounded-3xl border border-[#cfe0d1] bg-[#f8fbf7] p-4 sm:p-5">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap gap-2">
-                              <Badge variant="outline">
-                                {
-                                  FARM_LOG_TYPE_LABELS[
-                                    selectedWorkItem.workType
-                                  ]
-                                }
-                              </Badge>
-                              <Badge
-                                variant="outline"
-                                className={workStatusClass(
-                                  selectedWorkItem.status,
-                                )}
-                              >
-                                {
-                                  FARM_LOG_STATUS_LABELS[
-                                    selectedWorkItem.status
-                                  ]
-                                }
-                              </Badge>
-                              <Badge variant="outline">
-                                {projectForWorkItem(selectedWorkItem)?.name ??
-                                  '사업 없음'}
-                              </Badge>
-                              <Badge
-                                variant="outline"
-                                className={workPriorityClass(
-                                  selectedWorkItem.priority,
-                                )}
-                              >
-                                우선순위{' '}
-                                {
-                                  FARM_WORK_PRIORITY_LABELS[
-                                    selectedWorkItem.priority
-                                  ]
-                                }
-                              </Badge>
-                            </div>
-                            <h3 className="mt-3 text-lg font-bold">
-                              {selectedWorkItem.title}
-                            </h3>
-                            <p className="mt-1 text-sm text-[#68766d]">
-                              담당 {selectedWorkItem.owner || '미지정'} · 기한{' '}
-                              {formatDate(selectedWorkItem.dueDate)}
-                            </p>
-                            {selectedWorkItem.description && (
-                              <p className="mt-3 whitespace-pre-wrap text-sm leading-6">
-                                {selectedWorkItem.description}
-                              </p>
-                            )}
-                          </div>
                           <Button
-                            onClick={() => openHistoryDialog(selectedWorkItem)}
+                            onClick={() => openWorkItemDialog()}
                             size="sm"
-                            className="shrink-0 bg-[#2f7b59] hover:bg-[#286b4d]"
+                            disabled={!selectedRecords.length}
+                            className="bg-[#2f7b59] hover:bg-[#286b4d]"
                           >
-                            <Plus />
-                            진행 기록 추가
+                            <Plus />새 업무 등록
                           </Button>
                         </div>
-                        <div className="mt-5 grid gap-3 md:grid-cols-2">
-                          <div className="rounded-2xl border border-[#dce7dc] bg-white p-4">
-                            <p className="text-xs font-bold text-[#5d7163]">
-                              완료 기준
+                        {selectedFarm.specialNotes && (
+                          <div className="mt-4 rounded-2xl bg-[#f4f7f3] p-4">
+                            <p className="text-xs font-semibold text-[#65736a]">
+                              특이사항
                             </p>
-                            <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
-                              {selectedWorkItem.expectedOutcome ||
-                                '완료됐다고 판단할 기준을 다음 등록 때 입력해 주세요.'}
+                            <p className="mt-1 whitespace-pre-wrap text-sm leading-6">
+                              {selectedFarm.specialNotes}
                             </p>
-                          </div>
-                          <div className="rounded-2xl border border-[#cfe2d3] bg-[#eef8f1] p-4">
-                            <p className="text-xs font-bold text-[#3e7250]">
-                              다음 행동
-                            </p>
-                            <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
-                              {selectedWorkItem.status === 'completed'
-                                ? '완료된 업무입니다.'
-                                : selectedWorkItem.nextAction ||
-                                  '다음 행동이 아직 정해지지 않았습니다.'}
-                            </p>
-                            {selectedWorkItem.status !== 'completed' && (
-                              <p className="mt-3 text-[11px] text-[#728078]">
-                                다시 볼 날짜{' '}
-                                {formatDate(selectedWorkItem.reviewDate)}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                        {(selectedWorkItem.responseDueAt > 0 ||
-                          selectedWorkItem.status === 'waiting') && (
-                          <div className="mt-4 grid gap-3 md:grid-cols-2">
-                            {selectedWorkItem.responseDueAt > 0 && (
-                              <div className="rounded-2xl border border-[#dce7dc] bg-white p-4">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <p className="text-xs font-bold text-[#5d7163]">
-                                    최초 대응 관리
-                                  </p>
-                                  <Badge
-                                    variant="outline"
-                                    className={responseRiskClass(
-                                      responseRisk(selectedWorkItem, riskNow),
-                                    )}
-                                  >
-                                    {responseRiskLabel(
-                                      responseRisk(selectedWorkItem, riskNow),
-                                    )}
-                                  </Badge>
-                                </div>
-                                <p className="mt-3 text-sm font-semibold">
-                                  목표{' '}
-                                  {formatTimestamp(
-                                    selectedWorkItem.responseDueAt,
-                                  )}
-                                </p>
-                                <p className="mt-1 text-xs leading-5 text-[#728078]">
-                                  {selectedWorkItem.respondedAt
-                                    ? `최초 대응 ${formatTimestamp(selectedWorkItem.respondedAt)}`
-                                    : '아직 최초 대응 완료 기록이 없습니다.'}
-                                </p>
-                              </div>
-                            )}
-                            {selectedWorkItem.status === 'waiting' && (
-                              <div className="rounded-2xl border border-[#ecd4c7] bg-[#fff8f3] p-4">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <p className="text-xs font-bold text-[#8d4f35]">
-                                    진행 차단 요인
-                                  </p>
-                                  <Badge
-                                    variant="outline"
-                                    className="border-[#ecd4c7] bg-white text-[#9a5a3d]"
-                                  >
-                                    {elapsedDays(selectedWorkItem.blockedAt)}
-                                    일째
-                                  </Badge>
-                                </div>
-                                <p className="mt-3 whitespace-pre-wrap text-sm leading-6">
-                                  {selectedWorkItem.blockedReason ||
-                                    '막힘 사유 확인 필요'}
-                                </p>
-                                <p className="mt-2 text-xs leading-5 text-[#8f6a59]">
-                                  해제 책임자{' '}
-                                  {selectedWorkItem.blockedBy || '미입력'} ·
-                                  예상{' '}
-                                  {formatDate(
-                                    selectedWorkItem.expectedUnblockDate,
-                                  )}
-                                </p>
-                              </div>
-                            )}
                           </div>
                         )}
-                        {selectedBlockerEpisodes.length > 0 && (
-                          <div className="mt-4 rounded-2xl border border-[#e5ddd5] bg-white p-4">
-                            <div>
-                              <h4 className="text-sm font-bold">막힘 이력</h4>
-                              <p className="mt-1 text-xs text-[#7b877f]">
-                                원인, 해제에 필요한 주체, 해결 결과를 기간별로
-                                보존합니다.
-                              </p>
-                            </div>
-                            <div className="mt-4 space-y-2">
-                              {selectedBlockerEpisodes.map((episode) => (
+
+                        <section className="mt-6">
+                          <div>
+                            <h3 className="font-bold">참여 사업·설치 정보</h3>
+                            <p className="mt-0.5 text-xs text-[#89938c]">
+                              업무를 등록할 때 반드시 아래 사업 중 하나에
+                              연결합니다.
+                            </p>
+                          </div>
+                          <div className="mt-3 space-y-3">
+                            {selectedRecords.map((record) => {
+                              const project = projectById.get(record.projectId);
+                              const progress = installProgress(record);
+                              return (
                                 <article
-                                  key={episode.id}
-                                  className="rounded-xl border border-[#ece4dc] bg-[#fffaf6] p-3"
+                                  key={record.id}
+                                  className="rounded-2xl border border-[#dfe6dd] p-4"
                                 >
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <Badge
-                                      variant="outline"
-                                      className={
-                                        episode.closedAt
-                                          ? 'border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]'
-                                          : 'border-[#ecd4c7] bg-white text-[#9a5a3d]'
-                                      }
-                                    >
-                                      {episode.closedAt
-                                        ? '해결됨'
-                                        : `${elapsedDays(episode.openedAt)}일째 진행 중`}
-                                    </Badge>
-                                    <span className="text-[11px] text-[#7b877f]">
-                                      {formatTimestamp(episode.openedAt)}
-                                      {episode.closedAt
-                                        ? ` ~ ${formatTimestamp(episode.closedAt)}`
-                                        : ' ~ 현재'}
-                                    </span>
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <div className="flex flex-wrap gap-2">
+                                        <Badge variant="outline">
+                                          {project?.year ?? '-'}
+                                        </Badge>
+                                        <Badge
+                                          variant="outline"
+                                          className={subscriptionClass(
+                                            record.subscriptionStatus,
+                                          )}
+                                        >
+                                          {
+                                            SUBSCRIPTION_STATUS_LABELS[
+                                              record.subscriptionStatus
+                                            ]
+                                          }
+                                        </Badge>
+                                      </div>
+                                      <h4 className="mt-2 font-semibold">
+                                        {project?.name ?? '사업 없음'}
+                                      </h4>
+                                      <p className="mt-1 text-xs text-[#879088]">
+                                        {record.crop || '작물 미입력'} ·{' '}
+                                        {record.deviceType || '장비 미입력'} ·{' '}
+                                        {record.productType || '제품 미입력'}
+                                      </p>
+                                    </div>
+                                    <div className="text-right">
+                                      <p className="text-[11px] text-[#879088]">
+                                        설치 단계
+                                      </p>
+                                      <p className="mt-1 font-bold text-[#39795b]">
+                                        {progress.complete}/4
+                                      </p>
+                                    </div>
                                   </div>
-                                  <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
-                                    {episode.reason}
-                                  </p>
-                                  <p className="mt-1 text-xs text-[#8f6a59]">
-                                    해제에 필요한 사람·기관{' '}
-                                    {episode.blockedBy || '미입력'} · 예상{' '}
-                                    {formatDate(episode.expectedUnblockDate)}
-                                  </p>
-                                  {episode.resolution && (
-                                    <p className="mt-2 rounded-lg bg-[#eef6f0] px-3 py-2 text-xs leading-5 text-[#476752]">
-                                      <strong>해결 결과 · </strong>
-                                      {episode.resolution}
+                                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                                    <p className="text-xs text-[#68766d]">
+                                      보증{' '}
+                                      {formatDate(record.warrantyExpiresAt)} ·
+                                      구독{' '}
+                                      {formatDate(
+                                        record.currentSubscriptionExpiresAt,
+                                      )}
                                     </p>
-                                  )}
+                                    <div className="flex flex-wrap gap-2">
+                                      <Button
+                                        onClick={() =>
+                                          openRecordEditDialog(record)
+                                        }
+                                        size="sm"
+                                        variant="outline"
+                                      >
+                                        <Pencil />
+                                        설치·구독 수정
+                                      </Button>
+                                      <Button
+                                        onClick={() =>
+                                          openWorkItemDialog(record.id)
+                                        }
+                                        size="sm"
+                                        variant="outline"
+                                      >
+                                        <Plus />이 사업에 업무 등록
+                                      </Button>
+                                    </div>
+                                  </div>
                                 </article>
-                              ))}
-                            </div>
+                              );
+                            })}
                           </div>
-                        )}
-                        <div className="mt-4 rounded-2xl border border-[#dce7dc] bg-white p-4">
-                          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                        </section>
+
+                        <section className="mt-7">
+                          <div className="flex items-center justify-between">
                             <div>
-                              <h4 className="text-sm font-bold">현장 방문</h4>
-                              <p className="mt-1 text-xs text-[#7b877f]">
-                                한 업무에 여러 번 방문해도 일정과 결과를 각각
-                                남깁니다.
+                              <h3 className="font-bold">농가 업무</h3>
+                              <p className="mt-0.5 text-xs text-[#89938c]">
+                                현재 상태와 마지막 받은·처리 내용을 확인합니다.
                               </p>
                             </div>
                             <Button
-                              type="button"
+                              onClick={() => openWorkItemDialog()}
                               size="sm"
                               variant="outline"
-                              disabled={selectedWorkItem.status === 'completed'}
-                              onClick={() => openVisitDialog()}
                             >
-                              <Plus /> 방문 추가
+                              <Plus />
+                              업무 등록
                             </Button>
                           </div>
-                          <div className="mt-4 space-y-2">
-                            {selectedVisits.map((visit) => (
-                              <article
-                                key={visit.id}
-                                className="rounded-xl border border-[#e1e6e0] bg-[#fafbf9] p-3"
-                              >
-                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                  <div className="min-w-0">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <Badge
-                                        variant="outline"
-                                        className={visitStatusClass(
-                                          visit.status,
-                                        )}
-                                      >
-                                        {FARM_VISIT_STATUS_LABELS[visit.status]}
-                                      </Badge>
-                                      <span className="text-xs font-semibold text-[#536259]">
-                                        {formatTimestamp(visit.scheduledAt)}
-                                      </span>
-                                    </div>
-                                    <p className="mt-2 text-sm">
-                                      방문 담당 {visit.assignedTo || '미지정'}
-                                    </p>
-                                    {visit.preparationNote && (
-                                      <p className="mt-2 whitespace-pre-wrap rounded-lg bg-white px-3 py-2 text-xs leading-5 text-[#5e6b63]">
-                                        <strong>준비 메모 · </strong>
-                                        {visit.preparationNote}
-                                      </p>
-                                    )}
-                                    {visit.status === 'completed' && (
-                                      <p className="mt-1 text-xs leading-5 text-[#728078]">
-                                        실제 작업{' '}
-                                        {formatTimestamp(visit.actualStartedAt)}{' '}
-                                        ~ {formatTimestamp(visit.actualEndedAt)}
-                                      </p>
-                                    )}
-                                    {visit.result && (
-                                      <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-[#5e6b63]">
-                                        <strong>
-                                          {visit.status === 'canceled'
-                                            ? '취소 사유 · '
-                                            : '조치 결과 · '}
-                                        </strong>
-                                        {visit.result}
-                                      </p>
-                                    )}
-                                    {visit.recordedBy && (
-                                      <p className="mt-2 text-[11px] text-[#7b877f]">
-                                        기록자 {visit.recordedBy}
-                                      </p>
-                                    )}
-                                    {visit.nextVisitAt > 0 && (
-                                      <p className="mt-2 text-xs font-semibold text-[#416c9c]">
-                                        후속 방문 등록 당시{' '}
-                                        {formatTimestamp(visit.nextVisitAt)}
-                                      </p>
-                                    )}
-                                  </div>
-                                  {visit.status === 'scheduled' ? (
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="ghost"
-                                      onClick={() => openVisitDialog(visit)}
-                                    >
-                                      <Pencil /> 수정
-                                    </Button>
-                                  ) : (
-                                    <Badge
-                                      variant="outline"
-                                      className="border-[#d8ded9] bg-white text-[#6f7c73]"
-                                    >
-                                      <LockKeyhole className="size-3" /> 증빙
-                                      잠금
-                                    </Badge>
-                                  )}
-                                </div>
-                              </article>
+                          <div className="mt-4 grid gap-3">
+                            {selectedWorkItems.map((item) => (
+                              <WorkItemCard key={item.id} workItem={item} />
                             ))}
-                            {!selectedVisits.length && (
-                              <div className="rounded-xl border border-dashed border-[#d7dfd5] px-3 py-6 text-center text-xs text-[#7b877f]">
-                                등록된 현장 방문이 없습니다. 방문 전 일정을 먼저
-                                잡아 주세요.
+                            {!selectedWorkItems.length && (
+                              <div className="rounded-2xl border border-dashed border-[#d7dfd5] py-10 text-center">
+                                <FileText className="mx-auto size-7 text-[#9aa49d]" />
+                                <p className="mt-3 text-sm font-semibold">
+                                  등록된 업무가 없습니다.
+                                </p>
+                                <p className="mt-1 text-xs text-[#89938c]">
+                                  메일·카톡·전화·구두 내용을 첫 업무로
+                                  남겨보세요.
+                                </p>
                               </div>
                             )}
                           </div>
-                        </div>
-                        {selectedChecklist.length > 0 && (
+                        </section>
+                      </>
+                    )}
+
+                    {selectedWorkItem &&
+                      selectedWorkItem.farmId === selectedFarm.id && (
+                        <section className="mt-7 rounded-3xl border border-[#cfe0d1] bg-[#f8fbf7] p-4 sm:p-5">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap gap-2">
+                                <Badge variant="outline">
+                                  {
+                                    FARM_LOG_TYPE_LABELS[
+                                      selectedWorkItem.workType
+                                    ]
+                                  }
+                                </Badge>
+                                <Badge
+                                  variant="outline"
+                                  className={workStatusClass(
+                                    selectedWorkItem.status,
+                                  )}
+                                >
+                                  {
+                                    FARM_LOG_STATUS_LABELS[
+                                      selectedWorkItem.status
+                                    ]
+                                  }
+                                </Badge>
+                                <Badge variant="outline">
+                                  {projectForWorkItem(selectedWorkItem)?.name ??
+                                    '사업 없음'}
+                                </Badge>
+                                <Badge
+                                  variant="outline"
+                                  className={workPriorityClass(
+                                    selectedWorkItem.priority,
+                                  )}
+                                >
+                                  우선순위{' '}
+                                  {
+                                    FARM_WORK_PRIORITY_LABELS[
+                                      selectedWorkItem.priority
+                                    ]
+                                  }
+                                </Badge>
+                              </div>
+                              <h3 className="mt-3 text-lg font-bold">
+                                {selectedWorkItem.title}
+                              </h3>
+                              <p className="mt-1 text-sm text-[#68766d]">
+                                담당 {selectedWorkItem.owner || '미지정'} · 기한{' '}
+                                {formatDate(selectedWorkItem.dueDate)}
+                              </p>
+                              {selectedWorkItem.description && (
+                                <p className="mt-3 whitespace-pre-wrap text-sm leading-6">
+                                  {selectedWorkItem.description}
+                                </p>
+                              )}
+                            </div>
+                            <Button
+                              onClick={() =>
+                                openHistoryDialog(selectedWorkItem)
+                              }
+                              size="sm"
+                              className="shrink-0 bg-[#2f7b59] hover:bg-[#286b4d]"
+                            >
+                              <Plus />
+                              진행 기록 추가
+                            </Button>
+                          </div>
+                          <div className="mt-5 grid gap-3 md:grid-cols-2">
+                            <div className="rounded-2xl border border-[#dce7dc] bg-white p-4">
+                              <p className="text-xs font-bold text-[#5d7163]">
+                                완료 기준
+                              </p>
+                              <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                                {selectedWorkItem.expectedOutcome ||
+                                  '완료됐다고 판단할 기준을 다음 등록 때 입력해 주세요.'}
+                              </p>
+                            </div>
+                            <div className="rounded-2xl border border-[#cfe2d3] bg-[#eef8f1] p-4">
+                              <p className="text-xs font-bold text-[#3e7250]">
+                                다음 행동
+                              </p>
+                              <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                                {selectedWorkItem.status === 'completed'
+                                  ? '완료된 업무입니다.'
+                                  : selectedWorkItem.nextAction ||
+                                    '다음 행동이 아직 정해지지 않았습니다.'}
+                              </p>
+                              {selectedWorkItem.status !== 'completed' && (
+                                <p className="mt-3 text-[11px] text-[#728078]">
+                                  다시 볼 날짜{' '}
+                                  {formatDate(selectedWorkItem.reviewDate)}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          {(selectedWorkItem.responseDueAt > 0 ||
+                            selectedWorkItem.status === 'waiting') && (
+                            <div className="mt-4 grid gap-3 md:grid-cols-2">
+                              {selectedWorkItem.responseDueAt > 0 && (
+                                <div className="rounded-2xl border border-[#dce7dc] bg-white p-4">
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <p className="text-xs font-bold text-[#5d7163]">
+                                      최초 대응 관리
+                                    </p>
+                                    <Badge
+                                      variant="outline"
+                                      className={responseRiskClass(
+                                        responseRisk(selectedWorkItem, riskNow),
+                                      )}
+                                    >
+                                      {responseRiskLabel(
+                                        responseRisk(selectedWorkItem, riskNow),
+                                      )}
+                                    </Badge>
+                                  </div>
+                                  <p className="mt-3 text-sm font-semibold">
+                                    목표{' '}
+                                    {formatTimestamp(
+                                      selectedWorkItem.responseDueAt,
+                                    )}
+                                  </p>
+                                  <p className="mt-1 text-xs leading-5 text-[#728078]">
+                                    {selectedWorkItem.respondedAt
+                                      ? `최초 대응 ${formatTimestamp(selectedWorkItem.respondedAt)}`
+                                      : '아직 최초 대응 완료 기록이 없습니다.'}
+                                  </p>
+                                </div>
+                              )}
+                              {selectedWorkItem.status === 'waiting' && (
+                                <div className="rounded-2xl border border-[#ecd4c7] bg-[#fff8f3] p-4">
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <p className="text-xs font-bold text-[#8d4f35]">
+                                      진행 차단 요인
+                                    </p>
+                                    <Badge
+                                      variant="outline"
+                                      className="border-[#ecd4c7] bg-white text-[#9a5a3d]"
+                                    >
+                                      {elapsedDays(selectedWorkItem.blockedAt)}
+                                      일째
+                                    </Badge>
+                                  </div>
+                                  <p className="mt-3 whitespace-pre-wrap text-sm leading-6">
+                                    {selectedWorkItem.blockedReason ||
+                                      '막힘 사유 확인 필요'}
+                                  </p>
+                                  <p className="mt-2 text-xs leading-5 text-[#8f6a59]">
+                                    해제 책임자{' '}
+                                    {selectedWorkItem.blockedBy || '미입력'} ·
+                                    예상{' '}
+                                    {formatDate(
+                                      selectedWorkItem.expectedUnblockDate,
+                                    )}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {selectedBlockerEpisodes.length > 0 && (
+                            <div className="mt-4 rounded-2xl border border-[#e5ddd5] bg-white p-4">
+                              <div>
+                                <h4 className="text-sm font-bold">막힘 이력</h4>
+                                <p className="mt-1 text-xs text-[#7b877f]">
+                                  원인, 해제에 필요한 주체, 해결 결과를 기간별로
+                                  보존합니다.
+                                </p>
+                              </div>
+                              <div className="mt-4 space-y-2">
+                                {selectedBlockerEpisodes.map((episode) => (
+                                  <article
+                                    key={episode.id}
+                                    className="rounded-xl border border-[#ece4dc] bg-[#fffaf6] p-3"
+                                  >
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <Badge
+                                        variant="outline"
+                                        className={
+                                          episode.closedAt
+                                            ? 'border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]'
+                                            : 'border-[#ecd4c7] bg-white text-[#9a5a3d]'
+                                        }
+                                      >
+                                        {episode.closedAt
+                                          ? '해결됨'
+                                          : `${elapsedDays(episode.openedAt)}일째 진행 중`}
+                                      </Badge>
+                                      <span className="text-[11px] text-[#7b877f]">
+                                        {formatTimestamp(episode.openedAt)}
+                                        {episode.closedAt
+                                          ? ` ~ ${formatTimestamp(episode.closedAt)}`
+                                          : ' ~ 현재'}
+                                      </span>
+                                    </div>
+                                    <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                                      {episode.reason}
+                                    </p>
+                                    <p className="mt-1 text-xs text-[#8f6a59]">
+                                      해제에 필요한 사람·기관{' '}
+                                      {episode.blockedBy || '미입력'} · 예상{' '}
+                                      {formatDate(episode.expectedUnblockDate)}
+                                    </p>
+                                    {episode.resolution && (
+                                      <p className="mt-2 rounded-lg bg-[#eef6f0] px-3 py-2 text-xs leading-5 text-[#476752]">
+                                        <strong>해결 결과 · </strong>
+                                        {episode.resolution}
+                                      </p>
+                                    )}
+                                  </article>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                           <div className="mt-4 rounded-2xl border border-[#dce7dc] bg-white p-4">
                             <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
                               <div>
-                                <h4 className="text-sm font-bold">
-                                  현장 체크리스트
-                                </h4>
+                                <h4 className="text-sm font-bold">현장 방문</h4>
                                 <p className="mt-1 text-xs text-[#7b877f]">
-                                  완료{' '}
-                                  {
-                                    selectedChecklist.filter(
-                                      (item) => item.isCompleted,
-                                    ).length
-                                  }
-                                  /{selectedChecklist.length} · 확인자를 남겨
-                                  누락을 줄입니다.
+                                  한 업무에 여러 번 방문해도 일정과 결과를 각각
+                                  남깁니다.
                                 </p>
                               </div>
-                              <Input
-                                value={checklistActor}
-                                onChange={(event) =>
-                                  setChecklistActor(event.target.value)
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                disabled={
+                                  selectedWorkItem.status === 'completed'
                                 }
-                                placeholder="확인 담당자"
-                                className="h-9 sm:w-44"
-                              />
+                                onClick={() => openVisitDialog()}
+                              >
+                                <Plus /> 방문 추가
+                              </Button>
                             </div>
                             <div className="mt-4 space-y-2">
-                              {selectedChecklist.map((item) => (
-                                <button
-                                  key={item.id}
-                                  type="button"
-                                  aria-pressed={item.isCompleted}
-                                  disabled={
-                                    checklistSubmitting ||
-                                    selectedWorkItem.status === 'completed'
-                                  }
-                                  onClick={() =>
-                                    void toggleChecklistItem(
-                                      item.id,
-                                      !item.isCompleted,
-                                    )
-                                  }
-                                  className={`flex w-full items-start gap-3 rounded-xl border p-3 text-left disabled:cursor-not-allowed disabled:opacity-70 ${
-                                    item.isCompleted
-                                      ? 'border-[#cbe2d1] bg-[#eef8f1]'
-                                      : 'border-[#e1e6e0] bg-[#fafbf9] hover:border-[#bdd8c5]'
-                                  }`}
+                              {selectedVisits.map((visit) => (
+                                <article
+                                  key={visit.id}
+                                  className="rounded-xl border border-[#e1e6e0] bg-[#fafbf9] p-3"
                                 >
-                                  <span
-                                    className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-md border ${
-                                      item.isCompleted
-                                        ? 'border-[#4e9768] bg-[#4e9768] text-white'
-                                        : 'border-[#b7c2ba] bg-white'
-                                    }`}
-                                  >
-                                    {item.isCompleted && (
-                                      <Check className="size-3.5" />
-                                    )}
-                                  </span>
-                                  <span className="min-w-0 flex-1">
-                                    <span
-                                      className={
-                                        item.isCompleted
-                                          ? 'text-sm text-[#5b6b61] line-through'
-                                          : 'text-sm'
-                                      }
-                                    >
-                                      {item.content}
-                                    </span>
-                                    {item.isCompleted && (
-                                      <span className="mt-1 block text-[11px] text-[#7f8b83]">
-                                        {item.completedBy} ·{' '}
-                                        {formatTimestamp(item.completedAt)}
-                                      </span>
-                                    )}
-                                  </span>
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        <div className="mt-5 border-t border-[#dde7dc] pt-5">
-                          <h4 className="text-sm font-bold">
-                            전체 진행 히스토리
-                          </h4>
-                          <ol className="mt-4 space-y-3">
-                            {selectedWorkHistory.map((entry) => (
-                              <li key={entry.id} className="flex gap-3">
-                                <div className="grid size-9 shrink-0 place-items-center rounded-full border bg-white text-[#52745e]">
-                                  <ChannelIcon channel={entry.channel} />
-                                </div>
-                                <article className="min-w-0 flex-1 rounded-2xl border bg-white p-4">
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <p className="text-xs font-semibold text-[#66736b]">
-                                      {FARM_LOG_CHANNEL_LABELS[entry.channel]}
-                                      {entry.sender ? ` · ${entry.sender}` : ''}
-                                    </p>
-                                    <time className="text-[11px] text-[#929b94]">
-                                      {formatTimestamp(entry.occurredAt)}
-                                    </time>
-                                  </div>
-                                  {entry.receivedContent && (
-                                    <div className="mt-3 rounded-xl bg-[#f6f8f6] p-3">
-                                      <p className="text-[11px] font-semibold text-[#78847c]">
-                                        받은 내용
+                                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                    <div className="min-w-0">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <Badge
+                                          variant="outline"
+                                          className={visitStatusClass(
+                                            visit.status,
+                                          )}
+                                        >
+                                          {
+                                            FARM_VISIT_STATUS_LABELS[
+                                              visit.status
+                                            ]
+                                          }
+                                        </Badge>
+                                        <span className="text-xs font-semibold text-[#536259]">
+                                          {formatTimestamp(visit.scheduledAt)}
+                                        </span>
+                                      </div>
+                                      <p className="mt-2 text-sm">
+                                        방문 담당 {visit.assignedTo || '미지정'}
                                       </p>
-                                      <p className="mt-1 whitespace-pre-wrap text-sm leading-6">
-                                        {entry.receivedContent}
-                                      </p>
+                                      {visit.preparationNote && (
+                                        <p className="mt-2 whitespace-pre-wrap rounded-lg bg-white px-3 py-2 text-xs leading-5 text-[#5e6b63]">
+                                          <strong>준비 메모 · </strong>
+                                          {visit.preparationNote}
+                                        </p>
+                                      )}
+                                      {visit.status === 'completed' && (
+                                        <p className="mt-1 text-xs leading-5 text-[#728078]">
+                                          실제 작업{' '}
+                                          {formatTimestamp(
+                                            visit.actualStartedAt,
+                                          )}{' '}
+                                          ~{' '}
+                                          {formatTimestamp(visit.actualEndedAt)}
+                                        </p>
+                                      )}
+                                      {visit.result && (
+                                        <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-[#5e6b63]">
+                                          <strong>
+                                            {visit.status === 'canceled'
+                                              ? '취소 사유 · '
+                                              : '조치 결과 · '}
+                                          </strong>
+                                          {visit.result}
+                                        </p>
+                                      )}
+                                      {visit.recordedBy && (
+                                        <p className="mt-2 text-[11px] text-[#7b877f]">
+                                          기록자 {visit.recordedBy}
+                                        </p>
+                                      )}
+                                      {visit.nextVisitAt > 0 && (
+                                        <p className="mt-2 text-xs font-semibold text-[#416c9c]">
+                                          후속 방문 등록 당시{' '}
+                                          {formatTimestamp(visit.nextVisitAt)}
+                                        </p>
+                                      )}
                                     </div>
-                                  )}
-                                  {entry.actionContent && (
-                                    <div className="mt-3 rounded-xl bg-[#eef6f0] p-3">
-                                      <p className="text-[11px] font-semibold text-[#477356]">
-                                        처리 내용
-                                      </p>
-                                      <p className="mt-1 whitespace-pre-wrap text-sm leading-6">
-                                        {entry.actionContent}
-                                      </p>
-                                    </div>
-                                  )}
-                                  <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-[#8a948d]">
-                                    <span>기록자 {entry.recorder}</span>
-                                    {entry.amount > 0 && (
-                                      <strong className="text-[#39795b]">
-                                        {formatMoney(entry.amount)}
-                                      </strong>
-                                    )}
-                                    {entry.referenceUrl && (
-                                      <a
-                                        href={entry.referenceUrl}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="flex items-center gap-1 font-semibold text-[#39795b]"
+                                    {visit.status === 'scheduled' ? (
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => openVisitDialog(visit)}
                                       >
-                                        <ExternalLink className="size-3" />
-                                        참고 링크
-                                      </a>
+                                        <Pencil /> 수정
+                                      </Button>
+                                    ) : (
+                                      <Badge
+                                        variant="outline"
+                                        className="border-[#d8ded9] bg-white text-[#6f7c73]"
+                                      >
+                                        <LockKeyhole className="size-3" /> 증빙
+                                        잠금
+                                      </Badge>
                                     )}
                                   </div>
                                 </article>
-                              </li>
-                            ))}
-                          </ol>
+                              ))}
+                              {!selectedVisits.length && (
+                                <div className="rounded-xl border border-dashed border-[#d7dfd5] px-3 py-6 text-center text-xs text-[#7b877f]">
+                                  등록된 현장 방문이 없습니다. 방문 전 일정을
+                                  먼저 잡아 주세요.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          {selectedChecklist.length > 0 && (
+                            <div className="mt-4 rounded-2xl border border-[#dce7dc] bg-white p-4">
+                              <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                                <div>
+                                  <h4 className="text-sm font-bold">
+                                    현장 체크리스트
+                                  </h4>
+                                  <p className="mt-1 text-xs text-[#7b877f]">
+                                    완료{' '}
+                                    {
+                                      selectedChecklist.filter(
+                                        (item) => item.isCompleted,
+                                      ).length
+                                    }
+                                    /{selectedChecklist.length} · 확인자를 남겨
+                                    누락을 줄입니다.
+                                  </p>
+                                </div>
+                                <Input
+                                  value={checklistActor}
+                                  onChange={(event) =>
+                                    setChecklistActor(event.target.value)
+                                  }
+                                  placeholder="확인 담당자"
+                                  className="h-9 sm:w-44"
+                                />
+                              </div>
+                              <div className="mt-4 space-y-2">
+                                {selectedChecklist.map((item) => (
+                                  <button
+                                    key={item.id}
+                                    type="button"
+                                    aria-pressed={item.isCompleted}
+                                    disabled={
+                                      checklistSubmitting ||
+                                      selectedWorkItem.status === 'completed'
+                                    }
+                                    onClick={() =>
+                                      void toggleChecklistItem(
+                                        item.id,
+                                        !item.isCompleted,
+                                      )
+                                    }
+                                    className={`flex w-full items-start gap-3 rounded-xl border p-3 text-left disabled:cursor-not-allowed disabled:opacity-70 ${
+                                      item.isCompleted
+                                        ? 'border-[#cbe2d1] bg-[#eef8f1]'
+                                        : 'border-[#e1e6e0] bg-[#fafbf9] hover:border-[#bdd8c5]'
+                                    }`}
+                                  >
+                                    <span
+                                      className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-md border ${
+                                        item.isCompleted
+                                          ? 'border-[#4e9768] bg-[#4e9768] text-white'
+                                          : 'border-[#b7c2ba] bg-white'
+                                      }`}
+                                    >
+                                      {item.isCompleted && (
+                                        <Check className="size-3.5" />
+                                      )}
+                                    </span>
+                                    <span className="min-w-0 flex-1">
+                                      <span
+                                        className={
+                                          item.isCompleted
+                                            ? 'text-sm text-[#5b6b61] line-through'
+                                            : 'text-sm'
+                                        }
+                                      >
+                                        {item.content}
+                                      </span>
+                                      {item.isCompleted && (
+                                        <span className="mt-1 block text-[11px] text-[#7f8b83]">
+                                          {item.completedBy} ·{' '}
+                                          {formatTimestamp(item.completedAt)}
+                                        </span>
+                                      )}
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          <div className="mt-5 border-t border-[#dde7dc] pt-5">
+                            <h4 className="text-sm font-bold">
+                              전체 진행 히스토리
+                            </h4>
+                            <ol className="mt-4 space-y-3">
+                              {selectedWorkHistory.map((entry) => (
+                                <li key={entry.id} className="flex gap-3">
+                                  <div className="grid size-9 shrink-0 place-items-center rounded-full border bg-white text-[#52745e]">
+                                    <ChannelIcon channel={entry.channel} />
+                                  </div>
+                                  <article className="min-w-0 flex-1 rounded-2xl border bg-white p-4">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <p className="text-xs font-semibold text-[#66736b]">
+                                        {FARM_LOG_CHANNEL_LABELS[entry.channel]}
+                                        {entry.sender
+                                          ? ` · ${entry.sender}`
+                                          : ''}
+                                      </p>
+                                      <time className="text-[11px] text-[#929b94]">
+                                        {formatTimestamp(entry.occurredAt)}
+                                      </time>
+                                    </div>
+                                    {entry.receivedContent && (
+                                      <div className="mt-3 rounded-xl bg-[#f6f8f6] p-3">
+                                        <p className="text-[11px] font-semibold text-[#78847c]">
+                                          받은 내용
+                                        </p>
+                                        <p className="mt-1 whitespace-pre-wrap text-sm leading-6">
+                                          {entry.receivedContent}
+                                        </p>
+                                      </div>
+                                    )}
+                                    {entry.actionContent && (
+                                      <div className="mt-3 rounded-xl bg-[#eef6f0] p-3">
+                                        <p className="text-[11px] font-semibold text-[#477356]">
+                                          처리 내용
+                                        </p>
+                                        <p className="mt-1 whitespace-pre-wrap text-sm leading-6">
+                                          {entry.actionContent}
+                                        </p>
+                                      </div>
+                                    )}
+                                    <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-[#8a948d]">
+                                      <span>기록자 {entry.recorder}</span>
+                                      {entry.amount > 0 && (
+                                        <strong className="text-[#39795b]">
+                                          {formatMoney(entry.amount)}
+                                        </strong>
+                                      )}
+                                      {entry.referenceUrl && (
+                                        <a
+                                          href={entry.referenceUrl}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="flex items-center gap-1 font-semibold text-[#39795b]"
+                                        >
+                                          <ExternalLink className="size-3" />
+                                          참고 링크
+                                        </a>
+                                      )}
+                                    </div>
+                                  </article>
+                                </li>
+                              ))}
+                            </ol>
+                          </div>
+                        </section>
+                      )}
+
+                    {!selectedWorkItem && (
+                      <section className="mt-7">
+                        <div>
+                          <h3 className="font-bold">농가 전체 히스토리</h3>
+                          <p className="mt-0.5 text-xs text-[#89938c]">
+                            어느 사업과 업무에 속하는 기록인지 함께 표시합니다.
+                          </p>
                         </div>
+                        <ol className="mt-4 space-y-3">
+                          {selectedFarmHistory.map(({ entry, workItem }) => (
+                            <li
+                              key={entry.id}
+                              className="rounded-2xl border border-[#e0e6df] bg-white p-4"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge variant="outline">
+                                    {projectForWorkItem(workItem)?.name ??
+                                      '사업 없음'}
+                                  </Badge>
+                                  <Badge variant="outline">
+                                    {FARM_LOG_TYPE_LABELS[workItem.workType]}
+                                  </Badge>
+                                  <span className="text-xs font-semibold">
+                                    {workItem.title}
+                                  </span>
+                                </div>
+                                <time className="text-[11px] text-[#929b94]">
+                                  {formatTimestamp(entry.occurredAt)}
+                                </time>
+                              </div>
+                              {entry.receivedContent && (
+                                <p className="mt-3 line-clamp-2 text-sm leading-6">
+                                  <strong className="text-[#78847c]">
+                                    받은 내용 ·{' '}
+                                  </strong>
+                                  {entry.receivedContent}
+                                </p>
+                              )}
+                              {entry.actionContent && (
+                                <p className="mt-2 line-clamp-2 text-sm leading-6 text-[#476752]">
+                                  <strong>처리 내용 · </strong>
+                                  {entry.actionContent}
+                                </p>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  openFarm(workItem.farmId, workItem.id)
+                                }
+                                className="mt-3 flex items-center gap-1 text-xs font-semibold text-[#39795b]"
+                              >
+                                업무 전체 과정 보기{' '}
+                                <ArrowRight className="size-3.5" />
+                              </button>
+                            </li>
+                          ))}
+                          {!selectedFarmHistory.length && (
+                            <li className="rounded-2xl border border-dashed py-8 text-center text-sm text-[#89938c]">
+                              아직 기록된 히스토리가 없습니다.
+                            </li>
+                          )}
+                        </ol>
                       </section>
                     )}
-
-                  {!selectedWorkItem && (
-                    <section className="mt-7">
-                      <div>
-                        <h3 className="font-bold">농가 전체 히스토리</h3>
-                        <p className="mt-0.5 text-xs text-[#89938c]">
-                          어느 사업과 업무에 속하는 기록인지 함께 표시합니다.
-                        </p>
-                      </div>
-                      <ol className="mt-4 space-y-3">
-                        {selectedFarmHistory.map(({ entry, workItem }) => (
-                          <li
-                            key={entry.id}
-                            className="rounded-2xl border border-[#e0e6df] bg-white p-4"
-                          >
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <Badge variant="outline">
-                                  {projectForWorkItem(workItem)?.name ??
-                                    '사업 없음'}
-                                </Badge>
-                                <Badge variant="outline">
-                                  {FARM_LOG_TYPE_LABELS[workItem.workType]}
-                                </Badge>
-                                <span className="text-xs font-semibold">
-                                  {workItem.title}
-                                </span>
-                              </div>
-                              <time className="text-[11px] text-[#929b94]">
-                                {formatTimestamp(entry.occurredAt)}
-                              </time>
-                            </div>
-                            {entry.receivedContent && (
-                              <p className="mt-3 line-clamp-2 text-sm leading-6">
-                                <strong className="text-[#78847c]">
-                                  받은 내용 ·{' '}
-                                </strong>
-                                {entry.receivedContent}
-                              </p>
-                            )}
-                            {entry.actionContent && (
-                              <p className="mt-2 line-clamp-2 text-sm leading-6 text-[#476752]">
-                                <strong>처리 내용 · </strong>
-                                {entry.actionContent}
-                              </p>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() =>
-                                openFarm(workItem.farmId, workItem.id)
-                              }
-                              className="mt-3 flex items-center gap-1 text-xs font-semibold text-[#39795b]"
-                            >
-                              업무 전체 과정 보기{' '}
-                              <ArrowRight className="size-3.5" />
-                            </button>
-                          </li>
-                        ))}
-                        {!selectedFarmHistory.length && (
-                          <li className="rounded-2xl border border-dashed py-8 text-center text-sm text-[#89938c]">
-                            아직 기록된 히스토리가 없습니다.
-                          </li>
-                        )}
-                      </ol>
-                    </section>
-                  )}
-                </div>
-              </>
-            )}
-          </SheetContent>
-        </Sheet>
+                  </div>
+                </section>
+              )}
+            </div>
+          </section>
+        </div>
 
         <Dialog
           open={dialog === 'subscription_event'}
