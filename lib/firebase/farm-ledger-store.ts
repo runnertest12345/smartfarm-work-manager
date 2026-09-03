@@ -17,6 +17,7 @@ import {
   FARM_HISTORY_CHANNELS,
   FARM_INBOX_STATUSES,
   FARM_PROJECT_DOCUMENT_CATEGORIES,
+  FARM_PROJECT_DOCUMENT_STATUS_LABELS,
   FARM_PROJECT_DOCUMENT_STATUSES,
   FARM_PROJECT_STAGES,
   FARM_PROJECT_STATUSES,
@@ -1171,7 +1172,7 @@ async function updateProjectDocument(
   const auditUpdate = systemProjectUpdate(
     existing.projectId,
     '제출서류 수정',
-    `${input.title}: 상태 ${existing.status} → ${input.status}, 개정 ${existing.revision} → ${input.revision}`,
+    `${input.title}: 상태 ${FARM_PROJECT_DOCUMENT_STATUS_LABELS[existing.status]} → ${FARM_PROJECT_DOCUMENT_STATUS_LABELS[input.status]}, 개정 ${existing.revision} → ${input.revision}`,
     input.owner || input.currentHandler || project.manager,
     now,
   );

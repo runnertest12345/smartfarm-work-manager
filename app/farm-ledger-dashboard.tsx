@@ -179,6 +179,16 @@ const FARM_LOG_TYPE_LABELS = FARM_WORK_TYPE_LABELS;
 const FARM_LOG_STATUS_LABELS = FARM_WORK_STATUS_LABELS;
 const FARM_LOG_CHANNEL_LABELS = FARM_HISTORY_CHANNEL_LABELS;
 const SUBSCRIPTION_PAGE_SIZE = 20;
+const SUBSCRIPTION_FILTER_LABELS: Record<
+  'all' | 'unsubscribed' | SubscriptionStatus,
+  string
+> = {
+  all: '모든 구독',
+  active: '구독 중',
+  unsubscribed: '미구독 전체',
+  expired: '만료',
+  unregistered: '미등록',
+};
 
 interface FarmForm extends FarmInput, FarmRecordInput {
   recorder: string;
@@ -950,6 +960,24 @@ async function readResponse(response: Response) {
   > & { error?: string };
 }
 
+function localizedProjectActionContent(
+  activity: FarmProjectUpdate | FarmHistoryEntry | null | undefined,
+) {
+  if (!activity?.actionContent) return '';
+  if (
+    !('kind' in activity) ||
+    activity.kind !== 'system' ||
+    activity.title !== '제출서류 수정'
+  ) {
+    return activity.actionContent;
+  }
+  return activity.actionContent.replace(
+    /\b(not_started|preparing|submitted|reviewing|revision|approved|rejected)\b/g,
+    (status) =>
+      FARM_PROJECT_DOCUMENT_STATUS_LABELS[status as FarmProjectDocumentStatus],
+  );
+}
+
 interface FarmLedgerDashboardProps {
   accountName: string;
   accountEmail: string;
@@ -1298,6 +1326,29 @@ export function FarmLedgerDashboard({
   function projectForWorkItem(workItem: FarmWorkItem) {
     const record = recordById.get(workItem.farmRecordId);
     return record ? (projectById.get(record.projectId) ?? null) : null;
+  }
+
+  function projectSelectLabel(projectId: string, includeYear = false) {
+    const project = projectById.get(projectId);
+    if (!project) return '사업 없음';
+    return includeYear ? `${project.year} · ${project.name}` : project.name;
+  }
+
+  function farmSelectLabel(farmId: string) {
+    const farm = farmById.get(farmId);
+    return farm ? `${farm.name} · ${farm.farmCode}` : '농가 없음';
+  }
+
+  function recordSelectLabel(recordId: string) {
+    const record = recordById.get(recordId);
+    if (!record) return '사업 없음';
+    return `${projectSelectLabel(record.projectId)} · ${record.deviceType || '장비 미입력'}`;
+  }
+
+  function subscriptionRecordSelectLabel(recordId: string) {
+    const record = recordById.get(recordId);
+    if (!record) return '농가·사업 없음';
+    return `${farmById.get(record.farmId)?.name ?? '농가 없음'} · ${projectSelectLabel(record.projectId)} · ${record.currentSubscriptionExpiresAt || '만료일 미입력'}`;
   }
 
   function projectSnapshot(project: FarmProject) {
@@ -4209,7 +4260,10 @@ export function FarmLedgerDashboard({
                     aria-label="화면 선택"
                     className="h-9 border-0 bg-transparent font-semibold shadow-none"
                   >
-                    <SelectValue />
+                    <SelectValue>
+                      {navItems.find((item) => item.id === view)?.label ??
+                        '화면 선택'}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent align="start">
                     {navItems.map((item) => (
@@ -6244,7 +6298,11 @@ export function FarmLedgerDashboard({
                           }
                         >
                           <SelectTrigger className="h-10 w-full">
-                            <SelectValue />
+                            <SelectValue>
+                              {projectFilter === 'all'
+                                ? '모든 사업'
+                                : projectSelectLabel(projectFilter)}
+                            </SelectValue>
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="all">모든 사업</SelectItem>
@@ -6264,7 +6322,9 @@ export function FarmLedgerDashboard({
                           }
                         >
                           <SelectTrigger className="h-10 w-full">
-                            <SelectValue />
+                            <SelectValue>
+                              {SUBSCRIPTION_FILTER_LABELS[subscriptionFilter]}
+                            </SelectValue>
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="all">모든 구독</SelectItem>
@@ -6286,7 +6346,11 @@ export function FarmLedgerDashboard({
                             className="h-10 w-full"
                             aria-label="농가 작목 필터"
                           >
-                            <SelectValue />
+                            <SelectValue>
+                              {farmCropFilter === 'all'
+                                ? '모든 작목'
+                                : farmCropFilter}
+                            </SelectValue>
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="all">모든 작목</SelectItem>
@@ -6307,7 +6371,11 @@ export function FarmLedgerDashboard({
                             className="h-10 w-full"
                             aria-label="농가 지역 필터"
                           >
-                            <SelectValue />
+                            <SelectValue>
+                              {farmRegionFilter === 'all'
+                                ? '모든 지역'
+                                : farmRegionFilter}
+                            </SelectValue>
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="all">모든 지역</SelectItem>
@@ -7397,7 +7465,9 @@ export function FarmLedgerDashboard({
                                     }
                                   >
                                     <SelectTrigger className="h-10 w-full">
-                                      <SelectValue />
+                                      <SelectValue>
+                                        {subscriptionReportYear}년
+                                      </SelectValue>
                                     </SelectTrigger>
                                     <SelectContent>
                                       {subscriptionReportYears.map((year) => (
@@ -7421,7 +7491,9 @@ export function FarmLedgerDashboard({
                                     }
                                   >
                                     <SelectTrigger className="h-10 w-full">
-                                      <SelectValue />
+                                      <SelectValue>
+                                        {subscriptionReportEndMonth}월
+                                      </SelectValue>
                                     </SelectTrigger>
                                     <SelectContent>
                                       {Array.from(
@@ -7759,7 +7831,14 @@ export function FarmLedgerDashboard({
                                     }}
                                   >
                                     <SelectTrigger className="h-10 w-full">
-                                      <SelectValue />
+                                      <SelectValue>
+                                        {subscriptionListProjectId === 'all'
+                                          ? '전체 사업'
+                                          : projectSelectLabel(
+                                              subscriptionListProjectId,
+                                              true,
+                                            )}
+                                      </SelectValue>
                                     </SelectTrigger>
                                     <SelectContent>
                                       <SelectItem value="all">
@@ -7789,7 +7868,13 @@ export function FarmLedgerDashboard({
                                     }}
                                   >
                                     <SelectTrigger className="h-10 w-full">
-                                      <SelectValue />
+                                      <SelectValue>
+                                        {subscriptionListStatus === 'all'
+                                          ? '전체 상태'
+                                          : SUBSCRIPTION_STATUS_LABELS[
+                                              subscriptionListStatus
+                                            ]}
+                                      </SelectValue>
                                     </SelectTrigger>
                                     <SelectContent>
                                       <SelectItem value="all">
@@ -9080,8 +9165,9 @@ export function FarmLedgerDashboard({
                             마지막 처리 내용
                           </p>
                           <p className="mt-2 text-sm leading-6">
-                            {selectedProjectLatestAction?.actionContent ||
-                              '처리 내용이 없습니다.'}
+                            {localizedProjectActionContent(
+                              selectedProjectLatestAction,
+                            ) || '처리 내용이 없습니다.'}
                           </p>
                         </div>
                       </div>
@@ -9132,7 +9218,9 @@ export function FarmLedgerDashboard({
                                     <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#738078]">
                                       {isProjectUpdate && entry.resolution
                                         ? `해결: ${entry.resolution}`
-                                        : entry.actionContent ||
+                                        : localizedProjectActionContent(
+                                            entry,
+                                          ) ||
                                           entry.receivedContent ||
                                           (isProjectUpdate
                                             ? entry.blockedReason
@@ -10136,7 +10224,13 @@ export function FarmLedgerDashboard({
                   }}
                 >
                   <SelectTrigger className="h-10 w-full">
-                    <SelectValue placeholder="농가와 사업을 선택해 주세요" />
+                    <SelectValue placeholder="농가와 사업을 선택해 주세요">
+                      {subscriptionEventForm.farmRecordId
+                        ? subscriptionRecordSelectLabel(
+                            subscriptionEventForm.farmRecordId,
+                          )
+                        : undefined}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {[...workspace.records]
@@ -10178,7 +10272,13 @@ export function FarmLedgerDashboard({
                     }
                   >
                     <SelectTrigger className="h-10 w-full">
-                      <SelectValue />
+                      <SelectValue>
+                        {
+                          FARM_SUBSCRIPTION_EVENT_TYPE_LABELS[
+                            subscriptionEventForm.eventType
+                          ]
+                        }
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="renewed">갱신</SelectItem>
@@ -10428,7 +10528,9 @@ export function FarmLedgerDashboard({
                     }
                   >
                     <SelectTrigger id="project-status" className="h-10 w-full">
-                      <SelectValue />
+                      <SelectValue>
+                        {FARM_PROJECT_STATUS_LABELS[projectForm.status]}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="active">진행 중</SelectItem>
@@ -10474,7 +10576,9 @@ export function FarmLedgerDashboard({
                     }
                   >
                     <SelectTrigger id="project-stage" className="h-10 w-full">
-                      <SelectValue />
+                      <SelectValue>
+                        {FARM_PROJECT_STAGE_LABELS[projectForm.currentStage]}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       {Object.entries(FARM_PROJECT_STAGE_LABELS).map(
@@ -10570,7 +10674,13 @@ export function FarmLedgerDashboard({
                         id="project-settlement-status"
                         className="h-10 w-full bg-white"
                       >
-                        <SelectValue />
+                        <SelectValue>
+                          {
+                            FARM_SETTLEMENT_STATUS_LABELS[
+                              projectForm.settlementStatus
+                            ]
+                          }
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         {Object.entries(FARM_SETTLEMENT_STATUS_LABELS).map(
@@ -10769,7 +10879,13 @@ export function FarmLedgerDashboard({
                       id="project-document-category"
                       className="h-10 w-full"
                     >
-                      <SelectValue />
+                      <SelectValue>
+                        {
+                          FARM_PROJECT_DOCUMENT_CATEGORY_LABELS[
+                            projectDocumentForm.category
+                          ]
+                        }
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       {Object.entries(
@@ -10801,7 +10917,11 @@ export function FarmLedgerDashboard({
                       id="project-document-required"
                       className="h-10 w-full"
                     >
-                      <SelectValue />
+                      <SelectValue>
+                        {projectDocumentForm.isRequired
+                          ? '필수서류'
+                          : '선택서류'}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="required">필수서류</SelectItem>
@@ -10826,7 +10946,13 @@ export function FarmLedgerDashboard({
                       id="project-document-status"
                       className="h-10 w-full"
                     >
-                      <SelectValue />
+                      <SelectValue>
+                        {
+                          FARM_PROJECT_DOCUMENT_STATUS_LABELS[
+                            projectDocumentForm.status
+                          ]
+                        }
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       {Object.entries(FARM_PROJECT_DOCUMENT_STATUS_LABELS).map(
@@ -11027,7 +11153,13 @@ export function FarmLedgerDashboard({
                       id="project-update-kind"
                       className="h-10 w-full"
                     >
-                      <SelectValue />
+                      <SelectValue>
+                        {
+                          FARM_PROJECT_UPDATE_KIND_LABELS[
+                            projectUpdateForm.kind
+                          ]
+                        }
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="communication">수신·연락</SelectItem>
@@ -11085,7 +11217,9 @@ export function FarmLedgerDashboard({
                       id="project-update-channel"
                       className="h-10 w-full"
                     >
-                      <SelectValue />
+                      <SelectValue>
+                        {FARM_HISTORY_CHANNEL_LABELS[projectUpdateForm.channel]}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       {Object.entries(FARM_HISTORY_CHANNEL_LABELS)
@@ -11517,7 +11651,9 @@ export function FarmLedgerDashboard({
                           }
                         >
                           <SelectTrigger className="h-10 w-full">
-                            <SelectValue />
+                            <SelectValue>
+                              {projectSelectLabel(farmForm.projectId)}
+                            </SelectValue>
                           </SelectTrigger>
                           <SelectContent>
                             {workspace.projects
@@ -11755,7 +11891,13 @@ export function FarmLedgerDashboard({
                             }
                           >
                             <SelectTrigger className="h-10 w-full">
-                              <SelectValue />
+                              <SelectValue>
+                                {
+                                  SUBSCRIPTION_STATUS_LABELS[
+                                    farmForm.subscriptionStatus
+                                  ]
+                                }
+                              </SelectValue>
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="active">사용중</SelectItem>
@@ -12049,7 +12191,11 @@ export function FarmLedgerDashboard({
                   }}
                 >
                   <SelectTrigger className="h-10 w-full">
-                    <SelectValue placeholder="농가를 선택하세요" />
+                    <SelectValue placeholder="농가를 선택하세요">
+                      {inboxRouteFarmId
+                        ? farmSelectLabel(inboxRouteFarmId)
+                        : undefined}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {inboxRouteFarmOptions.map((farm) => (
@@ -12072,7 +12218,11 @@ export function FarmLedgerDashboard({
                   onValueChange={(value) => setInboxRouteRecordId(value ?? '')}
                 >
                   <SelectTrigger className="h-10 w-full">
-                    <SelectValue placeholder="사업을 선택하세요" />
+                    <SelectValue placeholder="사업을 선택하세요">
+                      {inboxRouteRecordId
+                        ? recordSelectLabel(inboxRouteRecordId)
+                        : undefined}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {(recordsByFarm.get(inboxRouteFarmId) ?? []).map(
@@ -12136,7 +12286,11 @@ export function FarmLedgerDashboard({
                     }
                   >
                     <SelectTrigger className="h-10 w-full">
-                      <SelectValue placeholder="업무를 연결할 사업을 선택하세요" />
+                      <SelectValue placeholder="업무를 연결할 사업을 선택하세요">
+                        {workItemForm.farmRecordId
+                          ? recordSelectLabel(workItemForm.farmRecordId)
+                          : undefined}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       {selectedRecords.map((record) => (
