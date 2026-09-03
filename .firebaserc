@@ -1,0 +1,6 @@
+{
+  "projects": {
+    "default": "evident-minutia-460301-c9",
+    "emulator": "demo-farmlog"
+  }
+}

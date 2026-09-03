@@ -1,0 +1,123 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null
+        && request.auth.token.email_verified == true;
+    }
+
+    function activeMember() {
+      return signedIn()
+        && get(/databases/$(database)/documents/appMembers/$(request.auth.uid)).data.active == true;
+    }
+
+    function knownCollection(name) {
+      return name in [
+        'projects',
+        'projectDocuments',
+        'projectUpdates',
+        'farms',
+        'farmRecords',
+        'subscriptionEvents',
+        'inboxItems',
+        'workItems',
+        'blockerEpisodes',
+        'visits',
+        'checklistItems',
+        'historyEntries',
+        'farmCodeReservations',
+        'farmRecordReservations'
+      ];
+    }
+
+    function validDocument(documentId) {
+      return request.resource.data.keys().hasAll([
+          'id', 'createdAt', 'updatedAt', 'createdByUid', 'updatedByUid'
+        ])
+        && request.resource.data.size() <= 64
+        && request.resource.data.id == documentId
+        && request.resource.data.id is string
+        && request.resource.data.id.size() > 0
+        && request.resource.data.id.size() <= 160
+        && request.resource.data.createdAt is int
+        && request.resource.data.updatedAt is int
+        && request.resource.data.createdAt > 0
+        && request.resource.data.updatedAt >= request.resource.data.createdAt
+        && request.resource.data.createdByUid is string
+        && request.resource.data.createdByUid.size() > 0
+        && request.resource.data.updatedByUid == request.auth.uid;
+    }
+
+    function validCreate(documentId) {
+      return validDocument(documentId)
+        && request.resource.data.createdByUid == request.auth.uid;
+    }
+
+    function validUpdate(documentId) {
+      return validDocument(documentId)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdByUid == resource.data.createdByUid
+        && request.resource.data.updatedAt >= resource.data.updatedAt;
+    }
+
+    function validRelations(workspaceId, name) {
+      return name == 'projects'
+        || name == 'farms'
+        || name == 'inboxItems'
+        || name == 'farmCodeReservations'
+        || name == 'farmRecordReservations'
+        || (name == 'projectDocuments'
+          && request.resource.data.projectId is string
+          && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.id == request.resource.data.projectId)
+        || (name == 'projectUpdates'
+          && request.resource.data.projectId is string
+          && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.id == request.resource.data.projectId)
+        || (name == 'farmRecords'
+          && request.resource.data.farmId is string
+          && request.resource.data.projectId is string
+          && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/farms/$(request.resource.data.farmId)).data.id == request.resource.data.farmId
+          && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.id == request.resource.data.projectId)
+        || (name == 'subscriptionEvents'
+          && request.resource.data.farmRecordId is string
+          && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/farmRecords/$(request.resource.data.farmRecordId)).data.id == request.resource.data.farmRecordId)
+        || (name == 'workItems'
+          && request.resource.data.farmRecordId is string
+          && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/farmRecords/$(request.resource.data.farmRecordId)).data.id == request.resource.data.farmRecordId)
+        || (name in ['blockerEpisodes', 'visits', 'checklistItems', 'historyEntries']
+          && request.resource.data.workItemId is string
+          && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workItems/$(request.resource.data.workItemId)).data.id == request.resource.data.workItemId);
+    }
+
+    match /appMembers/{userId} {
+      allow get: if signedIn() && request.auth.uid == userId;
+      allow list, create, update, delete: if false;
+    }
+
+    match /workspaces/{workspaceId}/{collectionName}/{documentId} {
+      allow get: if activeMember() && knownCollection(collectionName);
+      allow list: if activeMember()
+        && knownCollection(collectionName)
+        && request.query.limit != null
+        && request.query.limit <= 5000;
+
+      allow create: if activeMember()
+        && knownCollection(collectionName)
+        && validCreate(documentId)
+        && validRelations(workspaceId, collectionName);
+
+      allow update: if activeMember()
+        && knownCollection(collectionName)
+        && !(collectionName in ['subscriptionEvents', 'historyEntries'])
+        && validUpdate(documentId)
+        && validRelations(workspaceId, collectionName);
+
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

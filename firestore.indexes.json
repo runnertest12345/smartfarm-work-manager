@@ -1,0 +1,49 @@
+{
+  "indexes": [],
+  "fieldOverrides": [
+    {
+      "collectionGroup": "projects",
+      "fieldPath": "description",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "projects",
+      "fieldPath": "settlementNote",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "projectDocuments",
+      "fieldPath": "note",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "projectUpdates",
+      "fieldPath": "receivedContent",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "projectUpdates",
+      "fieldPath": "actionContent",
+      "indexes": []
+    },
+    { "collectionGroup": "farms", "fieldPath": "specialNotes", "indexes": [] },
+    { "collectionGroup": "farmRecords", "fieldPath": "notes", "indexes": [] },
+    { "collectionGroup": "inboxItems", "fieldPath": "content", "indexes": [] },
+    {
+      "collectionGroup": "workItems",
+      "fieldPath": "description",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "historyEntries",
+      "fieldPath": "receivedContent",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "historyEntries",
+      "fieldPath": "actionContent",
+      "indexes": []
+    },
+    { "collectionGroup": "visits", "fieldPath": "result", "indexes": [] }
+  ]
+}

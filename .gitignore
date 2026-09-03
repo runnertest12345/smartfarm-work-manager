@@ -16,6 +16,7 @@
 /.next/
 /.vinext/
 /out/
+/.firebase/
 
 # misc
 .DS_Store
@@ -37,6 +38,10 @@ gha-creds-*.json
 *.key
 *.p12
 *.pfx
+*service-account*.json
+firebase-debug.log*
+firestore-debug.log*
+ui-debug.log*
 
 # deployment and generated files
 .vercel

@@ -34,6 +34,7 @@ import {
   Link2,
   List,
   LockKeyhole,
+  LogOut,
   Loader2,
   Mail,
   MapPin,
@@ -123,6 +124,12 @@ import {
   type FarmWorkPriority,
   type SubscriptionStatus,
 } from '@/lib/farm-types';
+import {
+  farmLedgerFetch,
+  subscribeFarmLedgerWorkspace,
+  waitForFarmLedgerSync,
+} from '@/lib/firebase/farm-ledger-store';
+import { registerFarmLedgerTools } from '@/lib/webmcp/farm-ledger-tools';
 
 type View =
   | 'overview'
@@ -329,9 +336,6 @@ const WORK_CHECKLIST_TEMPLATES: Partial<Record<WorkType, string[]>> = {
     '회계 담당자에게 반영 요청',
   ],
 };
-
-const sourceSheetUrl =
-  'https://docs.google.com/spreadsheets/d/1EHwCMPR6Nm7A1oCq2EjrSd6tkrH8EufK8liYfCR2KCk/edit?gid=1284515894#gid=1284515894';
 
 function localDateString(date = new Date()) {
   const year = date.getFullYear();
@@ -899,7 +903,17 @@ async function readResponse(response: Response) {
   > & { error?: string };
 }
 
-export function FarmLedgerDashboard() {
+interface FarmLedgerDashboardProps {
+  accountName: string;
+  accountEmail: string;
+  onSignOut: () => void;
+}
+
+export function FarmLedgerDashboard({
+  accountName,
+  accountEmail,
+  onSignOut,
+}: FarmLedgerDashboardProps) {
   const [workspace, setWorkspace] =
     useState<FarmLedgerWorkspace>(emptyWorkspace);
   const [view, setView] = useState<View>('overview');
@@ -981,61 +995,50 @@ export function FarmLedgerDashboard() {
   const [formError, setFormError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [checklistSubmitting, setChecklistSubmitting] = useState(false);
+  const [subscriptionEpoch, setSubscriptionEpoch] = useState(0);
+  const workspaceRef = useRef(workspace);
+
+  useEffect(() => {
+    workspaceRef.current = workspace;
+  }, [workspace]);
 
   const loadWorkspace = useCallback(async (quiet = false) => {
     if (quiet) setRefreshing(true);
     else setLoading(true);
     setLoadError('');
-    try {
-      const response = await fetch('/api/farm-ledger', { cache: 'no-store' });
-      const data = (await readResponse(
-        response,
-      )) as unknown as FarmLedgerWorkspace & { error?: string };
-      if (
-        !response.ok ||
-        !Array.isArray(data.projects) ||
-        !Array.isArray(data.projectDocuments) ||
-        !Array.isArray(data.projectUpdates) ||
-        !Array.isArray(data.farms) ||
-        !Array.isArray(data.records) ||
-        !Array.isArray(data.subscriptionEvents) ||
-        !Array.isArray(data.inboxItems) ||
-        !Array.isArray(data.workItems) ||
-        !Array.isArray(data.blockerEpisodes) ||
-        !Array.isArray(data.visits) ||
-        !Array.isArray(data.checklistItems) ||
-        !Array.isArray(data.historyEntries)
-      ) {
-        throw new Error(data.error || '관리대장을 불러오지 못했습니다.');
-      }
-      setWorkspace(data);
-      setSelectedProjectId((current) =>
-        data.projects.some((project) => project.id === current) ? current : '',
-      );
-      setSelectedFarmId((current) =>
-        data.farms.some((farm) => farm.id === current) ? current : '',
-      );
-      setSelectedWorkItemId((current) =>
-        data.workItems.some((workItem) => workItem.id === current)
-          ? current
-          : '',
-      );
-    } catch (error) {
-      setLoadError(
-        error instanceof Error
-          ? error.message
-          : '관리대장을 불러오지 못했습니다.',
-      );
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+    setSubscriptionEpoch((current) => current + 1);
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadWorkspace(), 0);
-    return () => window.clearTimeout(timer);
-  }, [loadWorkspace]);
+    const unsubscribe = subscribeFarmLedgerWorkspace(
+      (data) => {
+        setWorkspace(data);
+        setSelectedProjectId((current) =>
+          data.projects.some((project) => project.id === current)
+            ? current
+            : '',
+        );
+        setSelectedFarmId((current) =>
+          data.farms.some((farm) => farm.id === current) ? current : '',
+        );
+        setSelectedWorkItemId((current) =>
+          data.workItems.some((workItem) => workItem.id === current)
+            ? current
+            : '',
+        );
+        setLoading(false);
+        setRefreshing(false);
+      },
+      (error) => {
+        setLoadError(error.message);
+        setLoading(false);
+        setRefreshing(false);
+      },
+    );
+    return unsubscribe;
+  }, [subscriptionEpoch]);
+
+  useEffect(() => registerFarmLedgerTools(() => workspaceRef.current), []);
 
   useEffect(() => {
     const timer = window.setInterval(() => setRiskNow(Date.now()), 60000);
@@ -2933,7 +2936,7 @@ export function FarmLedgerDashboard() {
     setSubmitting(true);
     setFormError('');
     try {
-      const response = await fetch('/api/farm-ledger', {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2945,7 +2948,7 @@ export function FarmLedgerDashboard() {
       if (!response.ok || !data.subscriptionEvent) {
         throw new Error(data.error || '구독 처리 결과를 저장하지 못했습니다.');
       }
-      await loadWorkspace(true);
+      await waitForFarmLedgerSync();
       setDialog(null);
       toast.add({
         title: `구독 ${FARM_SUBSCRIPTION_EVENT_TYPE_LABELS[subscriptionEventForm.eventType]} 처리를 등록했습니다`,
@@ -2968,7 +2971,7 @@ export function FarmLedgerDashboard() {
     setSubmitting(true);
     setFormError('');
     try {
-      const response = await fetch('/api/farm-ledger', {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2983,7 +2986,7 @@ export function FarmLedgerDashboard() {
       if (!response.ok || !data.inboxItem) {
         throw new Error(data.error || '수신 내용을 저장하지 못했습니다.');
       }
-      await loadWorkspace(true);
+      await waitForFarmLedgerSync();
       setWorkMode('inbox');
       setDialog(null);
       toast.add({
@@ -3008,7 +3011,7 @@ export function FarmLedgerDashboard() {
   ) {
     setSubmitting(true);
     try {
-      const response = await fetch('/api/farm-ledger', {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3021,7 +3024,7 @@ export function FarmLedgerDashboard() {
       if (!response.ok || !data.inboxItem) {
         throw new Error(data.error || '수신함 상태를 바꾸지 못했습니다.');
       }
-      await loadWorkspace(true);
+      await waitForFarmLedgerSync();
       toast.add({
         title:
           status === 'reference'
@@ -3049,7 +3052,7 @@ export function FarmLedgerDashboard() {
     }
     setChecklistSubmitting(true);
     try {
-      const response = await fetch('/api/farm-ledger', {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3064,7 +3067,7 @@ export function FarmLedgerDashboard() {
       if (!response.ok || !data.checklistItem) {
         throw new Error(data.error || '체크리스트를 저장하지 못했습니다.');
       }
-      await loadWorkspace(true);
+      await waitForFarmLedgerSync();
     } catch (error) {
       toast.add({
         title: '체크리스트를 저장하지 못했습니다',
@@ -3140,7 +3143,7 @@ export function FarmLedgerDashboard() {
     setSubmitting(true);
     setFormError('');
     try {
-      const response = await fetch('/api/farm-ledger', {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
         method: editingProjectId ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3153,7 +3156,7 @@ export function FarmLedgerDashboard() {
       if (!response.ok || !data.project)
         throw new Error(data.error || '사업을 저장하지 못했습니다.');
       const saved = data.project as FarmProject;
-      await loadWorkspace(true);
+      await waitForFarmLedgerSync();
       openProjectDetail(saved.id);
       setDialog(null);
       toast.add({
@@ -3178,7 +3181,7 @@ export function FarmLedgerDashboard() {
     setSubmitting(true);
     setFormError('');
     try {
-      const response = await fetch('/api/farm-ledger', {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
         method: editingProjectDocumentId ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3191,7 +3194,7 @@ export function FarmLedgerDashboard() {
       const data = await readResponse(response);
       if (!response.ok || !data.document)
         throw new Error(data.error || '제출서류를 저장하지 못했습니다.');
-      await loadWorkspace(true);
+      await waitForFarmLedgerSync();
       setDialog(null);
       toast.add({
         title: editingProjectDocumentId
@@ -3217,7 +3220,7 @@ export function FarmLedgerDashboard() {
     setSubmitting(true);
     setFormError('');
     try {
-      const response = await fetch('/api/farm-ledger', {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3232,7 +3235,7 @@ export function FarmLedgerDashboard() {
       const data = await readResponse(response);
       if (!response.ok || !data.update)
         throw new Error(data.error || '프로젝트 기록을 저장하지 못했습니다.');
-      await loadWorkspace(true);
+      await waitForFarmLedgerSync();
       setDialog(null);
       toast.add({
         title:
@@ -3259,7 +3262,7 @@ export function FarmLedgerDashboard() {
     setSubmitting(true);
     setFormError('');
     try {
-      const response = await fetch('/api/farm-ledger', {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3271,7 +3274,7 @@ export function FarmLedgerDashboard() {
       const data = await readResponse(response);
       if (!response.ok || !data.update)
         throw new Error(data.error || '막힘을 해결 처리하지 못했습니다.');
-      await loadWorkspace(true);
+      await waitForFarmLedgerSync();
       setDialog(null);
       setResolvingProjectUpdateId('');
       toast.add({ title: '프로젝트 막힘을 해결했습니다', type: 'success' });
@@ -3371,7 +3374,7 @@ export function FarmLedgerDashboard() {
                 record: recordPayload,
                 recorder: farmForm.recorder,
               };
-      const response = await fetch('/api/farm-ledger', {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
         method: isFarmCreate || isRecordAdd ? 'POST' : 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(responseBody),
@@ -3384,7 +3387,7 @@ export function FarmLedgerDashboard() {
         isFarmCreate && data.farm && typeof data.farm === 'object'
           ? (data.farm as { id: string }).id
           : selectedFarm?.id;
-      await loadWorkspace(true);
+      await waitForFarmLedgerSync();
       if (createdFarmId) openFarm(createdFarmId);
       setDialog(null);
       const title = isFarmCreate
@@ -3430,7 +3433,7 @@ export function FarmLedgerDashboard() {
     setSubmitting(true);
     setFormError('');
     try {
-      const response = await fetch('/api/farm-ledger', {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3489,7 +3492,7 @@ export function FarmLedgerDashboard() {
       if (!response.ok || !data.workItem)
         throw new Error(data.error || '업무를 등록하지 못했습니다.');
       const savedWorkItem = data.workItem as FarmWorkItem;
-      await loadWorkspace(true);
+      await waitForFarmLedgerSync();
       openFarm(savedWorkItem.farmId, savedWorkItem.id);
       setClarifyingInboxId('');
       setDialog(null);
@@ -3513,7 +3516,7 @@ export function FarmLedgerDashboard() {
     setSubmitting(true);
     setFormError('');
     try {
-      const response = await fetch('/api/farm-ledger', {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3562,7 +3565,7 @@ export function FarmLedgerDashboard() {
       if (!response.ok || !data.historyEntry) {
         throw new Error(data.error || '진행 기록을 추가하지 못했습니다.');
       }
-      await loadWorkspace(true);
+      await waitForFarmLedgerSync();
       setDialog(null);
       toast.add({
         title: '진행 기록을 추가했습니다',
@@ -3586,7 +3589,7 @@ export function FarmLedgerDashboard() {
     setSubmitting(true);
     setFormError('');
     try {
-      const response = await fetch('/api/farm-ledger', {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3616,7 +3619,7 @@ export function FarmLedgerDashboard() {
       if (!response.ok || !data.visit) {
         throw new Error(data.error || '현장 방문 기록을 저장하지 못했습니다.');
       }
-      await loadWorkspace(true);
+      await waitForFarmLedgerSync();
       setDialog(null);
       toast.add({
         title: visitForm.id
@@ -3953,26 +3956,29 @@ export function FarmLedgerDashboard() {
               ))}
             </nav>
             <div className="mt-auto rounded-2xl border border-white/10 bg-white/6 p-4">
-              <p className="text-xs font-semibold text-white/80">
-                원본 관리대장 분석
-              </p>
-              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
-                <div className="h-full w-[92%] rounded-full bg-[#8bd1a3]" />
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="size-4 text-[#a9dfb9]" />
+                <p className="text-xs font-semibold text-white/80">
+                  Firebase 무료 운영
+                </p>
               </div>
-              <p className="mt-2 text-[11px] leading-5 text-white/42">
-                297개 농가 · 35개 연결 사업
-                <br />
-                실제 데이터는 이관 전입니다.
+              <p className="mt-3 truncate text-xs font-semibold text-white/85">
+                {accountName}
               </p>
-              <a
-                href={sourceSheetUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-3 flex items-center gap-1.5 text-[11px] font-semibold text-[#a9dfb9] hover:underline"
+              <p
+                className="mt-1 truncate text-[11px] text-white/42"
+                title={accountEmail}
               >
-                <ExternalLink className="size-3" />
-                Google 관리대장 열기
-              </a>
+                {accountEmail}
+              </p>
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="mt-4 flex items-center gap-1.5 text-[11px] font-semibold text-[#a9dfb9] hover:text-white"
+              >
+                <LogOut className="size-3" />
+                로그아웃
+              </button>
             </div>
           </aside>
 
@@ -4008,6 +4014,15 @@ export function FarmLedgerDashboard() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                <Button
+                  onClick={onSignOut}
+                  variant="ghost"
+                  size="icon-lg"
+                  aria-label={`${accountName} 로그아웃`}
+                  className="rounded-xl text-[#6e7c73] lg:hidden"
+                >
+                  <LogOut />
+                </Button>
                 <Button
                   onClick={() => void loadWorkspace(true)}
                   variant="ghost"
@@ -4077,27 +4092,18 @@ export function FarmLedgerDashboard() {
               ) : (
                 <>
                   <div className="mb-5 flex items-start gap-3 rounded-2xl border border-[#d9e7d7] bg-[#f1f8ef] p-4">
-                    <Leaf className="mt-0.5 size-5 shrink-0 text-[#3f8058]" />
+                    <ShieldCheck className="mt-0.5 size-5 shrink-0 text-[#3f8058]" />
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-semibold text-[#315f43]">
-                        Google 관리대장 구조를 반영한 새 관리 화면입니다
+                        승인된 사용자만 보는 Firebase 관리대장입니다
                       </p>
                       <p className="mt-1 text-xs leading-5 text-[#66806d]">
-                        현재는 개인정보가 없는 예시 농가{' '}
-                        {workspace.farms.length}곳만 들어 있습니다. 원본 297개
-                        농가와 입금·A/S 데이터는 별도 승인 후 안전하게 이관할 수
-                        있습니다.
+                        현재 {workspace.projects.length}개 사업과{' '}
+                        {workspace.farms.length}개 농가를 관리 중입니다. 저장
+                        내용은 Firestore 보안 규칙과 사용자 승인 목록으로
+                        보호됩니다.
                       </p>
                     </div>
-                    <a
-                      href={sourceSheetUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="hidden shrink-0 items-center gap-1 text-xs font-semibold text-[#39795b] hover:underline sm:flex"
-                    >
-                      <ExternalLink className="size-3.5" />
-                      원본 열기
-                    </a>
                   </div>
 
                   {view === 'overview' && (
