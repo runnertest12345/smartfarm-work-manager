@@ -22,7 +22,7 @@ jobs:
       NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ vars.FIREBASE_STORAGE_BUCKET }}
       NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FIREBASE_MESSAGING_SENDER_ID }}
       NEXT_PUBLIC_FIREBASE_APP_ID: ${{ vars.FIREBASE_APP_ID }}
-      NEXT_PUBLIC_FIREBASE_WORKSPACE_ID: ${{ vars.FIREBASE_WORKSPACE_ID }}
+      NEXT_PUBLIC_FIREBASE_WORKSPACE_ID: sheet-20260903-579dfadc
       NEXT_PUBLIC_SITE_URL: https://${{ vars.VM_SITE_HOST }}
       NEXT_PUBLIC_USE_FIREBASE_EMULATORS: 'false'
       VM_SITE_HOST: ${{ vars.VM_SITE_HOST }}
@@ -63,6 +63,36 @@ jobs:
               exit 1
             fi
           done
+          if [[ "${NEXT_PUBLIC_FIREBASE_PROJECT_ID}" != "smartfarm-work-manager" ]]; then
+            echo "FIREBASE_PROJECT_ID must target smartfarm-work-manager." >&2
+            exit 1
+          fi
+          if [[ "${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}" != "smartfarm-work-manager.firebaseapp.com" ]]; then
+            echo "FIREBASE_AUTH_DOMAIN does not match the production project." >&2
+            exit 1
+          fi
+          if [[ "${NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET}" != "smartfarm-work-manager.firebasestorage.app" && "${NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET}" != "smartfarm-work-manager.appspot.com" ]]; then
+            echo "FIREBASE_STORAGE_BUCKET does not match the production project." >&2
+            exit 1
+          fi
+          if [[ ! "${NEXT_PUBLIC_FIREBASE_APP_ID}" =~ ^1:${NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID}:web:[0-9A-Za-z]+$ ]]; then
+            echo "FIREBASE_APP_ID and FIREBASE_MESSAGING_SENDER_ID do not match." >&2
+            exit 1
+          fi
+          firebase_tuple_hash="$(
+            printf '%s\n' \
+              "${NEXT_PUBLIC_FIREBASE_API_KEY}" \
+              "${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}" \
+              "${NEXT_PUBLIC_FIREBASE_PROJECT_ID}" \
+              "${NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET}" \
+              "${NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID}" \
+              "${NEXT_PUBLIC_FIREBASE_APP_ID}" \
+              | sha256sum | cut -d ' ' -f 1
+          )"
+          if [[ "${firebase_tuple_hash}" != "3fe1333ca195635ceb9b4763b85771eda80b879899c810d3af43e522112137cd" ]]; then
+            echo "Firebase web configuration does not match the verified production tuple." >&2
+            exit 1
+          fi
           if [[ ! "${VM_SITE_HOST}" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,251}[A-Za-z0-9]$ || "${VM_SITE_HOST}" == *..* ]]; then
             echo "VM_SITE_HOST is not a valid host name." >&2
             exit 1

@@ -23,11 +23,15 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
+export const firebaseWorkspaceId =
+  process.env.NEXT_PUBLIC_FIREBASE_WORKSPACE_ID?.trim() ?? '';
+
 const requiredConfig = [
   ['NEXT_PUBLIC_FIREBASE_API_KEY', firebaseConfig.apiKey],
   ['NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN', firebaseConfig.authDomain],
   ['NEXT_PUBLIC_FIREBASE_PROJECT_ID', firebaseConfig.projectId],
   ['NEXT_PUBLIC_FIREBASE_APP_ID', firebaseConfig.appId],
+  ['NEXT_PUBLIC_FIREBASE_WORKSPACE_ID', firebaseWorkspaceId],
 ] as const;
 
 export const missingFirebaseConfig = requiredConfig
@@ -35,8 +39,6 @@ export const missingFirebaseConfig = requiredConfig
   .map(([name]) => name);
 
 export const firebaseConfigurationReady = missingFirebaseConfig.length === 0;
-export const firebaseWorkspaceId =
-  process.env.NEXT_PUBLIC_FIREBASE_WORKSPACE_ID?.trim() || 'default';
 
 type FirebaseServices = {
   app: FirebaseApp;

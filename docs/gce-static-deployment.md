@@ -90,7 +90,6 @@ GitHub Free 개인계정의 비공개 저장소에서는 Environment secrets와 
 | `FIREBASE_STORAGE_BUCKET`      | Firebase 웹 앱의 storageBucket          |
 | `FIREBASE_MESSAGING_SENDER_ID` | Firebase 웹 앱의 messagingSenderId      |
 | `FIREBASE_APP_ID`              | Firebase 웹 앱의 appId                  |
-| `FIREBASE_WORKSPACE_ID`        | 보통 `default`                          |
 
 다음 값은 같은 화면의 Repository secrets로 등록합니다.
 
@@ -100,6 +99,8 @@ GitHub Free 개인계정의 비공개 저장소에서는 Environment secrets와 
 | `VM_KNOWN_HOSTS`     | 검증한 VM의 `known_hosts` 한 줄 |
 
 Firebase 웹 구성값은 브라우저에 포함되는 공개 식별자이지만, 저장소에 특정 프로젝트를 고정하지 않도록 배포 설정으로 주입합니다. 서비스 계정 JSON이나 Firebase Admin 키는 필요하지 않습니다.
+
+운영 데이터 작업공간은 검증된 스냅샷과 함께 워크플로에 `sheet-20260903-579dfadc`로 고정되어 있습니다. 다음 데이터 이관으로 작업공간을 바꿀 때는 새 작업공간 검증 후 워크플로와 앱 기본값을 함께 갱신합니다.
 
 ## 5. Firebase 로그인 허용
 
