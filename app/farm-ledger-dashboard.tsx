@@ -1002,7 +1002,9 @@ export function FarmLedgerDashboard({
   const [subscriptionReportEndMonth, setSubscriptionReportEndMonth] = useState(
     () => previousMonthPeriod().month,
   );
-  const [subscriptionReportProjectId, setSubscriptionReportProjectId] =
+  const [subscriptionReportProjectType, setSubscriptionReportProjectType] =
+    useState<'all' | FarmProjectType>('all');
+  const [subscriptionListProjectId, setSubscriptionListProjectId] =
     useState('all');
   const [subscriptionMode, setSubscriptionMode] =
     useState<SubscriptionMode>('management');
@@ -2254,8 +2256,8 @@ export function FarmLedgerDashboard({
     const lastDay = new Date(year, endMonth, 0).getDate();
     const cutoffDate = `${endMonthKey}-${String(lastDay).padStart(2, '0')}`;
     const projectMatches = (projectId: string) =>
-      subscriptionReportProjectId === 'all' ||
-      projectId === subscriptionReportProjectId;
+      subscriptionReportProjectType === 'all' ||
+      projectById.get(projectId)?.projectType === subscriptionReportProjectType;
     const dateInReportPeriod = (date: string) =>
       Boolean(date) &&
       date.slice(0, 4) === String(year) &&
@@ -2394,7 +2396,7 @@ export function FarmLedgerDashboard({
     farmById,
     projectById,
     subscriptionReportEndMonth,
-    subscriptionReportProjectId,
+    subscriptionReportProjectType,
     subscriptionReportYear,
     subscriptionToday,
     workspace.records,
@@ -2405,10 +2407,10 @@ export function FarmLedgerDashboard({
     () =>
       workspace.records.filter(
         (record) =>
-          subscriptionReportProjectId === 'all' ||
-          record.projectId === subscriptionReportProjectId,
+          subscriptionListProjectId === 'all' ||
+          record.projectId === subscriptionListProjectId,
       ),
-    [subscriptionReportProjectId, workspace.records],
+    [subscriptionListProjectId, workspace.records],
   );
   const subscriptionListRecords = useMemo(() => {
     const query = subscriptionListSearch.trim().toLocaleLowerCase('ko-KR');
@@ -2948,9 +2950,14 @@ export function FarmLedgerDashboard({
 
   async function copySubscriptionReport() {
     const shortYear = String(subscriptionReport.year).slice(-2);
+    const projectTypeLabel =
+      subscriptionReportProjectType === 'all'
+        ? '전체 사업 타입'
+        : FARM_PROJECT_TYPE_LABELS[subscriptionReportProjectType];
     const lines = [
       '구독 실적',
       '',
+      `- 사업 타입 : ${projectTypeLabel}`,
       `- 만료 ('${shortYear}.1~${subscriptionReport.endMonth}) : ${subscriptionReport.target}개소`,
       `- 갱신 ${subscriptionReport.renewed}개소(이탈 ${subscriptionReport.churned}개소), 재가입 ${subscriptionReport.rejoined}개소`,
       '- 만료 예정',
@@ -7328,14 +7335,16 @@ export function FarmLedgerDashboard({
                           </p>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={() => void copySubscriptionReport()}
-                          >
-                            <Copy />
-                            보고문 복사
-                          </Button>
+                          {subscriptionMode === 'report' && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => void copySubscriptionReport()}
+                            >
+                              <Copy />
+                              보고문 복사
+                            </Button>
+                          )}
                           <Button
                             type="button"
                             onClick={() => openSubscriptionEventDialog()}
@@ -7430,27 +7439,34 @@ export function FarmLedgerDashboard({
                                   </Select>
                                 </Field>
                                 <Field>
-                                  <FieldLabel>사업 범위</FieldLabel>
+                                  <FieldLabel>사업 타입</FieldLabel>
                                   <Select
-                                    value={subscriptionReportProjectId}
-                                    onValueChange={(value) =>
-                                      value &&
-                                      setSubscriptionReportProjectId(value)
-                                    }
+                                    value={subscriptionReportProjectType}
+                                    onValueChange={(value) => {
+                                      if (!value) return;
+                                      setSubscriptionReportProjectType(
+                                        value as typeof subscriptionReportProjectType,
+                                      );
+                                    }}
                                   >
                                     <SelectTrigger className="h-10 w-full">
-                                      <SelectValue />
+                                      <SelectValue>
+                                        {subscriptionReportProjectType === 'all'
+                                          ? '전체 사업 타입'
+                                          : FARM_PROJECT_TYPE_LABELS[
+                                              subscriptionReportProjectType
+                                            ]}
+                                      </SelectValue>
                                     </SelectTrigger>
                                     <SelectContent>
                                       <SelectItem value="all">
-                                        전체 사업
+                                        전체 사업 타입
                                       </SelectItem>
-                                      {workspace.projects.map((project) => (
-                                        <SelectItem
-                                          key={project.id}
-                                          value={project.id}
-                                        >
-                                          {project.year} · {project.name}
+                                      {Object.entries(
+                                        FARM_PROJECT_TYPE_LABELS,
+                                      ).map(([value, label]) => (
+                                        <SelectItem key={value} value={value}>
+                                          {label}
                                         </SelectItem>
                                       ))}
                                     </SelectContent>
@@ -7733,12 +7749,12 @@ export function FarmLedgerDashboard({
                                   </div>
                                 </Field>
                                 <Field>
-                                  <FieldLabel>사업 범위</FieldLabel>
+                                  <FieldLabel>개별 사업</FieldLabel>
                                   <Select
-                                    value={subscriptionReportProjectId}
+                                    value={subscriptionListProjectId}
                                     onValueChange={(value) => {
                                       if (!value) return;
-                                      setSubscriptionReportProjectId(value);
+                                      setSubscriptionListProjectId(value);
                                       setSubscriptionListPage(1);
                                     }}
                                   >
@@ -7863,7 +7879,7 @@ export function FarmLedgerDashboard({
                             <div className="min-w-0 space-y-3">
                               <div className="overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
                                 <Table
-                                  key={`${subscriptionReportProjectId}:${subscriptionListStatus}:${subscriptionListSearch}:${effectiveSubscriptionListPage}`}
+                                  key={`${subscriptionListProjectId}:${subscriptionListStatus}:${subscriptionListSearch}:${effectiveSubscriptionListPage}`}
                                   containerClassName="max-h-[640px] overflow-auto"
                                 >
                                   <TableHeader className="sticky top-0 z-10 bg-[#f7f9f6]">
