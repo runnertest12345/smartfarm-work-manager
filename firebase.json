@@ -5,6 +5,7 @@
   },
   "auth": {
     "providers": {
+      "emailPassword": true,
       "googleSignIn": {
         "oAuthBrandDisplayName": "팜로그 스마트팜 통합 관리",
         "supportEmail": "runner.farmos@gmail.com"

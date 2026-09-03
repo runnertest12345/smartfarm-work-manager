@@ -1,17 +1,27 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { type SubmitEvent, useEffect, useState } from 'react';
 import {
   GoogleAuthProvider,
   onAuthStateChanged,
+  signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
   type User,
 } from 'firebase/auth';
 import { doc, onSnapshot } from 'firebase/firestore';
-import { Check, Copy, Leaf, Loader2, LockKeyhole } from 'lucide-react';
+import {
+  Check,
+  Copy,
+  KeyRound,
+  Leaf,
+  Loader2,
+  LockKeyhole,
+} from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   firebaseConfigurationReady,
   getFirebaseServices,
@@ -26,6 +36,9 @@ type AccessState =
   | 'checking_member'
   | 'denied'
   | 'allowed';
+
+const SHARED_ACCESS_EMAIL =
+  'team-access@smartfarm-work-manager.firebaseapp.com';
 
 function AuthCard({ children }: { children: React.ReactNode }) {
   return (
@@ -52,7 +65,10 @@ export function FirebaseAuthGate() {
   );
   const [user, setUser] = useState<User | null>(null);
   const [message, setMessage] = useState('');
-  const [signingIn, setSigningIn] = useState(false);
+  const [password, setPassword] = useState('');
+  const [signingIn, setSigningIn] = useState<'password' | 'google' | null>(
+    null,
+  );
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -94,8 +110,8 @@ export function FirebaseAuthGate() {
     };
   }, []);
 
-  async function handleSignIn() {
-    setSigningIn(true);
+  async function handleGoogleSignIn() {
+    setSigningIn('google');
     setMessage('');
     try {
       const { auth } = getFirebaseServices();
@@ -113,7 +129,40 @@ export function FirebaseAuthGate() {
         setMessage('Google 로그인에 실패했습니다. 다시 시도해 주세요.');
       }
     } finally {
-      setSigningIn(false);
+      setSigningIn(null);
+    }
+  }
+
+  async function handlePasswordSignIn(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!password) {
+      setMessage('공용 비밀번호를 입력해 주세요.');
+      return;
+    }
+
+    setSigningIn('password');
+    setMessage('');
+    try {
+      const { auth } = getFirebaseServices();
+      await signInWithEmailAndPassword(auth, SHARED_ACCESS_EMAIL, password);
+      setPassword('');
+    } catch (error) {
+      const code =
+        typeof error === 'object' && error && 'code' in error
+          ? String(error.code)
+          : '';
+
+      if (code === 'auth/too-many-requests') {
+        setMessage(
+          '로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.',
+        );
+      } else if (code === 'auth/network-request-failed') {
+        setMessage('네트워크 연결을 확인한 뒤 다시 시도해 주세요.');
+      } else {
+        setMessage('비밀번호가 올바르지 않습니다. 다시 확인해 주세요.');
+      }
+    } finally {
+      setSigningIn(null);
     }
   }
 
@@ -163,20 +212,85 @@ export function FirebaseAuthGate() {
     return (
       <AuthCard>
         <LockKeyhole className="size-7 text-[#2f7b59]" />
-        <h1 className="mt-4 text-xl font-bold">사내 계정으로 로그인</h1>
+        <h1 className="mt-4 text-xl font-bold">관리대장 접속</h1>
         <p className="mt-2 text-sm leading-6 text-[#6f7d73]">
           농가·사업·구독 정보는 승인된 사용자만 열 수 있습니다.
         </p>
-        {message && <p className="mt-4 text-sm text-[#b65e3a]">{message}</p>}
+
+        <form
+          className="mt-6"
+          onSubmit={(event) => void handlePasswordSignIn(event)}
+        >
+          <Label htmlFor="shared-access-password">공용 비밀번호</Label>
+          <Input
+            id="shared-access-password"
+            type="password"
+            name="password"
+            value={password}
+            onChange={(event) => {
+              setPassword(event.target.value);
+              setMessage('');
+            }}
+            autoComplete="current-password"
+            autoCapitalize="none"
+            autoCorrect="off"
+            enterKeyHint="go"
+            spellCheck={false}
+            required
+            disabled={signingIn !== null}
+            aria-describedby={message ? 'sign-in-message' : undefined}
+            aria-invalid={Boolean(message)}
+            className="mt-2 h-11 rounded-xl border-[#cdd9cf] px-3"
+            placeholder="비밀번호 입력"
+          />
+          {message && (
+            <p
+              id="sign-in-message"
+              role="alert"
+              aria-live="polite"
+              className="mt-3 text-sm text-[#b65e3a]"
+            >
+              {message}
+            </p>
+          )}
+          <Button
+            type="submit"
+            disabled={signingIn !== null || !password}
+            className="mt-4 h-11 w-full rounded-xl bg-[#2f7b59] hover:bg-[#286b4d]"
+          >
+            {signingIn === 'password' ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <KeyRound />
+            )}
+            {signingIn === 'password' ? '접속 중...' : '비밀번호로 접속'}
+          </Button>
+        </form>
+
+        <div className="my-6 flex items-center gap-3" aria-hidden="true">
+          <span className="h-px flex-1 bg-[#e3e9e4]" />
+          <span className="text-xs text-[#89958c]">관리자</span>
+          <span className="h-px flex-1 bg-[#e3e9e4]" />
+        </div>
+
         <Button
           type="button"
-          onClick={() => void handleSignIn()}
-          disabled={signingIn}
-          className="mt-6 h-11 w-full rounded-xl bg-[#2f7b59] hover:bg-[#286b4d]"
+          variant="outline"
+          onClick={() => void handleGoogleSignIn()}
+          disabled={signingIn !== null}
+          className="h-11 w-full rounded-xl border-[#cdd9cf]"
         >
-          {signingIn ? <Loader2 className="animate-spin" /> : <LockKeyhole />}
-          Google 계정으로 로그인
+          {signingIn === 'google' ? (
+            <Loader2 className="animate-spin" />
+          ) : (
+            <LockKeyhole />
+          )}
+          {signingIn === 'google' ? '로그인 중...' : '관리자 Google 로그인'}
         </Button>
+        <p className="mt-4 text-xs leading-5 text-[#7b877f]">
+          공용 비밀번호로 접속하면 변경 이력은 동일한 공용 사용자로
+          기록됩니다.
+        </p>
       </AuthCard>
     );
   }
