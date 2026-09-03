@@ -49,6 +49,10 @@ import {
   type FarmWorkPriority,
   type FarmWorkStatus,
 } from '@/lib/farm-types';
+import {
+  authenticateRequest,
+  authenticationResponse,
+} from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -1386,7 +1390,9 @@ function knownErrorResponse(error: unknown) {
   return null;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const unauthorized = authenticationResponse(await authenticateRequest(request));
+  if (unauthorized) return unauthorized;
   try {
     const workspace = await listFarmLedgerWorkspace();
     return Response.json(workspace, {
@@ -1402,6 +1408,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const unauthorized = authenticationResponse(await authenticateRequest(request));
+  if (unauthorized) return unauthorized;
   try {
     const body = objectValue(await request.json());
     if (!body || typeof body.kind !== 'string')
@@ -1557,6 +1565,8 @@ export async function POST(request: Request) {
 }
 
 export async function PATCH(request: Request) {
+  const unauthorized = authenticationResponse(await authenticateRequest(request));
+  if (unauthorized) return unauthorized;
   try {
     const body = objectValue(await request.json());
     if (!body || typeof body.kind !== 'string')

@@ -42,7 +42,7 @@ import type {
   FarmWorkType,
   SubscriptionStatus,
 } from '../lib/farm-types';
-import { getD1 } from './index';
+import { getD1, type DatabaseClient } from './index';
 
 interface FarmProjectRow {
   id: string;
@@ -381,7 +381,7 @@ function systemProjectUpdate(
 }
 
 function insertProjectUpdateStatement(
-  db: D1Database,
+  db: DatabaseClient,
   update: FarmProjectUpdate,
 ) {
   return db
@@ -1193,7 +1193,7 @@ async function initializeFarmLedgerStore() {
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_farms_farm_code ON farms(farm_code)`,
     ),
     db.prepare(
-      `CREATE INDEX IF NOT EXISTS idx_farm_records_farm_project ON farm_records(farm_id, project_id)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_farm_records_farm_project ON farm_records(farm_id, project_id)`,
     ),
     db.prepare(
       `CREATE INDEX IF NOT EXISTS idx_farm_records_project_farm ON farm_records(project_id, farm_id)`,
@@ -1453,6 +1453,8 @@ async function initializeFarmLedgerStore() {
     `),
     db.prepare('PRAGMA optimize'),
   ]);
+
+  if (process.env.ENABLE_SAMPLE_DATA !== 'true') return;
 
   const seeded = await db
     .prepare('SELECT value FROM app_meta WHERE key = ?')

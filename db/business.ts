@@ -168,6 +168,8 @@ async function initializeBusinessStore() {
     db.prepare('PRAGMA optimize'),
   ]);
 
+  if (process.env.ENABLE_SAMPLE_DATA !== 'true') return;
+
   const seeded = await db
     .prepare('SELECT value FROM app_meta WHERE key = ?')
     .bind('business_workspace_seeded')

@@ -9,6 +9,10 @@ import {
   TASK_STATUSES,
   type TaskInput,
 } from '@/lib/task-types';
+import {
+  authenticateRequest,
+  authenticationResponse,
+} from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,7 +55,9 @@ function parseTaskInput(value: unknown): TaskInput | string {
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const unauthorized = authenticationResponse(await authenticateRequest(request));
+  if (unauthorized) return unauthorized;
   try {
     const tasks = await listTasks();
     return Response.json({ tasks }, { headers: { 'Cache-Control': 'no-store' } });
@@ -62,6 +68,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const unauthorized = authenticationResponse(await authenticateRequest(request));
+  if (unauthorized) return unauthorized;
   try {
     const input = parseTaskInput(await request.json());
     if (typeof input === 'string') return errorResponse(input);
@@ -74,6 +82,8 @@ export async function POST(request: Request) {
 }
 
 export async function PATCH(request: Request) {
+  const unauthorized = authenticationResponse(await authenticateRequest(request));
+  if (unauthorized) return unauthorized;
   try {
     const body = (await request.json()) as Record<string, unknown>;
     const id = typeof body.id === 'string' ? body.id.trim() : '';
@@ -91,6 +101,8 @@ export async function PATCH(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const unauthorized = authenticationResponse(await authenticateRequest(request));
+  if (unauthorized) return unauthorized;
   try {
     const id = new URL(request.url).searchParams.get('id')?.trim();
     if (!id) return errorResponse('삭제할 업무를 찾을 수 없습니다.');

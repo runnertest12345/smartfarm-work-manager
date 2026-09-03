@@ -1,12 +1,16 @@
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   check,
   index,
-  integer,
-  sqliteTable,
+  pgTable as sqliteTable,
   text,
   uniqueIndex,
-} from 'drizzle-orm/sqlite-core';
+} from 'drizzle-orm/pg-core';
+
+function integer(name: string, _config?: { mode?: 'boolean' }) {
+  return bigint(name, { mode: 'number' });
+}
 
 import type {
   HistoryChannel,
@@ -123,7 +127,7 @@ export const farmProjectDocuments = sqliteTable(
     category: text('category').$type<FarmProjectDocumentCategory>().notNull(),
     isRequired: integer('is_required', { mode: 'boolean' })
       .notNull()
-      .default(true),
+      .default(1),
     status: text('status')
       .$type<FarmProjectDocumentStatus>()
       .notNull()
@@ -286,7 +290,10 @@ export const farmRecords = sqliteTable(
       'chk_farm_records_subscription_status',
       sql`${table.subscriptionStatus} IN ('active', 'expired', 'unregistered')`,
     ),
-    index('idx_farm_records_farm_project').on(table.farmId, table.projectId),
+    uniqueIndex('idx_farm_records_farm_project').on(
+      table.farmId,
+      table.projectId,
+    ),
     index('idx_farm_records_project_farm').on(table.projectId, table.farmId),
     index('idx_farm_records_subscription_expiry').on(
       table.subscriptionStatus,
@@ -419,7 +426,7 @@ export const farmWorkChecklistItems = sqliteTable(
     content: text('content').notNull(),
     isCompleted: integer('is_completed', { mode: 'boolean' })
       .notNull()
-      .default(false),
+      .default(0),
     sortOrder: integer('sort_order').notNull().default(0),
     completedBy: text('completed_by').notNull().default(''),
     completedAt: integer('completed_at').notNull().default(0),

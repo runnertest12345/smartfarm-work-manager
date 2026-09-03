@@ -13,6 +13,10 @@ import {
   type ProjectInput,
   type WorkItemInput,
 } from '@/lib/business-types';
+import {
+  authenticateRequest,
+  authenticationResponse,
+} from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -135,7 +139,9 @@ function parseHistoryInput(
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const unauthorized = authenticationResponse(await authenticateRequest(request));
+  if (unauthorized) return unauthorized;
   try {
     const workspace = await listBusinessWorkspace();
     return Response.json(workspace, { headers: { 'Cache-Control': 'no-store' } });
@@ -146,6 +152,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const unauthorized = authenticationResponse(await authenticateRequest(request));
+  if (unauthorized) return unauthorized;
   try {
     const body = (await request.json()) as Record<string, unknown>;
     const kind = body.kind;
