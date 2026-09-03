@@ -48,11 +48,13 @@ import {
   type FarmRecordInput,
   type FarmSubscriptionEvent,
   type FarmSubscriptionEventInput,
+  type FarmSubscriptionExpiryCorrectionInput,
   type FarmWorkChecklistItem,
   type FarmWorkItem,
   type FarmWorkItemInput,
   type FarmWorkVisit,
   type FarmWorkVisitInput,
+  type SubscriptionStatus,
 } from '@/lib/farm-types';
 
 import {
@@ -159,6 +161,24 @@ function assertEnum<T extends string>(
   message: string,
 ): asserts value is T {
   if (!(allowed as readonly string[]).includes(value)) throw new Error(message);
+}
+
+function isValidIsoDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return (
+    Number.isFinite(parsed.getTime()) &&
+    parsed.toISOString().slice(0, 10) === value
+  );
+}
+
+function localDateAt(timestamp = Date.now()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(timestamp));
 }
 
 function parseProjectInput(value: unknown): FarmProjectInput {
@@ -368,6 +388,8 @@ function parseSubscriptionEventInput(
     value,
     {
       farmRecordId: 'string',
+      expectedCurrentExpiryDate: 'string',
+      expectedUpdatedAt: 'number',
       eventType: 'string',
       basisExpiryDate: 'string',
       processedAt: 'string',
@@ -384,11 +406,56 @@ function parseSubscriptionEventInput(
   );
   if (
     !input.farmRecordId ||
+    (input.expectedCurrentExpiryDate !== '' &&
+      !isValidIsoDate(input.expectedCurrentExpiryDate)) ||
+    !Number.isFinite(input.expectedUpdatedAt) ||
+    input.expectedUpdatedAt < 0 ||
     !input.basisExpiryDate ||
     !input.processedAt ||
     !input.recorder
   ) {
     throw new Error('구독 기준일, 처리일과 담당자를 입력해 주세요.');
+  }
+  if (
+    !isValidIsoDate(input.basisExpiryDate) ||
+    !isValidIsoDate(input.processedAt) ||
+    (input.eventType !== 'churned' &&
+      (!isValidIsoDate(input.newExpiryDate) ||
+        input.newExpiryDate <= input.basisExpiryDate)) ||
+    (input.eventType === 'churned' && input.newExpiryDate)
+  ) {
+    throw new Error('구독 기준일, 처리일과 새 만료일을 확인해 주세요.');
+  }
+  return input;
+}
+
+function parseSubscriptionExpiryCorrectionInput(
+  value: unknown,
+): FarmSubscriptionExpiryCorrectionInput {
+  const input = parseShape<FarmSubscriptionExpiryCorrectionInput>(
+    value,
+    {
+      farmRecordId: 'string',
+      expectedCurrentExpiryDate: 'string',
+      expectedUpdatedAt: 'number',
+      expiryDate: 'string',
+      recorder: 'string',
+      note: 'string',
+    },
+    '구독 만료일 입력값을 확인해 주세요.',
+  );
+  if (
+    !input.farmRecordId ||
+    (input.expectedCurrentExpiryDate !== '' &&
+      !isValidIsoDate(input.expectedCurrentExpiryDate)) ||
+    !Number.isFinite(input.expectedUpdatedAt) ||
+    input.expectedUpdatedAt < 0 ||
+    !isValidIsoDate(input.expiryDate) ||
+    !input.recorder ||
+    input.recorder.length > 100 ||
+    input.note.length > 1000
+  ) {
+    throw new Error('만료일, 변경 담당자와 메모를 확인해 주세요.');
   }
   return input;
 }
@@ -1498,65 +1565,64 @@ async function updateRecord(
   recorder: string,
 ) {
   const workspace = currentWorkspace();
-  const existing = workspace.records.find((item) => item.id === recordId);
-  if (!existing) throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
+  const cachedRecord = workspace.records.find((item) => item.id === recordId);
+  if (!cachedRecord)
+    throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
   const nextProject = workspace.projects.find(
     (item) => item.id === input.projectId,
   );
   if (!nextProject) throw new Error('선택한 사업을 찾을 수 없습니다.');
-  const previousProject = workspace.projects.find(
-    (item) => item.id === existing.projectId,
-  );
-  if (
-    existing.projectId !== input.projectId &&
-    (nextProject.status === 'completed' ||
-      previousProject?.status === 'completed')
-  ) {
-    throw new Error('완료된 사업의 농가 연결은 변경할 수 없습니다.');
-  }
   if (
     workspace.records.some(
       (item) =>
         item.id !== recordId &&
-        item.farmId === existing.farmId &&
+        item.farmId === cachedRecord.farmId &&
         item.projectId === input.projectId,
     )
   ) {
     throw new Error('이 농가는 이미 같은 프로젝트에 등록되어 있습니다.');
   }
-  const hasSubscriptionEvents = workspace.subscriptionEvents.some(
-    (item) => item.farmRecordId === recordId,
-  );
   if (
-    hasSubscriptionEvents &&
-    (existing.currentSubscriptionExpiresAt !==
+    cachedRecord.currentSubscriptionExpiresAt !==
       input.currentSubscriptionExpiresAt ||
-      existing.renewalCount !== input.renewalCount ||
-      existing.subscriptionStatus !== input.subscriptionStatus)
+    cachedRecord.renewalCount !== input.renewalCount ||
+    cachedRecord.subscriptionStatus !== input.subscriptionStatus
   ) {
     throw new Error(
-      '구독 처리 이력이 있는 농가는 구독 처리 등록에서 상태와 만료일을 변경해 주세요.',
+      '현재 만료일, 구독 상태와 갱신횟수는 전용 구독 관리에서 변경해 주세요.',
     );
   }
   const now = Date.now();
-  const record: FarmRecord = {
-    ...existing,
-    ...input,
-    lastActivityAt: Math.max(existing.lastActivityAt, now),
-    updatedAt: now,
-  };
-  const { workItem, historyEntry } = auditArtifacts(
-    record.farmId,
-    record.id,
-    recorder,
-    '사업 참여 정보 수정',
-    recordChangeSummary(existing, input),
-    now,
-  );
-  const oldClaimId = recordKey(existing.farmId, existing.projectId);
-  const newClaimId = recordKey(existing.farmId, input.projectId);
   const { db } = getFirebaseServices();
-  await runTransaction(db, async (transaction) => {
+  const recordRef = documentRef('records', recordId);
+  return runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(recordRef);
+    if (!snapshot.exists()) {
+      throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
+    }
+    const existing = snapshot.data() as FarmRecord;
+    const previousProject = workspace.projects.find(
+      (item) => item.id === existing.projectId,
+    );
+    if (
+      existing.projectId !== input.projectId &&
+      (nextProject.status === 'completed' ||
+        previousProject?.status === 'completed')
+    ) {
+      throw new Error('완료된 사업의 농가 연결은 변경할 수 없습니다.');
+    }
+    if (
+      existing.currentSubscriptionExpiresAt !==
+        input.currentSubscriptionExpiresAt ||
+      existing.renewalCount !== input.renewalCount ||
+      existing.subscriptionStatus !== input.subscriptionStatus
+    ) {
+      throw new Error(
+        '구독 정보가 변경되었습니다. 최신 내용을 확인한 뒤 다시 수정해 주세요.',
+      );
+    }
+    const oldClaimId = recordKey(existing.farmId, existing.projectId);
+    const newClaimId = recordKey(existing.farmId, input.projectId);
     if (oldClaimId !== newClaimId) {
       const oldClaimRef = internalDocumentRef(
         'farmRecordReservations',
@@ -1590,21 +1656,35 @@ async function updateRecord(
           ? updatedData({
               ...newClaim.data(),
               id: newClaimId,
-              entityId: record.id,
+              entityId: existing.id,
               active: true,
               createdAt: newClaim.data().createdAt,
               updatedAt: now,
             })
           : createdData({
               id: newClaimId,
-              entityId: record.id,
+              entityId: existing.id,
               active: true,
               createdAt: now,
               updatedAt: now,
             }),
       );
     }
-    transaction.set(documentRef('records', record.id), updatedData(record));
+    const record: FarmRecord = {
+      ...existing,
+      ...input,
+      lastActivityAt: Math.max(existing.lastActivityAt, now),
+      updatedAt: now,
+    };
+    const { workItem, historyEntry } = auditArtifacts(
+      record.farmId,
+      record.id,
+      recorder,
+      '사업 참여 정보 수정',
+      recordChangeSummary(existing, input),
+      now,
+    );
+    transaction.set(recordRef, updatedData(record));
     transaction.set(
       documentRef('workItems', workItem.id),
       createdData(workItem),
@@ -1623,26 +1703,21 @@ async function updateRecord(
         updatedByUid: requireSignedInUser().uid,
       });
     }
+    return { record, workItem, historyEntry };
   });
-  return { record, workItem, historyEntry };
 }
 
 async function createSubscriptionEvent(input: FarmSubscriptionEventInput) {
   const workspace = currentWorkspace();
-  const record = workspace.records.find(
+  const cachedRecord = workspace.records.find(
     (item) => item.id === input.farmRecordId,
   );
-  if (!record) throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
-  const farm = workspace.farms.find((item) => item.id === record.farmId);
-  const project = workspace.projects.find(
-    (item) => item.id === record.projectId,
-  );
-  if (!farm || !project)
-    throw new Error('연결된 농가 또는 사업을 찾을 수 없습니다.');
+  if (!cachedRecord)
+    throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
   if (
     workspace.subscriptionEvents.some(
       (item) =>
-        item.farmRecordId === record.id &&
+        item.farmRecordId === cachedRecord.id &&
         item.basisExpiryDate === input.basisExpiryDate,
     )
   ) {
@@ -1650,88 +1725,217 @@ async function createSubscriptionEvent(input: FarmSubscriptionEventInput) {
       '이 만료 회차의 갱신 또는 이탈 결과가 이미 등록되어 있습니다.',
     );
   }
-  if (
-    input.eventType !== 'rejoined' &&
-    record.currentSubscriptionExpiresAt &&
-    input.basisExpiryDate > record.currentSubscriptionExpiresAt
-  ) {
-    throw new Error('기준 만료일이 현재 구독 만료일보다 늦습니다.');
-  }
   const priorChurn = workspace.subscriptionEvents.some(
-    (item) => item.farmRecordId === record.id && item.eventType === 'churned',
+    (item) =>
+      item.farmRecordId === cachedRecord.id && item.eventType === 'churned',
   );
-  if (
-    input.eventType === 'rejoined' &&
-    record.subscriptionStatus !== 'expired' &&
-    !priorChurn
-  ) {
-    throw new Error(
-      '재가입은 만료 또는 이탈 이력이 있는 구독에만 등록할 수 있습니다.',
-    );
-  }
   const now = Date.now();
-  const subscriptionEvent: FarmSubscriptionEvent = {
-    id: crypto.randomUUID(),
-    projectId: record.projectId,
-    ...input,
-    createdAt: now,
-  };
-  let nextExpiry = record.currentSubscriptionExpiresAt;
-  let nextStatus = record.subscriptionStatus;
-  let nextRenewalCount = record.renewalCount;
-  if (
-    ['renewed', 'rejoined'].includes(subscriptionEvent.eventType) &&
-    subscriptionEvent.newExpiryDate > nextExpiry
-  ) {
-    nextExpiry = subscriptionEvent.newExpiryDate;
-    nextStatus = 'active';
-    if (subscriptionEvent.eventType === 'renewed') nextRenewalCount += 1;
-  } else if (
-    subscriptionEvent.eventType === 'churned' &&
-    (!nextExpiry || subscriptionEvent.basisExpiryDate >= nextExpiry)
-  ) {
-    nextExpiry ||= subscriptionEvent.basisExpiryDate;
-    nextStatus = 'expired';
-  }
-  const label = {
-    renewed: '갱신',
-    churned: '이탈',
-    rejoined: '재가입',
-  }[subscriptionEvent.eventType];
-  const resultText = subscriptionEvent.newExpiryDate
-    ? `${subscriptionEvent.basisExpiryDate} 만료 구독을 ${subscriptionEvent.newExpiryDate}까지 ${label} 처리했습니다.`
-    : `${subscriptionEvent.basisExpiryDate} 만료 구독을 ${label} 처리했습니다.`;
-  const occurredAt = Date.parse(
-    `${subscriptionEvent.processedAt}T00:00:00+09:00`,
-  );
-  const { workItem, historyEntry } = auditArtifacts(
-    farm.id,
-    record.id,
-    subscriptionEvent.recorder,
-    `구독 ${label} 처리`,
-    subscriptionEvent.note
-      ? `${resultText}\n메모: ${subscriptionEvent.note}`
-      : resultText,
-    Number.isFinite(occurredAt) ? occurredAt : now,
-  );
-  workItem.workType = 'subscription';
-  const updatedRecord: FarmRecord = {
-    ...record,
-    currentSubscriptionExpiresAt: nextExpiry,
-    renewalCount: nextRenewalCount,
-    subscriptionStatus: nextStatus,
-    lastActivityAt: now,
-    updatedAt: now,
-  };
-  const batch = writeBatch(getFirebaseServices().db);
-  setCreated(batch, 'subscriptionEvents', subscriptionEvent);
-  setUpdated(batch, 'records', updatedRecord);
-  setCreated(batch, 'workItems', workItem);
-  setCreated(batch, 'historyEntries', historyEntry);
-  touch(batch, 'farms', farm.id, now);
-  touch(batch, 'projects', project.id, now);
-  await batch.commit();
-  return { subscriptionEvent };
+  const { db } = getFirebaseServices();
+  const recordRef = documentRef('records', input.farmRecordId);
+  return runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(recordRef);
+    if (!snapshot.exists()) {
+      throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
+    }
+    const record = snapshot.data() as FarmRecord;
+    if (
+      record.currentSubscriptionExpiresAt !== input.expectedCurrentExpiryDate ||
+      record.updatedAt !== input.expectedUpdatedAt
+    ) {
+      throw new Error(
+        '다른 사용자가 이 구독 정보를 변경했습니다. 최신 내용을 확인한 뒤 다시 처리해 주세요.',
+      );
+    }
+    const farm = workspace.farms.find((item) => item.id === record.farmId);
+    const project = workspace.projects.find(
+      (item) => item.id === record.projectId,
+    );
+    if (!farm || !project) {
+      throw new Error(
+        '연결된 농가 또는 사업이 변경되었습니다. 최신 내용을 확인해 주세요.',
+      );
+    }
+    if (
+      input.eventType !== 'rejoined' &&
+      record.currentSubscriptionExpiresAt &&
+      input.basisExpiryDate > record.currentSubscriptionExpiresAt
+    ) {
+      throw new Error('기준 만료일이 현재 구독 만료일보다 늦습니다.');
+    }
+    if (
+      input.eventType === 'rejoined' &&
+      record.subscriptionStatus !== 'expired' &&
+      !priorChurn
+    ) {
+      throw new Error(
+        '재가입은 만료 또는 이탈 이력이 있는 구독에만 등록할 수 있습니다.',
+      );
+    }
+    const subscriptionEvent: FarmSubscriptionEvent = {
+      id: crypto.randomUUID(),
+      farmRecordId: input.farmRecordId,
+      projectId: record.projectId,
+      eventType: input.eventType,
+      basisExpiryDate: input.basisExpiryDate,
+      processedAt: input.processedAt,
+      newExpiryDate: input.newExpiryDate,
+      recorder: input.recorder,
+      note: input.note,
+      createdAt: now,
+    };
+    let nextExpiry = record.currentSubscriptionExpiresAt;
+    let nextStatus = record.subscriptionStatus;
+    let nextRenewalCount = record.renewalCount;
+    if (
+      ['renewed', 'rejoined'].includes(subscriptionEvent.eventType) &&
+      subscriptionEvent.newExpiryDate > nextExpiry
+    ) {
+      nextExpiry = subscriptionEvent.newExpiryDate;
+      nextStatus = 'active';
+      if (subscriptionEvent.eventType === 'renewed') nextRenewalCount += 1;
+    } else if (
+      subscriptionEvent.eventType === 'churned' &&
+      (!nextExpiry || subscriptionEvent.basisExpiryDate >= nextExpiry)
+    ) {
+      nextExpiry ||= subscriptionEvent.basisExpiryDate;
+      nextStatus = 'expired';
+    }
+    const label = {
+      renewed: '갱신',
+      churned: '이탈',
+      rejoined: '재가입',
+    }[subscriptionEvent.eventType];
+    const resultText = subscriptionEvent.newExpiryDate
+      ? `${subscriptionEvent.basisExpiryDate} 만료 구독을 ${subscriptionEvent.newExpiryDate}까지 ${label} 처리했습니다.`
+      : `${subscriptionEvent.basisExpiryDate} 만료 구독을 ${label} 처리했습니다.`;
+    const occurredAt = Date.parse(
+      `${subscriptionEvent.processedAt}T00:00:00+09:00`,
+    );
+    const { workItem, historyEntry } = auditArtifacts(
+      farm.id,
+      record.id,
+      subscriptionEvent.recorder,
+      `구독 ${label} 처리`,
+      subscriptionEvent.note
+        ? `${resultText}\n메모: ${subscriptionEvent.note}`
+        : resultText,
+      Number.isFinite(occurredAt) ? occurredAt : now,
+    );
+    workItem.workType = 'subscription';
+    transaction.set(
+      documentRef('subscriptionEvents', subscriptionEvent.id),
+      createdData(subscriptionEvent),
+    );
+    transaction.update(recordRef, {
+      currentSubscriptionExpiresAt: nextExpiry,
+      renewalCount: nextRenewalCount,
+      subscriptionStatus: nextStatus,
+      lastActivityAt: Math.max(record.lastActivityAt, now),
+      updatedAt: now,
+      updatedByUid: requireSignedInUser().uid,
+    });
+    transaction.set(
+      documentRef('workItems', workItem.id),
+      createdData(workItem),
+    );
+    transaction.set(
+      documentRef('historyEntries', historyEntry.id),
+      createdData(historyEntry),
+    );
+    transaction.update(documentRef('farms', farm.id), {
+      updatedAt: now,
+      updatedByUid: requireSignedInUser().uid,
+    });
+    transaction.update(documentRef('projects', project.id), {
+      updatedAt: now,
+      updatedByUid: requireSignedInUser().uid,
+    });
+    return { subscriptionEvent };
+  });
+}
+
+async function correctSubscriptionExpiry(
+  input: FarmSubscriptionExpiryCorrectionInput,
+) {
+  const { db } = getFirebaseServices();
+  const recordRef = documentRef('records', input.farmRecordId);
+  return runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(recordRef);
+    if (!snapshot.exists()) {
+      throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
+    }
+    const existing = snapshot.data() as FarmRecord;
+    if (
+      existing.currentSubscriptionExpiresAt !==
+        input.expectedCurrentExpiryDate ||
+      existing.updatedAt !== input.expectedUpdatedAt
+    ) {
+      throw new Error(
+        '다른 사용자가 이 농가 정보를 변경했습니다. 최신 내용을 확인한 뒤 다시 입력해 주세요.',
+      );
+    }
+    if (existing.currentSubscriptionExpiresAt === input.expiryDate) {
+      throw new Error('현재 만료일과 같은 날짜입니다.');
+    }
+    const now = Date.now();
+    const subscriptionStatus: SubscriptionStatus =
+      input.expiryDate >= localDateAt(now) ? 'active' : 'expired';
+    const initialSubscriptionExpiresAt =
+      existing.initialSubscriptionExpiresAt || input.expiryDate;
+    const before = existing.currentSubscriptionExpiresAt || '미입력';
+    const actionContent = [
+      `구독 만료일을 ${before}에서 ${input.expiryDate}(으)로 입력·정정했습니다.`,
+      `구독 상태: ${subscriptionStatus === 'active' ? '사용중' : '만료'}`,
+      input.note ? `메모: ${input.note}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const { workItem, historyEntry } = auditArtifacts(
+      existing.farmId,
+      existing.id,
+      input.recorder,
+      existing.currentSubscriptionExpiresAt
+        ? '구독 만료일 정정'
+        : '구독 만료일 입력',
+      actionContent,
+      now,
+    );
+    workItem.workType = 'subscription';
+    const record: FarmRecord = {
+      ...existing,
+      initialSubscriptionExpiresAt,
+      currentSubscriptionExpiresAt: input.expiryDate,
+      subscriptionStatus,
+      lastActivityAt: Math.max(existing.lastActivityAt, now),
+      updatedAt: now,
+    };
+    transaction.update(recordRef, {
+      initialSubscriptionExpiresAt,
+      currentSubscriptionExpiresAt: input.expiryDate,
+      subscriptionStatus,
+      lastActivityAt: record.lastActivityAt,
+      updatedAt: now,
+      updatedByUid: requireSignedInUser().uid,
+    });
+    transaction.set(
+      documentRef('workItems', workItem.id),
+      createdData(workItem),
+    );
+    transaction.set(
+      documentRef('historyEntries', historyEntry.id),
+      createdData(historyEntry),
+    );
+    for (const [key, id] of [
+      ['farms', existing.farmId],
+      ['projects', existing.projectId],
+    ] as const) {
+      transaction.update(documentRef(key, id), {
+        updatedAt: now,
+        updatedByUid: requireSignedInUser().uid,
+      });
+    }
+    return { record, workItem, historyEntry };
+  });
 }
 
 async function createInboxItem(input: FarmInboxItemInput) {
@@ -1894,7 +2098,26 @@ async function createWorkItem(
       updatedAt: now,
     });
   }
-  touchActivity(batch, 'records', record.id, now, now);
+  const paymentHistoryEntry =
+    transitionHistory && transitionHistory.amount > 0
+      ? transitionHistory
+      : historyEntry.amount > 0
+        ? historyEntry
+        : null;
+  if (workItem.workType === 'payment' && paymentHistoryEntry) {
+    const paymentDate = localDateAt(paymentHistoryEntry.occurredAt);
+    batch.update(documentRef('records', record.id), {
+      lastPaymentDate:
+        paymentDate > record.lastPaymentDate
+          ? paymentDate
+          : record.lastPaymentDate,
+      lastActivityAt: Math.max(record.lastActivityAt, now),
+      updatedAt: now,
+      updatedByUid: requireSignedInUser().uid,
+    });
+  } else {
+    touchActivity(batch, 'records', record.id, now, now);
+  }
   touch(batch, 'farms', record.farmId, now);
   touch(batch, 'projects', record.projectId, now);
   await batch.commit();
@@ -2083,13 +2306,26 @@ async function addHistoryEntry(input: AddFarmHistoryEntryInput) {
       setCreated(batch, 'blockerEpisodes', nextEpisode);
     else setUpdated(batch, 'blockerEpisodes', nextEpisode);
   }
-  touchActivity(
-    batch,
-    'records',
-    record.id,
-    Math.max(record.lastActivityAt, input.occurredAt),
-    now,
-  );
+  if (workItem.workType === 'payment' && historyEntry.amount > 0) {
+    const paymentDate = localDateAt(historyEntry.occurredAt);
+    batch.update(documentRef('records', record.id), {
+      lastPaymentDate:
+        paymentDate > record.lastPaymentDate
+          ? paymentDate
+          : record.lastPaymentDate,
+      lastActivityAt: Math.max(record.lastActivityAt, input.occurredAt),
+      updatedAt: now,
+      updatedByUid: requireSignedInUser().uid,
+    });
+  } else {
+    touchActivity(
+      batch,
+      'records',
+      record.id,
+      Math.max(record.lastActivityAt, input.occurredAt),
+      now,
+    );
+  }
   touch(batch, 'farms', record.farmId, now);
   touch(batch, 'projects', record.projectId, now);
   await batch.commit();
@@ -2328,6 +2564,12 @@ async function mutateFarmLedger(method: string, body: JsonObject) {
   if (kind === 'subscription_event' && method === 'POST') {
     return createSubscriptionEvent(
       parseSubscriptionEventInput(body.subscriptionEvent),
+    );
+  }
+
+  if (kind === 'subscription_expiry_correction' && method === 'PATCH') {
+    return correctSubscriptionExpiry(
+      parseSubscriptionExpiryCorrectionInput(body.correction),
     );
   }
 

@@ -80,6 +80,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Toaster, toast } from '@/components/ui/toast';
 import {
@@ -158,6 +159,7 @@ type DialogKind =
   | 'project_update'
   | 'project_blocker_resolve'
   | 'subscription_event'
+  | 'subscription_expiry'
   | 'work_item'
   | 'inbox'
   | 'inbox_route'
@@ -170,11 +172,13 @@ type FormSubmitEvent = Parameters<
 type WorkType = FarmWorkItem['workType'];
 type WorkStatus = FarmWorkItem['status'];
 type WorkMode = 'inbox' | 'control' | 'board' | 'list' | 'review';
+type SubscriptionMode = 'management' | 'report';
 type HistoryChannel = FarmHistoryEntry['channel'];
 
 const FARM_LOG_TYPE_LABELS = FARM_WORK_TYPE_LABELS;
 const FARM_LOG_STATUS_LABELS = FARM_WORK_STATUS_LABELS;
 const FARM_LOG_CHANNEL_LABELS = FARM_HISTORY_CHANNEL_LABELS;
+const SUBSCRIPTION_PAGE_SIZE = 20;
 
 interface FarmForm extends FarmInput, FarmRecordInput {
   recorder: string;
@@ -262,10 +266,21 @@ interface VisitForm {
 
 interface SubscriptionEventForm {
   farmRecordId: string;
+  expectedCurrentExpiryDate: string;
+  expectedUpdatedAt: number;
   eventType: FarmSubscriptionEventType;
   basisExpiryDate: string;
   processedAt: string;
   newExpiryDate: string;
+  recorder: string;
+  note: string;
+}
+
+interface SubscriptionExpiryForm {
+  farmRecordId: string;
+  expectedCurrentExpiryDate: string;
+  expectedUpdatedAt: number;
+  expiryDate: string;
   recorder: string;
   note: string;
 }
@@ -561,16 +576,34 @@ function farmCropLabels(records: FarmRecord[]) {
   return labels.length ? labels : ['작목 미입력'];
 }
 
+function effectiveRecordSubscriptionStatus(
+  record: FarmRecord,
+  today: string,
+): SubscriptionStatus {
+  if (
+    record.subscriptionStatus === 'active' &&
+    Boolean(record.currentSubscriptionExpiresAt) &&
+    record.currentSubscriptionExpiresAt >= today
+  ) {
+    return 'active';
+  }
+  if (
+    record.subscriptionStatus === 'expired' ||
+    (Boolean(record.currentSubscriptionExpiresAt) &&
+      record.currentSubscriptionExpiresAt < today)
+  ) {
+    return 'expired';
+  }
+  return 'unregistered';
+}
+
 function effectiveFarmSubscriptionStatus(
   records: FarmRecord[],
   today: string,
 ): SubscriptionStatus {
   if (
     records.some(
-      (record) =>
-        record.subscriptionStatus === 'active' &&
-        Boolean(record.currentSubscriptionExpiresAt) &&
-        record.currentSubscriptionExpiresAt >= today,
+      (record) => effectiveRecordSubscriptionStatus(record, today) === 'active',
     )
   ) {
     return 'active';
@@ -578,9 +611,7 @@ function effectiveFarmSubscriptionStatus(
   if (
     records.some(
       (record) =>
-        record.subscriptionStatus === 'expired' ||
-        (Boolean(record.currentSubscriptionExpiresAt) &&
-          record.currentSubscriptionExpiresAt < today),
+        effectiveRecordSubscriptionStatus(record, today) === 'expired',
     )
   ) {
     return 'expired';
@@ -780,12 +811,28 @@ function emptySubscriptionEventForm(
 ): SubscriptionEventForm {
   return {
     farmRecordId: record?.id ?? '',
+    expectedCurrentExpiryDate: record?.currentSubscriptionExpiresAt ?? '',
+    expectedUpdatedAt: record?.updatedAt ?? 0,
     eventType: 'renewed',
     basisExpiryDate: record?.currentSubscriptionExpiresAt ?? '',
     processedAt: localDateString(),
     newExpiryDate: record?.currentSubscriptionExpiresAt
       ? addYears(record.currentSubscriptionExpiresAt, 1)
       : '',
+    recorder,
+    note: '',
+  };
+}
+
+function emptySubscriptionExpiryForm(
+  record?: FarmRecord,
+  recorder = '',
+): SubscriptionExpiryForm {
+  return {
+    farmRecordId: record?.id ?? '',
+    expectedCurrentExpiryDate: record?.currentSubscriptionExpiresAt ?? '',
+    expectedUpdatedAt: record?.updatedAt ?? 0,
+    expiryDate: record?.currentSubscriptionExpiresAt ?? '',
     recorder,
     note: '',
   };
@@ -957,6 +1004,13 @@ export function FarmLedgerDashboard({
   );
   const [subscriptionReportProjectId, setSubscriptionReportProjectId] =
     useState('all');
+  const [subscriptionMode, setSubscriptionMode] =
+    useState<SubscriptionMode>('management');
+  const [subscriptionListSearch, setSubscriptionListSearch] = useState('');
+  const [subscriptionListStatus, setSubscriptionListStatus] = useState<
+    'all' | SubscriptionStatus
+  >('all');
+  const [subscriptionListPage, setSubscriptionListPage] = useState(1);
   const [selectedFarmId, setSelectedFarmId] = useState('');
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [selectedWorkItemId, setSelectedWorkItemId] = useState('');
@@ -987,6 +1041,8 @@ export function FarmLedgerDashboard({
   const [inboxForm, setInboxForm] = useState<InboxForm>(() => emptyInboxForm());
   const [subscriptionEventForm, setSubscriptionEventForm] =
     useState<SubscriptionEventForm>(() => emptySubscriptionEventForm());
+  const [subscriptionExpiryForm, setSubscriptionExpiryForm] =
+    useState<SubscriptionExpiryForm>(() => emptySubscriptionExpiryForm());
   const [clarifyingInboxId, setClarifyingInboxId] = useState('');
   const [inboxRouteFarmId, setInboxRouteFarmId] = useState('');
   const [inboxRouteRecordId, setInboxRouteRecordId] = useState('');
@@ -1216,6 +1272,14 @@ export function FarmLedgerDashboard({
     ? (workItemsByFarm.get(selectedFarm.id) ?? [])
     : [];
   const selectedWorkItem = workItemById.get(selectedWorkItemId) ?? null;
+  const subscriptionExpiryRecord =
+    recordById.get(subscriptionExpiryForm.farmRecordId) ?? null;
+  const subscriptionExpiryFarm = subscriptionExpiryRecord
+    ? (farmById.get(subscriptionExpiryRecord.farmId) ?? null)
+    : null;
+  const subscriptionExpiryProject = subscriptionExpiryRecord
+    ? (projectById.get(subscriptionExpiryRecord.projectId) ?? null)
+    : null;
   const selectedWorkHistory = selectedWorkItem
     ? (historiesByWorkItem.get(selectedWorkItem.id) ?? [])
     : [];
@@ -1572,6 +1636,25 @@ export function FarmLedgerDashboard({
       ? records[0]
       : (records.find((record) => record.projectId === projectFilter) ??
           records[0]);
+  }
+
+  function subscriptionRecordsForFarm(farm: Farm) {
+    const records = recordsByFarm.get(farm.id) ?? [];
+    const scoped =
+      projectFilter === 'all'
+        ? records
+        : records.filter((record) => record.projectId === projectFilter);
+    return [...scoped].sort((left, right) => {
+      const leftMissing = left.currentSubscriptionExpiresAt ? 0 : 1;
+      const rightMissing = right.currentSubscriptionExpiresAt ? 0 : 1;
+      return (
+        leftMissing - rightMissing ||
+        left.currentSubscriptionExpiresAt.localeCompare(
+          right.currentSubscriptionExpiresAt,
+        ) ||
+        left.id.localeCompare(right.id)
+      );
+    });
   }
 
   const filteredFarms = useMemo(() => {
@@ -2042,39 +2125,6 @@ export function FarmLedgerDashboard({
       (item): item is { entry: FarmHistoryEntry; workItem: FarmWorkItem } =>
         item.workItem?.workType === 'payment' && item.entry.amount > 0,
     );
-  const paymentFarmCount = new Set(
-    paymentHistory.map(({ workItem }) => workItem.farmId),
-  ).size;
-  const averagePayment = paymentFarmCount
-    ? Math.round(
-        paymentHistory.reduce((sum, { entry }) => sum + entry.amount, 0) /
-          paymentFarmCount,
-      )
-    : 0;
-  const expiringSoonRecords = workspace.records.filter((record) => {
-    const days = daysUntil(record.currentSubscriptionExpiresAt);
-    return (
-      record.subscriptionStatus === 'active' &&
-      days !== null &&
-      days >= 0 &&
-      days <= 90
-    );
-  });
-  const monthlyPayments = countValues(
-    paymentHistory.map(({ entry }) =>
-      localDateString(new Date(entry.occurredAt)).slice(0, 7),
-    ),
-  )
-    .map((month) => ({
-      ...month,
-      amount: paymentHistory
-        .filter(({ entry }) =>
-          localDateString(new Date(entry.occurredAt)).startsWith(month.label),
-        )
-        .reduce((sum, { entry }) => sum + entry.amount, 0),
-    }))
-    .sort((a, b) => b.label.localeCompare(a.label))
-    .slice(0, 6);
 
   const qualityIssues = useMemo(() => {
     const issues: QualityIssue[] = [];
@@ -2257,7 +2307,8 @@ export function FarmLedgerDashboard({
 
     const upcomingRecords = relevantRecords.filter(
       (record) =>
-        record.subscriptionStatus === 'active' &&
+        effectiveRecordSubscriptionStatus(record, subscriptionToday) ===
+          'active' &&
         Boolean(record.currentSubscriptionExpiresAt) &&
         record.currentSubscriptionExpiresAt > cutoffDate,
     );
@@ -2345,17 +2396,130 @@ export function FarmLedgerDashboard({
     subscriptionReportEndMonth,
     subscriptionReportProjectId,
     subscriptionReportYear,
+    subscriptionToday,
     workspace.records,
     workspace.subscriptionEvents,
   ]);
 
+  const subscriptionScopedRecords = useMemo(
+    () =>
+      workspace.records.filter(
+        (record) =>
+          subscriptionReportProjectId === 'all' ||
+          record.projectId === subscriptionReportProjectId,
+      ),
+    [subscriptionReportProjectId, workspace.records],
+  );
+  const subscriptionListRecords = useMemo(() => {
+    const query = subscriptionListSearch.trim().toLocaleLowerCase('ko-KR');
+    return subscriptionScopedRecords
+      .filter((record) => {
+        const farm = farmById.get(record.farmId);
+        const project = projectById.get(record.projectId);
+        const status = effectiveRecordSubscriptionStatus(
+          record,
+          subscriptionToday,
+        );
+        const searchable = [
+          farm?.farmCode ?? '',
+          farm?.name ?? '',
+          farm?.region ?? '',
+          project?.name ?? '',
+          record.currentSubscriptionExpiresAt,
+          record.lastPaymentDate,
+        ]
+          .join(' ')
+          .toLocaleLowerCase('ko-KR');
+        return (
+          (!query || searchable.includes(query)) &&
+          (subscriptionListStatus === 'all' ||
+            status === subscriptionListStatus)
+        );
+      })
+      .sort((left, right) => {
+        const expiry = (
+          left.currentSubscriptionExpiresAt || '9999-12-31'
+        ).localeCompare(right.currentSubscriptionExpiresAt || '9999-12-31');
+        if (expiry) return expiry;
+        const leftFarm = farmById.get(left.farmId)?.name ?? '';
+        const rightFarm = farmById.get(right.farmId)?.name ?? '';
+        return leftFarm.localeCompare(rightFarm, 'ko-KR');
+      });
+  }, [
+    farmById,
+    projectById,
+    subscriptionListSearch,
+    subscriptionListStatus,
+    subscriptionScopedRecords,
+    subscriptionToday,
+  ]);
+  const subscriptionPageCount = Math.max(
+    1,
+    Math.ceil(subscriptionListRecords.length / SUBSCRIPTION_PAGE_SIZE),
+  );
+  const effectiveSubscriptionListPage = Math.min(
+    subscriptionListPage,
+    subscriptionPageCount,
+  );
+  const subscriptionPageRecords = subscriptionListRecords.slice(
+    (effectiveSubscriptionListPage - 1) * SUBSCRIPTION_PAGE_SIZE,
+    effectiveSubscriptionListPage * SUBSCRIPTION_PAGE_SIZE,
+  );
+  const subscriptionScopedRecordIds = new Set(
+    subscriptionScopedRecords.map((record) => record.id),
+  );
+  const subscriptionScopedPayments = paymentHistory.filter(({ workItem }) =>
+    subscriptionScopedRecordIds.has(workItem.farmRecordId),
+  );
+  const subscriptionPaymentFarmCount = new Set(
+    subscriptionScopedPayments.map(({ workItem }) => workItem.farmId),
+  ).size;
+  const subscriptionPaymentTotal = subscriptionScopedPayments.reduce(
+    (sum, { entry }) => sum + entry.amount,
+    0,
+  );
+  const subscriptionAveragePayment = subscriptionPaymentFarmCount
+    ? Math.round(subscriptionPaymentTotal / subscriptionPaymentFarmCount)
+    : 0;
+  const subscriptionActiveCount = subscriptionScopedRecords.filter(
+    (record) =>
+      effectiveRecordSubscriptionStatus(record, subscriptionToday) === 'active',
+  ).length;
+  const subscriptionExpiringSoon = subscriptionScopedRecords.filter(
+    (record) => {
+      const days = daysUntil(record.currentSubscriptionExpiresAt);
+      return (
+        effectiveRecordSubscriptionStatus(record, subscriptionToday) ===
+          'active' &&
+        days !== null &&
+        days >= 0 &&
+        days <= 90
+      );
+    },
+  );
+  const subscriptionMonthlyPayments = countValues(
+    subscriptionScopedPayments.map(({ entry }) =>
+      localDateString(new Date(entry.occurredAt)).slice(0, 7),
+    ),
+  )
+    .map((month) => ({
+      ...month,
+      amount: subscriptionScopedPayments
+        .filter(({ entry }) =>
+          localDateString(new Date(entry.occurredAt)).startsWith(month.label),
+        )
+        .reduce((sum, { entry }) => sum + entry.amount, 0),
+    }))
+    .sort((left, right) => right.label.localeCompare(left.label))
+    .slice(0, 6);
+
   const activeProjects = workspace.projects.filter(
     (project) => project.status === 'active',
   ).length;
-  const activeSubscriptions = workspace.records.filter((record) => {
-    const days = daysUntil(record.currentSubscriptionExpiresAt);
-    return record.subscriptionStatus === 'active' && days !== null && days >= 0;
-  }).length;
+  const activeSubscriptions = workspace.records.filter(
+    (record) =>
+      effectiveRecordSubscriptionStatus(record, subscriptionToday) === 'active',
+  ).length;
   const expiredSubscriptions = workspace.records.length - activeSubscriptions;
   const installFollowups = workspace.records.filter(
     (record) => !record.commissioningDate || !record.educationDate,
@@ -2369,11 +2533,6 @@ export function FarmLedgerDashboard({
   const openWorkItems = workspace.workItems.filter(
     (workItem) => workItem.status !== 'completed',
   ).length;
-  const paymentTotal = workspace.historyEntries.reduce((sum, entry) => {
-    return workItemById.get(entry.workItemId)?.workType === 'payment'
-      ? sum + entry.amount
-      : sum;
-  }, 0);
   const recentHistoryEntries = [...workspace.historyEntries]
     .sort((a, b) => b.occurredAt - a.occurredAt || b.createdAt - a.createdAt)
     .slice(0, 6);
@@ -2775,6 +2934,18 @@ export function FarmLedgerDashboard({
     setDialog('subscription_event');
   }
 
+  function openSubscriptionExpiryDialog(record: FarmRecord) {
+    const manager = projectById.get(record.projectId)?.manager ?? '';
+    setSubscriptionExpiryForm(
+      emptySubscriptionExpiryForm(
+        record,
+        manager && !manager.includes('미지정') ? manager : accountName,
+      ),
+    );
+    setFormError('');
+    setDialog('subscription_expiry');
+  }
+
   async function copySubscriptionReport() {
     const shortYear = String(subscriptionReport.year).slice(-2);
     const lines = [
@@ -2960,6 +3131,41 @@ export function FarmLedgerDashboard({
         error instanceof Error
           ? error.message
           : '구독 처리 결과를 저장하지 못했습니다.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitSubscriptionExpiry(event: FormSubmitEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setFormError('');
+    try {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'subscription_expiry_correction',
+          correction: subscriptionExpiryForm,
+        }),
+      });
+      const data = await readResponse(response);
+      if (!response.ok || !data.record) {
+        throw new Error(data.error || '구독 만료일을 저장하지 못했습니다.');
+      }
+      await waitForFarmLedgerSync();
+      setDialog(null);
+      toast.add({
+        title: '구독 만료일을 저장했습니다',
+        description: '관리대장과 만료 예정 현황에 바로 반영했습니다.',
+        type: 'success',
+      });
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : '구독 만료일을 저장하지 못했습니다.',
       );
     } finally {
       setSubmitting(false);
@@ -6142,6 +6348,7 @@ export function FarmLedgerDashboard({
                               <TableHead>최근 업무</TableHead>
                               <TableHead>업무 상태</TableHead>
                               <TableHead>구독</TableHead>
+                              <TableHead>구독 만료일</TableHead>
                               <TableHead className="pr-5 text-right">
                                 최근 활동
                               </TableHead>
@@ -6155,6 +6362,8 @@ export function FarmLedgerDashboard({
                                 latestWorkItem,
                                 subscriptionStatus,
                               } = farmRow(farm);
+                              const expiryRecords =
+                                subscriptionRecordsForFarm(farm);
                               return (
                                 <TableRow key={farm.id}>
                                   <TableCell className="pl-5">
@@ -6230,6 +6439,58 @@ export function FarmLedgerDashboard({
                                       }
                                     </Badge>
                                   </TableCell>
+                                  <TableCell className="min-w-[190px]">
+                                    <div className="space-y-1.5">
+                                      {expiryRecords
+                                        .slice(0, 2)
+                                        .map((expiryRecord) => {
+                                          const expiryProject = projectById.get(
+                                            expiryRecord.projectId,
+                                          );
+                                          return (
+                                            <button
+                                              key={expiryRecord.id}
+                                              type="button"
+                                              onClick={() =>
+                                                openSubscriptionExpiryDialog(
+                                                  expiryRecord,
+                                                )
+                                              }
+                                              className="group flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-[#f1f7f2]"
+                                              aria-label={`${farm.name} · ${expiryProject?.name ?? '사업 없음'} 구독 만료일 입력·정정`}
+                                            >
+                                              <span className="min-w-0">
+                                                <span className="block text-sm font-semibold text-[#355f46]">
+                                                  {formatDate(
+                                                    expiryRecord.currentSubscriptionExpiresAt,
+                                                  )}
+                                                </span>
+                                                <span className="block max-w-[145px] truncate text-[11px] text-[#89938c]">
+                                                  {expiryProject?.name ??
+                                                    '사업 없음'}
+                                                </span>
+                                              </span>
+                                              <Pencil className="size-3.5 shrink-0 text-[#75917e] opacity-60 group-hover:opacity-100" />
+                                            </button>
+                                          );
+                                        })}
+                                      {expiryRecords.length > 2 && (
+                                        <button
+                                          type="button"
+                                          onClick={() => openFarm(farm.id)}
+                                          className="px-2 text-[11px] font-semibold text-[#39795b]"
+                                        >
+                                          외 {expiryRecords.length - 2}개 사업
+                                          보기
+                                        </button>
+                                      )}
+                                      {!expiryRecords.length && (
+                                        <span className="text-xs text-[#9aa39d]">
+                                          참여 사업 없음
+                                        </span>
+                                      )}
+                                    </div>
+                                  </TableCell>
                                   <TableCell className="pr-5 text-right text-xs text-[#89938c]">
                                     {formatTimestamp(
                                       farmLastActivity(farm),
@@ -6242,7 +6503,7 @@ export function FarmLedgerDashboard({
                             {!filteredFarms.length && (
                               <TableRow>
                                 <TableCell
-                                  colSpan={7}
+                                  colSpan={8}
                                   className="h-40 text-center text-[#89938c]"
                                 >
                                   검색 조건에 맞는 농가가 없습니다.
@@ -7059,11 +7320,11 @@ export function FarmLedgerDashboard({
                             구독과 입금
                           </p>
                           <h1 className="mt-1 text-[28px] font-bold">
-                            5.2 구독 실적
+                            구독·입금 관리
                           </h1>
                           <p className="mt-2 text-sm text-[#77847b]">
-                            기간별 갱신·이탈·재가입 실적과 향후 만료를 연도, 월,
-                            사업 순서로 확인합니다.
+                            농가별 만료일과 입금을 빠르게 처리하고, 별도 보고
+                            화면에서 기간별 실적을 확인합니다.
                           </p>
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -7086,532 +7347,753 @@ export function FarmLedgerDashboard({
                         </div>
                       </div>
 
-                      <Card className="mb-4 border-0 bg-white ring-[#dfe6dd]">
-                        <CardContent>
-                          <div className="grid gap-3 lg:grid-cols-[160px_160px_minmax(220px,1fr)]">
-                            <Field>
-                              <FieldLabel>기준 연도</FieldLabel>
-                              <Select
-                                value={subscriptionReportYear}
-                                onValueChange={(value) =>
-                                  value && setSubscriptionReportYear(value)
-                                }
-                              >
-                                <SelectTrigger className="h-10 w-full">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {subscriptionReportYears.map((year) => (
-                                    <SelectItem key={year} value={String(year)}>
-                                      {year}년
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </Field>
-                            <Field>
-                              <FieldLabel>집계 종료월</FieldLabel>
-                              <Select
-                                value={subscriptionReportEndMonth}
-                                onValueChange={(value) =>
-                                  value && setSubscriptionReportEndMonth(value)
-                                }
-                              >
-                                <SelectTrigger className="h-10 w-full">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {Array.from({ length: 12 }, (_, index) => (
-                                    <SelectItem
-                                      key={index + 1}
-                                      value={String(index + 1)}
-                                    >
-                                      {index + 1}월
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </Field>
-                            <Field>
-                              <FieldLabel>사업 범위</FieldLabel>
-                              <Select
-                                value={subscriptionReportProjectId}
-                                onValueChange={(value) =>
-                                  value && setSubscriptionReportProjectId(value)
-                                }
-                              >
-                                <SelectTrigger className="h-10 w-full">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="all">전체 사업</SelectItem>
-                                  {workspace.projects.map((project) => (
-                                    <SelectItem
-                                      key={project.id}
-                                      value={project.id}
-                                    >
-                                      {project.year} · {project.name}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </Field>
-                          </div>
-                          <p className="mt-3 text-xs leading-5 text-[#7a867d]">
-                            농가×사업 구독 1건을 1개소로 집계합니다. 갱신·이탈은
-                            기준 만료일, 재가입은 처리일을 기준으로 계산합니다.
-                          </p>
-                        </CardContent>
-                      </Card>
+                      <Tabs
+                        value={subscriptionMode}
+                        onValueChange={(value) => {
+                          setSubscriptionMode(value as SubscriptionMode);
+                          setSubscriptionListPage(1);
+                        }}
+                      >
+                        <TabsList className="mb-4 h-11 w-full max-w-[560px] rounded-xl bg-[#e9efe9] p-1">
+                          <TabsTrigger value="management" className="h-9 px-4">
+                            <CreditCard />
+                            구독·입금 관리
+                            <Badge variant="outline">
+                              {subscriptionScopedRecords.length}
+                            </Badge>
+                          </TabsTrigger>
+                          <TabsTrigger value="report" className="h-9 px-4">
+                            <BarChart3 />
+                            만료·실적 보고
+                          </TabsTrigger>
+                        </TabsList>
 
-                      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-                        {[
-                          {
-                            label: `만료 대상 · ${subscriptionReport.year}.1~${subscriptionReport.endMonth}`,
-                            value: subscriptionReport.target,
-                            tone: 'text-[#203027]',
-                          },
-                          {
-                            label: '갱신',
-                            value: subscriptionReport.renewed,
-                            tone: 'text-[#2f7b59]',
-                          },
-                          {
-                            label: '이탈',
-                            value: subscriptionReport.churned,
-                            tone: 'text-[#b46438]',
-                          },
-                          {
-                            label: '재가입',
-                            value: subscriptionReport.rejoined,
-                            tone: 'text-[#416c9c]',
-                          },
-                          {
-                            label: '갱신률',
-                            value:
-                              subscriptionReport.renewalRate === null
-                                ? '-'
-                                : `${subscriptionReport.renewalRate}%`,
-                            tone: 'text-[#765b9d]',
-                            raw: true,
-                          },
-                        ].map((metric) => (
-                          <Card
-                            key={metric.label}
-                            className="border-0 bg-white ring-[#dfe6dd]"
-                          >
+                        <TabsContent value="report" className="mt-0">
+                          <div className="mb-4">
+                            <h2 className="text-xl font-bold">5.2 구독 실적</h2>
+                            <p className="mt-1 text-xs text-[#7a867d]">
+                              갱신·이탈·재가입과 향후 만료를 연도·월·사업별로
+                              확인합니다.
+                            </p>
+                          </div>
+                          <Card className="mb-4 border-0 bg-white ring-[#dfe6dd]">
                             <CardContent>
-                              <p className="text-xs text-[#7a867d]">
-                                {metric.label}
-                              </p>
-                              <p
-                                className={`mt-1 text-2xl font-bold ${metric.tone}`}
-                              >
-                                {metric.value}
-                                {!metric.raw && '개소'}
+                              <div className="grid gap-3 lg:grid-cols-[160px_160px_minmax(220px,1fr)]">
+                                <Field>
+                                  <FieldLabel>기준 연도</FieldLabel>
+                                  <Select
+                                    value={subscriptionReportYear}
+                                    onValueChange={(value) =>
+                                      value && setSubscriptionReportYear(value)
+                                    }
+                                  >
+                                    <SelectTrigger className="h-10 w-full">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {subscriptionReportYears.map((year) => (
+                                        <SelectItem
+                                          key={year}
+                                          value={String(year)}
+                                        >
+                                          {year}년
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </Field>
+                                <Field>
+                                  <FieldLabel>집계 종료월</FieldLabel>
+                                  <Select
+                                    value={subscriptionReportEndMonth}
+                                    onValueChange={(value) =>
+                                      value &&
+                                      setSubscriptionReportEndMonth(value)
+                                    }
+                                  >
+                                    <SelectTrigger className="h-10 w-full">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {Array.from(
+                                        { length: 12 },
+                                        (_, index) => (
+                                          <SelectItem
+                                            key={index + 1}
+                                            value={String(index + 1)}
+                                          >
+                                            {index + 1}월
+                                          </SelectItem>
+                                        ),
+                                      )}
+                                    </SelectContent>
+                                  </Select>
+                                </Field>
+                                <Field>
+                                  <FieldLabel>사업 범위</FieldLabel>
+                                  <Select
+                                    value={subscriptionReportProjectId}
+                                    onValueChange={(value) =>
+                                      value &&
+                                      setSubscriptionReportProjectId(value)
+                                    }
+                                  >
+                                    <SelectTrigger className="h-10 w-full">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="all">
+                                        전체 사업
+                                      </SelectItem>
+                                      {workspace.projects.map((project) => (
+                                        <SelectItem
+                                          key={project.id}
+                                          value={project.id}
+                                        >
+                                          {project.year} · {project.name}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </Field>
+                              </div>
+                              <p className="mt-3 text-xs leading-5 text-[#7a867d]">
+                                농가×사업 구독 1건을 1개소로 집계합니다.
+                                갱신·이탈은 기준 만료일, 재가입은 처리일을
+                                기준으로 계산합니다.
                               </p>
                             </CardContent>
                           </Card>
-                        ))}
-                      </div>
 
-                      {(subscriptionReport.pending > 0 ||
-                        subscriptionReport.missingExpiry > 0) && (
-                        <div className="mb-4 flex items-start gap-2 rounded-xl border border-[#eadfca] bg-[#fffaf0] px-4 py-3 text-xs leading-5 text-[#80663f]">
-                          <CircleAlert className="mt-0.5 size-4 shrink-0" />
-                          <p>
-                            {subscriptionReport.pending > 0 &&
-                              `선택 기간 만료 대상 중 결과 미등록 ${subscriptionReport.pending}개소가 있습니다. `}
-                            {subscriptionReport.missingExpiry > 0 &&
-                              `만료일 미입력 ${subscriptionReport.missingExpiry}개소는 만료 예정에서 제외했습니다.`}
-                          </p>
-                        </div>
-                      )}
-
-                      <div className="mb-8 grid gap-4 2xl:grid-cols-[minmax(0,1fr)_360px]">
-                        <Card className="border-0 bg-white ring-[#dfe6dd]">
-                          <CardContent>
-                            <div className="mb-4 flex items-center justify-between gap-3">
-                              <div>
-                                <h2 className="font-bold">만료 예정</h2>
-                                <p className="mt-1 text-xs text-[#89938c]">
-                                  {formatDate(subscriptionReport.cutoffDate)}{' '}
-                                  이후 사용 중 구독
-                                </p>
-                              </div>
-                              <Badge variant="outline">
-                                {subscriptionReport.upcoming.reduce(
-                                  (sum, year) => sum + year.count,
-                                  0,
-                                )}
-                                개소
-                              </Badge>
-                            </div>
-                            <div className="space-y-3">
-                              {subscriptionReport.upcoming.map((year) => (
-                                <details
-                                  key={year.year}
-                                  open
-                                  className="group rounded-2xl border border-[#dfe6dd] bg-[#fbfcfa]"
-                                >
-                                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 font-bold">
-                                    <span>{year.year}년</span>
-                                    <Badge variant="outline">
-                                      {year.count}개소
-                                    </Badge>
-                                  </summary>
-                                  <div className="space-y-3 border-t border-[#e4e9e3] p-3">
-                                    {year.months.map((month) => (
-                                      <div
-                                        key={month.month}
-                                        className="rounded-xl bg-white p-3"
-                                      >
-                                        <div className="flex items-center justify-between gap-3">
-                                          <strong className="text-sm">
-                                            {month.month}월
-                                          </strong>
-                                          <span className="text-sm font-bold text-[#39795b]">
-                                            {month.count}개소
-                                          </span>
-                                        </div>
-                                        <div className="mt-3 space-y-2">
-                                          {month.projects.map((project) => (
-                                            <details key={project.projectId}>
-                                              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs text-[#617066]">
-                                                <span>{project.name}</span>
-                                                <strong>
-                                                  {project.count}개소
-                                                </strong>
-                                              </summary>
-                                              <div className="mt-2 flex flex-wrap gap-1.5 border-l-2 border-[#dce9df] pl-3">
-                                                {project.records.map(
-                                                  (record) => (
-                                                    <button
-                                                      key={record.id}
-                                                      type="button"
-                                                      onClick={() =>
-                                                        openFarm(record.farmId)
-                                                      }
-                                                      className="rounded-full border border-[#dfe6dd] bg-[#f7f9f6] px-2.5 py-1 text-[11px] hover:border-[#9fc7aa]"
-                                                    >
-                                                      {farmById.get(
-                                                        record.farmId,
-                                                      )?.name ?? '농가 없음'}
-                                                    </button>
-                                                  ),
-                                                )}
-                                              </div>
-                                            </details>
-                                          ))}
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </details>
-                              ))}
-                              {!subscriptionReport.upcoming.length && (
-                                <div className="rounded-xl border border-dashed py-10 text-center text-sm text-[#89938c]">
-                                  선택한 기준 이후 만료 예정 구독이 없습니다.
-                                </div>
-                              )}
-                            </div>
-                          </CardContent>
-                        </Card>
-
-                        <Card className="h-fit border-0 bg-white ring-[#dfe6dd]">
-                          <CardContent>
-                            <div className="mb-4 flex items-center justify-between gap-3">
-                              <div>
-                                <h2 className="font-bold">최근 구독 처리</h2>
-                                <p className="mt-1 text-xs text-[#89938c]">
-                                  갱신·이탈·재가입 이력
-                                </p>
-                              </div>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => openSubscriptionEventDialog()}
+                          <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                            {[
+                              {
+                                label: `만료 대상 · ${subscriptionReport.year}.1~${subscriptionReport.endMonth}`,
+                                value: subscriptionReport.target,
+                                tone: 'text-[#203027]',
+                              },
+                              {
+                                label: '갱신',
+                                value: subscriptionReport.renewed,
+                                tone: 'text-[#2f7b59]',
+                              },
+                              {
+                                label: '이탈',
+                                value: subscriptionReport.churned,
+                                tone: 'text-[#b46438]',
+                              },
+                              {
+                                label: '재가입',
+                                value: subscriptionReport.rejoined,
+                                tone: 'text-[#416c9c]',
+                              },
+                              {
+                                label: '갱신률',
+                                value:
+                                  subscriptionReport.renewalRate === null
+                                    ? '-'
+                                    : `${subscriptionReport.renewalRate}%`,
+                                tone: 'text-[#765b9d]',
+                                raw: true,
+                              },
+                            ].map((metric) => (
+                              <Card
+                                key={metric.label}
+                                className="border-0 bg-white ring-[#dfe6dd]"
                               >
-                                <Plus />
-                                등록
-                              </Button>
-                            </div>
-                            <div className="space-y-3">
-                              {subscriptionReport.recentEvents.map((event) => {
-                                const record = recordById.get(
-                                  event.farmRecordId,
-                                );
-                                const farm = record
-                                  ? farmById.get(record.farmId)
-                                  : null;
-                                return (
-                                  <button
-                                    key={event.id}
-                                    type="button"
-                                    onClick={() =>
-                                      record && openFarm(record.farmId)
-                                    }
-                                    className="w-full rounded-xl bg-[#f6f8f5] p-3 text-left"
+                                <CardContent>
+                                  <p className="text-xs text-[#7a867d]">
+                                    {metric.label}
+                                  </p>
+                                  <p
+                                    className={`mt-1 text-2xl font-bold ${metric.tone}`}
                                   >
-                                    <div className="flex items-center justify-between gap-2">
-                                      <Badge variant="outline">
-                                        {
-                                          FARM_SUBSCRIPTION_EVENT_TYPE_LABELS[
-                                            event.eventType
-                                          ]
-                                        }
-                                      </Badge>
-                                      <span className="text-[11px] text-[#89938c]">
-                                        {formatDate(event.processedAt)}
-                                      </span>
-                                    </div>
-                                    <p className="mt-2 truncate text-sm font-semibold">
-                                      {farm?.name ?? '농가 없음'}
-                                    </p>
-                                    <p className="mt-1 truncate text-xs text-[#77847b]">
-                                      {projectById.get(event.projectId)?.name ??
-                                        '사업 없음'}
-                                    </p>
-                                  </button>
-                                );
-                              })}
-                              {!subscriptionReport.recentEvents.length && (
-                                <p className="py-8 text-center text-sm text-[#89938c]">
-                                  아직 등록된 구독 처리 이력이 없습니다.
-                                </p>
-                              )}
-                            </div>
-                          </CardContent>
-                        </Card>
-                      </div>
+                                    {metric.value}
+                                    {!metric.raw && '개소'}
+                                  </p>
+                                </CardContent>
+                              </Card>
+                            ))}
+                          </div>
 
-                      <div className="mb-4">
-                        <p className="text-sm font-medium text-[#647568]">
-                          현재 운영·입금
-                        </p>
-                      </div>
-                      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-                        <Card className="border-0 bg-white ring-[#dfe6dd]">
-                          <CardContent>
-                            <p className="text-xs text-[#7a867d]">사용중</p>
-                            <p className="mt-1 text-2xl font-bold text-[#2f7b59]">
-                              {activeSubscriptions}곳
-                            </p>
-                          </CardContent>
-                        </Card>
-                        <Card className="border-0 bg-white ring-[#dfe6dd]">
-                          <CardContent>
-                            <p className="text-xs text-[#7a867d]">
-                              만료·미등록
-                            </p>
-                            <p className="mt-1 text-2xl font-bold text-[#b46438]">
-                              {workspace.records.length - activeSubscriptions}곳
-                            </p>
-                          </CardContent>
-                        </Card>
-                        <Card className="border-0 bg-white ring-[#eadfca]">
-                          <CardContent>
-                            <p className="text-xs text-[#7a867d]">
-                              90일 이내 만료
-                            </p>
-                            <p className="mt-1 text-2xl font-bold text-[#94601c]">
-                              {expiringSoonRecords.length}곳
-                            </p>
-                          </CardContent>
-                        </Card>
-                        <Card className="border-0 bg-white ring-[#dfe6dd]">
-                          <CardContent>
-                            <p className="text-xs text-[#7a867d]">
-                              입금 기록 합계
-                            </p>
-                            <p className="mt-1 text-2xl font-bold">
-                              {formatMoney(paymentTotal)}
-                            </p>
-                          </CardContent>
-                        </Card>
-                        <Card className="border-0 bg-white ring-[#dfe6dd]">
-                          <CardContent>
-                            <p className="text-xs text-[#7a867d]">
-                              입금 농가당 평균
-                            </p>
-                            <p className="mt-1 text-2xl font-bold">
-                              {formatMoney(averagePayment)}
-                            </p>
-                          </CardContent>
-                        </Card>
-                      </div>
-                      <div className="mb-4 flex items-start gap-2 rounded-xl border border-[#eadfca] bg-[#fffaf0] px-4 py-3 text-xs leading-5 text-[#80663f]">
-                        <CircleAlert className="mt-0.5 size-4 shrink-0" />
-                        <p>
-                          입금 합계는 입금 업무의 히스토리를 기준으로 합니다.
-                          갱신·이탈·재가입은 구독 처리 등록을 사용하면 실적과
-                          현재 구독 상태가 함께 반영됩니다.
-                        </p>
-                      </div>
-                      <div className="grid gap-4 2xl:grid-cols-[1fr_290px]">
-                        <div className="overflow-x-auto rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
-                          <Table>
-                            <TableHeader>
-                              <TableRow className="bg-[#f7f9f6]">
-                                <TableHead className="pl-5">농가</TableHead>
-                                <TableHead>사업</TableHead>
-                                <TableHead>구독 만료일</TableHead>
-                                <TableHead>마지막 입금일</TableHead>
-                                <TableHead>갱신</TableHead>
-                                <TableHead>상태</TableHead>
-                                <TableHead className="pr-5">처리</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {[...workspace.records]
-                                .filter(
-                                  (record) =>
-                                    subscriptionReportProjectId === 'all' ||
-                                    record.projectId ===
-                                      subscriptionReportProjectId,
-                                )
-                                .sort((a, b) =>
-                                  (
-                                    a.currentSubscriptionExpiresAt || '9999'
-                                  ).localeCompare(
-                                    b.currentSubscriptionExpiresAt || '9999',
-                                  ),
-                                )
-                                .map((record) => {
-                                  const farm = farmById.get(record.farmId);
-                                  const project = projectById.get(
-                                    record.projectId,
-                                  );
-                                  const expiryDays = daysUntil(
-                                    record.currentSubscriptionExpiresAt,
-                                  );
-                                  return (
-                                    <TableRow key={record.id}>
-                                      <TableCell className="pl-5">
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            openFarm(record.farmId)
-                                          }
-                                          className="font-semibold hover:text-[#2f7b59]"
-                                        >
-                                          {farm?.name ?? '농가 없음'}
-                                        </button>
-                                      </TableCell>
-                                      <TableCell className="max-w-[240px] truncate">
-                                        {project?.name ?? '사업 없음'}
-                                      </TableCell>
-                                      <TableCell>
-                                        <p>
-                                          {formatDate(
-                                            record.currentSubscriptionExpiresAt,
-                                          )}
-                                        </p>
-                                        {expiryDays !== null &&
-                                          expiryDays >= 0 &&
-                                          expiryDays <= 90 && (
-                                            <Badge
-                                              variant="outline"
-                                              className="mt-1 border-[#ead9b8] bg-[#fff9ed] text-[#94601c]"
-                                            >
-                                              {dueLabel(
-                                                record.currentSubscriptionExpiresAt,
-                                              )}
-                                            </Badge>
-                                          )}
-                                      </TableCell>
-                                      <TableCell>
-                                        {formatDate(record.lastPaymentDate)}
-                                      </TableCell>
-                                      <TableCell>
-                                        {record.renewalCount}회
-                                      </TableCell>
-                                      <TableCell>
-                                        <Badge
-                                          variant="outline"
-                                          className={subscriptionClass(
-                                            record.subscriptionStatus,
-                                          )}
-                                        >
-                                          {
-                                            SUBSCRIPTION_STATUS_LABELS[
-                                              record.subscriptionStatus
-                                            ]
-                                          }
-                                        </Badge>
-                                      </TableCell>
-                                      <TableCell className="pr-5">
-                                        <div className="flex min-w-[190px] gap-2">
-                                          <Button
-                                            onClick={() =>
-                                              openSubscriptionEventDialog(
-                                                record,
-                                              )
-                                            }
-                                            size="sm"
-                                            variant="outline"
-                                          >
-                                            <CalendarCheck2 />
-                                            구독 처리
-                                          </Button>
-                                          <Button
-                                            onClick={() =>
-                                              openQuickWorkItem(
-                                                record,
-                                                'payment',
-                                                '구독료 입금',
-                                              )
-                                            }
-                                            size="sm"
-                                            variant="outline"
-                                          >
-                                            <Plus />
-                                            입금
-                                          </Button>
-                                        </div>
-                                      </TableCell>
-                                    </TableRow>
-                                  );
-                                })}
-                            </TableBody>
-                          </Table>
-                        </div>
-                        <Card className="h-fit border-0 bg-white ring-[#dfe6dd]">
-                          <CardContent>
-                            <div className="mb-4">
-                              <h2 className="font-bold">최근 월별 입금</h2>
-                              <p className="mt-1 text-xs text-[#89938c]">
-                                입금 업무 히스토리 기준
+                          {(subscriptionReport.pending > 0 ||
+                            subscriptionReport.missingExpiry > 0) && (
+                            <div className="mb-4 flex items-start gap-2 rounded-xl border border-[#eadfca] bg-[#fffaf0] px-4 py-3 text-xs leading-5 text-[#80663f]">
+                              <CircleAlert className="mt-0.5 size-4 shrink-0" />
+                              <p>
+                                {subscriptionReport.pending > 0 &&
+                                  `선택 기간 만료 대상 중 결과 미등록 ${subscriptionReport.pending}개소가 있습니다. `}
+                                {subscriptionReport.missingExpiry > 0 &&
+                                  `만료일 미입력 ${subscriptionReport.missingExpiry}개소는 만료 예정에서 제외했습니다.`}
                               </p>
                             </div>
-                            <div className="space-y-3">
-                              {monthlyPayments.map((month) => (
-                                <div
-                                  key={month.label}
-                                  className="rounded-xl bg-[#f5f8f4] p-3"
-                                >
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-xs font-semibold">
-                                      {month.label}
-                                    </span>
-                                    <Badge variant="outline">
-                                      {month.count}건
-                                    </Badge>
+                          )}
+
+                          <div className="mb-8 grid gap-4 2xl:grid-cols-[minmax(0,1fr)_360px]">
+                            <Card className="border-0 bg-white ring-[#dfe6dd]">
+                              <CardContent>
+                                <div className="mb-4 flex items-center justify-between gap-3">
+                                  <div>
+                                    <h2 className="font-bold">만료 예정</h2>
+                                    <p className="mt-1 text-xs text-[#89938c]">
+                                      {formatDate(
+                                        subscriptionReport.cutoffDate,
+                                      )}{' '}
+                                      이후 사용 중 구독
+                                    </p>
                                   </div>
-                                  <p className="mt-2 font-bold text-[#39795b]">
-                                    {formatMoney(month.amount)}
+                                  <Badge variant="outline">
+                                    {subscriptionReport.upcoming.reduce(
+                                      (sum, year) => sum + year.count,
+                                      0,
+                                    )}
+                                    개소
+                                  </Badge>
+                                </div>
+                                <div className="space-y-3">
+                                  {subscriptionReport.upcoming.map((year) => (
+                                    <details
+                                      key={year.year}
+                                      className="group rounded-2xl border border-[#dfe6dd] bg-[#fbfcfa]"
+                                    >
+                                      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 font-bold">
+                                        <span>{year.year}년</span>
+                                        <Badge variant="outline">
+                                          {year.count}개소
+                                        </Badge>
+                                      </summary>
+                                      <div className="space-y-3 border-t border-[#e4e9e3] p-3">
+                                        {year.months.map((month) => (
+                                          <div
+                                            key={month.month}
+                                            className="rounded-xl bg-white p-3"
+                                          >
+                                            <div className="flex items-center justify-between gap-3">
+                                              <strong className="text-sm">
+                                                {month.month}월
+                                              </strong>
+                                              <span className="text-sm font-bold text-[#39795b]">
+                                                {month.count}개소
+                                              </span>
+                                            </div>
+                                            <div className="mt-3 space-y-2">
+                                              {month.projects.map((project) => (
+                                                <details
+                                                  key={project.projectId}
+                                                >
+                                                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs text-[#617066]">
+                                                    <span>{project.name}</span>
+                                                    <strong>
+                                                      {project.count}개소
+                                                    </strong>
+                                                  </summary>
+                                                  <div className="mt-2 flex flex-wrap gap-1.5 border-l-2 border-[#dce9df] pl-3">
+                                                    {project.records.map(
+                                                      (record) => (
+                                                        <button
+                                                          key={record.id}
+                                                          type="button"
+                                                          onClick={() =>
+                                                            openFarm(
+                                                              record.farmId,
+                                                            )
+                                                          }
+                                                          className="rounded-full border border-[#dfe6dd] bg-[#f7f9f6] px-2.5 py-1 text-[11px] hover:border-[#9fc7aa]"
+                                                        >
+                                                          {farmById.get(
+                                                            record.farmId,
+                                                          )?.name ??
+                                                            '농가 없음'}
+                                                        </button>
+                                                      ),
+                                                    )}
+                                                  </div>
+                                                </details>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </details>
+                                  ))}
+                                  {!subscriptionReport.upcoming.length && (
+                                    <div className="rounded-xl border border-dashed py-10 text-center text-sm text-[#89938c]">
+                                      선택한 기준 이후 만료 예정 구독이
+                                      없습니다.
+                                    </div>
+                                  )}
+                                </div>
+                              </CardContent>
+                            </Card>
+
+                            <Card className="h-fit border-0 bg-white ring-[#dfe6dd]">
+                              <CardContent>
+                                <div className="mb-4 flex items-center justify-between gap-3">
+                                  <div>
+                                    <h2 className="font-bold">
+                                      최근 구독 처리
+                                    </h2>
+                                    <p className="mt-1 text-xs text-[#89938c]">
+                                      갱신·이탈·재가입 이력
+                                    </p>
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() =>
+                                      openSubscriptionEventDialog()
+                                    }
+                                  >
+                                    <Plus />
+                                    등록
+                                  </Button>
+                                </div>
+                                <div className="space-y-3">
+                                  {subscriptionReport.recentEvents.map(
+                                    (event) => {
+                                      const record = recordById.get(
+                                        event.farmRecordId,
+                                      );
+                                      const farm = record
+                                        ? farmById.get(record.farmId)
+                                        : null;
+                                      return (
+                                        <button
+                                          key={event.id}
+                                          type="button"
+                                          onClick={() =>
+                                            record && openFarm(record.farmId)
+                                          }
+                                          className="w-full rounded-xl bg-[#f6f8f5] p-3 text-left"
+                                        >
+                                          <div className="flex items-center justify-between gap-2">
+                                            <Badge variant="outline">
+                                              {
+                                                FARM_SUBSCRIPTION_EVENT_TYPE_LABELS[
+                                                  event.eventType
+                                                ]
+                                              }
+                                            </Badge>
+                                            <span className="text-[11px] text-[#89938c]">
+                                              {formatDate(event.processedAt)}
+                                            </span>
+                                          </div>
+                                          <p className="mt-2 truncate text-sm font-semibold">
+                                            {farm?.name ?? '농가 없음'}
+                                          </p>
+                                          <p className="mt-1 truncate text-xs text-[#77847b]">
+                                            {projectById.get(event.projectId)
+                                              ?.name ?? '사업 없음'}
+                                          </p>
+                                        </button>
+                                      );
+                                    },
+                                  )}
+                                  {!subscriptionReport.recentEvents.length && (
+                                    <p className="py-8 text-center text-sm text-[#89938c]">
+                                      아직 등록된 구독 처리 이력이 없습니다.
+                                    </p>
+                                  )}
+                                </div>
+                              </CardContent>
+                            </Card>
+                          </div>
+                        </TabsContent>
+
+                        <TabsContent value="management" className="mt-0">
+                          <div className="mb-4">
+                            <p className="text-sm font-medium text-[#647568]">
+                              현재 운영·입금
+                            </p>
+                            <h2 className="mt-1 text-xl font-bold">
+                              농가별 구독 만료일과 입금
+                            </h2>
+                          </div>
+                          <Card className="mb-4 border-0 bg-white ring-[#dfe6dd]">
+                            <CardContent>
+                              <div className="grid gap-3 lg:grid-cols-[minmax(240px,1fr)_minmax(220px,1fr)_180px]">
+                                <Field>
+                                  <FieldLabel htmlFor="subscription-list-search">
+                                    농가·사업 검색
+                                  </FieldLabel>
+                                  <div className="relative">
+                                    <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#87928a]" />
+                                    <Input
+                                      id="subscription-list-search"
+                                      value={subscriptionListSearch}
+                                      onChange={(event) => {
+                                        setSubscriptionListSearch(
+                                          event.target.value,
+                                        );
+                                        setSubscriptionListPage(1);
+                                      }}
+                                      placeholder="농가명, 농장번호, 사업명"
+                                      className="pl-9"
+                                    />
+                                  </div>
+                                </Field>
+                                <Field>
+                                  <FieldLabel>사업 범위</FieldLabel>
+                                  <Select
+                                    value={subscriptionReportProjectId}
+                                    onValueChange={(value) => {
+                                      if (!value) return;
+                                      setSubscriptionReportProjectId(value);
+                                      setSubscriptionListPage(1);
+                                    }}
+                                  >
+                                    <SelectTrigger className="h-10 w-full">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="all">
+                                        전체 사업
+                                      </SelectItem>
+                                      {workspace.projects.map((project) => (
+                                        <SelectItem
+                                          key={project.id}
+                                          value={project.id}
+                                        >
+                                          {project.year} · {project.name}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </Field>
+                                <Field>
+                                  <FieldLabel>구독 상태</FieldLabel>
+                                  <Select
+                                    value={subscriptionListStatus}
+                                    onValueChange={(value) => {
+                                      if (!value) return;
+                                      setSubscriptionListStatus(
+                                        value as typeof subscriptionListStatus,
+                                      );
+                                      setSubscriptionListPage(1);
+                                    }}
+                                  >
+                                    <SelectTrigger className="h-10 w-full">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="all">
+                                        전체 상태
+                                      </SelectItem>
+                                      <SelectItem value="active">
+                                        사용중
+                                      </SelectItem>
+                                      <SelectItem value="expired">
+                                        만료
+                                      </SelectItem>
+                                      <SelectItem value="unregistered">
+                                        미등록
+                                      </SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </Field>
+                              </div>
+                              <p className="mt-3 text-xs text-[#78847c]">
+                                조건에 맞는 구독{' '}
+                                {subscriptionListRecords.length}
+                                건 · 한 페이지 {SUBSCRIPTION_PAGE_SIZE}건
+                              </p>
+                            </CardContent>
+                          </Card>
+                          <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                            <Card className="border-0 bg-white ring-[#dfe6dd]">
+                              <CardContent>
+                                <p className="text-xs text-[#7a867d]">사용중</p>
+                                <p className="mt-1 text-2xl font-bold text-[#2f7b59]">
+                                  {subscriptionActiveCount}곳
+                                </p>
+                              </CardContent>
+                            </Card>
+                            <Card className="border-0 bg-white ring-[#dfe6dd]">
+                              <CardContent>
+                                <p className="text-xs text-[#7a867d]">
+                                  만료·미등록
+                                </p>
+                                <p className="mt-1 text-2xl font-bold text-[#b46438]">
+                                  {subscriptionScopedRecords.length -
+                                    subscriptionActiveCount}
+                                  곳
+                                </p>
+                              </CardContent>
+                            </Card>
+                            <Card className="border-0 bg-white ring-[#eadfca]">
+                              <CardContent>
+                                <p className="text-xs text-[#7a867d]">
+                                  90일 이내 만료
+                                </p>
+                                <p className="mt-1 text-2xl font-bold text-[#94601c]">
+                                  {subscriptionExpiringSoon.length}곳
+                                </p>
+                              </CardContent>
+                            </Card>
+                            <Card className="border-0 bg-white ring-[#dfe6dd]">
+                              <CardContent>
+                                <p className="text-xs text-[#7a867d]">
+                                  입금 기록 합계
+                                </p>
+                                <p className="mt-1 text-2xl font-bold">
+                                  {formatMoney(subscriptionPaymentTotal)}
+                                </p>
+                              </CardContent>
+                            </Card>
+                            <Card className="border-0 bg-white ring-[#dfe6dd]">
+                              <CardContent>
+                                <p className="text-xs text-[#7a867d]">
+                                  입금 농가당 평균
+                                </p>
+                                <p className="mt-1 text-2xl font-bold">
+                                  {formatMoney(subscriptionAveragePayment)}
+                                </p>
+                              </CardContent>
+                            </Card>
+                          </div>
+                          <div className="mb-4 flex items-start gap-2 rounded-xl border border-[#eadfca] bg-[#fffaf0] px-4 py-3 text-xs leading-5 text-[#80663f]">
+                            <CircleAlert className="mt-0.5 size-4 shrink-0" />
+                            <p>
+                              입금 합계는 입금 업무의 히스토리를 기준으로
+                              합니다. 갱신·이탈·재가입은 구독 처리 등록을
+                              사용하면 실적과 현재 구독 상태가 함께 반영됩니다.
+                            </p>
+                          </div>
+                          <div className="grid gap-4 2xl:grid-cols-[1fr_290px]">
+                            <div className="min-w-0 space-y-3">
+                              <div className="overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
+                                <Table
+                                  key={`${subscriptionReportProjectId}:${subscriptionListStatus}:${subscriptionListSearch}:${effectiveSubscriptionListPage}`}
+                                  containerClassName="max-h-[640px] overflow-auto"
+                                >
+                                  <TableHeader className="sticky top-0 z-10 bg-[#f7f9f6]">
+                                    <TableRow className="bg-[#f7f9f6]">
+                                      <TableHead className="pl-5">
+                                        농가
+                                      </TableHead>
+                                      <TableHead>사업</TableHead>
+                                      <TableHead>구독 만료일</TableHead>
+                                      <TableHead>마지막 입금일</TableHead>
+                                      <TableHead>갱신</TableHead>
+                                      <TableHead>상태</TableHead>
+                                      <TableHead className="pr-5">
+                                        처리
+                                      </TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {subscriptionPageRecords.map((record) => {
+                                      const farm = farmById.get(record.farmId);
+                                      const project = projectById.get(
+                                        record.projectId,
+                                      );
+                                      const effectiveStatus =
+                                        effectiveRecordSubscriptionStatus(
+                                          record,
+                                          subscriptionToday,
+                                        );
+                                      const expiryDays = daysUntil(
+                                        record.currentSubscriptionExpiresAt,
+                                      );
+                                      return (
+                                        <TableRow key={record.id}>
+                                          <TableCell className="pl-5">
+                                            <button
+                                              type="button"
+                                              onClick={() =>
+                                                openFarm(record.farmId)
+                                              }
+                                              className="font-semibold hover:text-[#2f7b59]"
+                                            >
+                                              {farm?.name ?? '농가 없음'}
+                                            </button>
+                                          </TableCell>
+                                          <TableCell className="max-w-[240px] truncate">
+                                            {project?.name ?? '사업 없음'}
+                                          </TableCell>
+                                          <TableCell>
+                                            <p>
+                                              {formatDate(
+                                                record.currentSubscriptionExpiresAt,
+                                              )}
+                                            </p>
+                                            {expiryDays !== null &&
+                                              expiryDays >= 0 &&
+                                              expiryDays <= 90 && (
+                                                <Badge
+                                                  variant="outline"
+                                                  className="mt-1 border-[#ead9b8] bg-[#fff9ed] text-[#94601c]"
+                                                >
+                                                  {dueLabel(
+                                                    record.currentSubscriptionExpiresAt,
+                                                  )}
+                                                </Badge>
+                                              )}
+                                          </TableCell>
+                                          <TableCell>
+                                            {formatDate(record.lastPaymentDate)}
+                                          </TableCell>
+                                          <TableCell>
+                                            {record.renewalCount}회
+                                          </TableCell>
+                                          <TableCell>
+                                            <Badge
+                                              variant="outline"
+                                              className={subscriptionClass(
+                                                effectiveStatus,
+                                              )}
+                                            >
+                                              {
+                                                SUBSCRIPTION_STATUS_LABELS[
+                                                  effectiveStatus
+                                                ]
+                                              }
+                                            </Badge>
+                                          </TableCell>
+                                          <TableCell className="pr-5">
+                                            <div className="flex min-w-[285px] gap-2">
+                                              <Button
+                                                onClick={() =>
+                                                  openSubscriptionExpiryDialog(
+                                                    record,
+                                                  )
+                                                }
+                                                size="sm"
+                                                variant="outline"
+                                              >
+                                                <CalendarClock />
+                                                만료일
+                                              </Button>
+                                              <Button
+                                                onClick={() =>
+                                                  openSubscriptionEventDialog(
+                                                    record,
+                                                  )
+                                                }
+                                                size="sm"
+                                                variant="outline"
+                                              >
+                                                <CalendarCheck2 />
+                                                구독 처리
+                                              </Button>
+                                              <Button
+                                                onClick={() =>
+                                                  openQuickWorkItem(
+                                                    record,
+                                                    'payment',
+                                                    '구독료 입금',
+                                                  )
+                                                }
+                                                size="sm"
+                                                variant="outline"
+                                              >
+                                                <Plus />
+                                                입금
+                                              </Button>
+                                            </div>
+                                          </TableCell>
+                                        </TableRow>
+                                      );
+                                    })}
+                                    {!subscriptionPageRecords.length && (
+                                      <TableRow>
+                                        <TableCell
+                                          colSpan={7}
+                                          className="h-40 text-center text-[#89938c]"
+                                        >
+                                          검색 조건에 맞는 구독이 없습니다.
+                                        </TableCell>
+                                      </TableRow>
+                                    )}
+                                  </TableBody>
+                                </Table>
+                              </div>
+                              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#dfe6dd] bg-white px-4 py-3">
+                                <p className="text-xs text-[#78847c]">
+                                  {subscriptionListRecords.length
+                                    ? `${(effectiveSubscriptionListPage - 1) * SUBSCRIPTION_PAGE_SIZE + 1}–${Math.min(effectiveSubscriptionListPage * SUBSCRIPTION_PAGE_SIZE, subscriptionListRecords.length)}`
+                                    : '0'}{' '}
+                                  / {subscriptionListRecords.length}건
+                                </p>
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={
+                                      effectiveSubscriptionListPage <= 1
+                                    }
+                                    onClick={() =>
+                                      setSubscriptionListPage(
+                                        effectiveSubscriptionListPage - 1,
+                                      )
+                                    }
+                                  >
+                                    <ArrowLeft />
+                                    이전
+                                  </Button>
+                                  <span className="min-w-16 text-center text-xs font-semibold">
+                                    {effectiveSubscriptionListPage} /{' '}
+                                    {subscriptionPageCount}
+                                  </span>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={
+                                      effectiveSubscriptionListPage >=
+                                      subscriptionPageCount
+                                    }
+                                    onClick={() =>
+                                      setSubscriptionListPage(
+                                        effectiveSubscriptionListPage + 1,
+                                      )
+                                    }
+                                  >
+                                    다음
+                                    <ArrowRight />
+                                  </Button>
+                                </div>
+                              </div>
+                            </div>
+                            <Card className="h-fit border-0 bg-white ring-[#dfe6dd]">
+                              <CardContent>
+                                <div className="mb-4">
+                                  <h2 className="font-bold">최근 월별 입금</h2>
+                                  <p className="mt-1 text-xs text-[#89938c]">
+                                    입금 업무 히스토리 기준
                                   </p>
                                 </div>
-                              ))}
-                              {!monthlyPayments.length && (
-                                <p className="py-8 text-center text-sm text-[#89938c]">
-                                  입금 기록이 없습니다.
-                                </p>
-                              )}
-                            </div>
-                          </CardContent>
-                        </Card>
-                      </div>
+                                <div className="space-y-3">
+                                  {subscriptionMonthlyPayments.map((month) => (
+                                    <div
+                                      key={month.label}
+                                      className="rounded-xl bg-[#f5f8f4] p-3"
+                                    >
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-xs font-semibold">
+                                          {month.label}
+                                        </span>
+                                        <Badge variant="outline">
+                                          {month.count}건
+                                        </Badge>
+                                      </div>
+                                      <p className="mt-2 font-bold text-[#39795b]">
+                                        {formatMoney(month.amount)}
+                                      </p>
+                                    </div>
+                                  ))}
+                                  {!subscriptionMonthlyPayments.length && (
+                                    <p className="py-8 text-center text-sm text-[#89938c]">
+                                      입금 기록이 없습니다.
+                                    </p>
+                                  )}
+                                </div>
+                              </CardContent>
+                            </Card>
+                          </div>
+                        </TabsContent>
+                      </Tabs>
                     </section>
                   )}
 
@@ -8844,13 +9326,23 @@ export function FarmLedgerDashboard({
                                     <div className="flex flex-wrap gap-2">
                                       <Button
                                         onClick={() =>
+                                          openSubscriptionExpiryDialog(record)
+                                        }
+                                        size="sm"
+                                        variant="outline"
+                                      >
+                                        <CalendarClock />
+                                        만료일 입력·정정
+                                      </Button>
+                                      <Button
+                                        onClick={() =>
                                           openRecordEditDialog(record)
                                         }
                                         size="sm"
                                         variant="outline"
                                       >
                                         <Pencil />
-                                        설치·구독 수정
+                                        설치 정보 수정
                                       </Button>
                                       <Button
                                         onClick={() =>
@@ -9459,6 +9951,133 @@ export function FarmLedgerDashboard({
         </div>
 
         <Dialog
+          open={dialog === 'subscription_expiry'}
+          onOpenChange={(open) =>
+            !submitting && setDialog(open ? 'subscription_expiry' : null)
+          }
+        >
+          <DialogContent className="p-5 sm:max-w-[560px] sm:p-6">
+            <DialogHeader>
+              <DialogTitle className="text-lg">
+                구독 만료일 입력·정정
+              </DialogTitle>
+              <DialogDescription>
+                농가와 사업에 연결된 현재 구독 만료일을 바로 지정합니다.
+              </DialogDescription>
+            </DialogHeader>
+            <form
+              onSubmit={submitSubscriptionExpiry}
+              className="mt-1 space-y-4"
+            >
+              <div className="rounded-xl border border-[#dfe6dd] bg-[#f7f9f6] p-4">
+                <p className="font-semibold">
+                  {subscriptionExpiryFarm?.name ?? '농가 없음'}
+                </p>
+                <p className="mt-1 text-xs text-[#748078]">
+                  {subscriptionExpiryProject?.name ?? '사업 없음'}
+                </p>
+                <p className="mt-2 text-xs text-[#748078]">
+                  현재 만료일 ·{' '}
+                  <strong className="text-[#365d45]">
+                    {formatDate(
+                      subscriptionExpiryRecord?.currentSubscriptionExpiresAt ??
+                        '',
+                    )}
+                  </strong>
+                </p>
+              </div>
+              <Field>
+                <FieldLabel htmlFor="subscription-expiry-date">
+                  변경할 만료일
+                </FieldLabel>
+                <Input
+                  id="subscription-expiry-date"
+                  type="date"
+                  required
+                  value={subscriptionExpiryForm.expiryDate}
+                  onChange={(event) =>
+                    setSubscriptionExpiryForm((current) => ({
+                      ...current,
+                      expiryDate: event.target.value,
+                    }))
+                  }
+                />
+                {subscriptionExpiryForm.expiryDate && (
+                  <p className="text-xs text-[#748078]">
+                    저장 후 상태 ·{' '}
+                    <strong>
+                      {subscriptionExpiryForm.expiryDate >= localDateString()
+                        ? '사용중'
+                        : '만료'}
+                    </strong>
+                  </p>
+                )}
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="subscription-expiry-recorder">
+                  변경 담당자
+                </FieldLabel>
+                <Input
+                  id="subscription-expiry-recorder"
+                  required
+                  maxLength={100}
+                  value={subscriptionExpiryForm.recorder}
+                  onChange={(event) =>
+                    setSubscriptionExpiryForm((current) => ({
+                      ...current,
+                      recorder: event.target.value,
+                    }))
+                  }
+                  placeholder="만료일을 확인한 담당자"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="subscription-expiry-note">
+                  변경 메모
+                </FieldLabel>
+                <Textarea
+                  id="subscription-expiry-note"
+                  maxLength={1000}
+                  value={subscriptionExpiryForm.note}
+                  onChange={(event) =>
+                    setSubscriptionExpiryForm((current) => ({
+                      ...current,
+                      note: event.target.value,
+                    }))
+                  }
+                  placeholder="계약서 확인, 기존 입력 오류 등 변경 근거"
+                  className="min-h-20"
+                />
+              </Field>
+              {formError && <FieldError>{formError}</FieldError>}
+              <div className="rounded-xl bg-[#f5f8f4] px-4 py-3 text-xs leading-5 text-[#617066]">
+                이 기능은 만료일 입력·정정용입니다. 갱신·이탈·재가입 실적은
+                늘어나지 않으며 변경 이력만 남습니다. 실제 갱신은 ‘구독 처리’를
+                사용해 주세요.
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDialog(null)}
+                  disabled={submitting}
+                >
+                  취소
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={submitting}
+                  className="bg-[#327a56] hover:bg-[#286848]"
+                >
+                  {submitting && <Loader2 className="animate-spin" />}
+                  만료일 저장
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
           open={dialog === 'subscription_event'}
           onOpenChange={(open) =>
             !submitting && setDialog(open ? 'subscription_event' : null)
@@ -9484,6 +10103,9 @@ export function FarmLedgerDashboard({
                     setSubscriptionEventForm((current) => ({
                       ...current,
                       farmRecordId: value,
+                      expectedCurrentExpiryDate:
+                        record.currentSubscriptionExpiresAt,
+                      expectedUpdatedAt: record.updatedAt,
                       basisExpiryDate: record.currentSubscriptionExpiresAt,
                       newExpiryDate:
                         current.eventType === 'churned' ||
@@ -10716,7 +11338,7 @@ export function FarmLedgerDashboard({
                     ? '농가 기본정보 수정'
                     : dialog === 'record_add'
                       ? '참여 사업 추가'
-                      : '설치·구독 정보 수정'}
+                      : '설치 정보 수정'}
               </DialogTitle>
               <DialogDescription>
                 {dialog === 'farm'
@@ -10725,7 +11347,7 @@ export function FarmLedgerDashboard({
                     ? '농장번호, 연락처, 주소와 현장 링크를 수정합니다.'
                     : dialog === 'record_add'
                       ? `${selectedFarm?.name ?? ''} 농가를 다른 사업에 연결합니다.`
-                      : '사업별 장비, 설치 단계와 구독 기준을 수정하고 변경 이력을 남깁니다.'}
+                      : '사업별 장비와 설치 단계를 수정합니다. 현재 만료일과 구독 상태는 관리대장의 전용 구독 관리에서 변경합니다.'}
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={submitFarm} className="mt-1 space-y-6">
@@ -11046,6 +11668,16 @@ export function FarmLedgerDashboard({
                     <h3 className="mb-4 text-sm font-bold text-[#365644]">
                       4. 보증·구독
                     </h3>
+                    {dialog === 'record_edit' && (
+                      <div className="mb-4 rounded-xl border border-[#d8e5da] bg-[#f3f8f4] px-4 py-3 text-xs leading-5 text-[#55705e]">
+                        현재 구독 만료일은{' '}
+                        <strong className="text-[#315740]">
+                          {formatDate(farmForm.currentSubscriptionExpiresAt)}
+                        </strong>
+                        입니다. 만료일·상태·갱신횟수는 관리대장의 ‘만료일’ 또는
+                        ‘구독 처리’에서 변경해 주세요.
+                      </div>
+                    )}
                     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                       <Field>
                         <FieldLabel>보증기간(년)</FieldLabel>
@@ -11094,27 +11726,31 @@ export function FarmLedgerDashboard({
                           }
                         />
                       </Field>
-                      <Field>
-                        <FieldLabel>구독 상태</FieldLabel>
-                        <Select
-                          value={farmForm.subscriptionStatus}
-                          onValueChange={(value) =>
-                            setFarmForm((current) => ({
-                              ...current,
-                              subscriptionStatus: value as SubscriptionStatus,
-                            }))
-                          }
-                        >
-                          <SelectTrigger className="h-10 w-full">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="active">사용중</SelectItem>
-                            <SelectItem value="expired">만료</SelectItem>
-                            <SelectItem value="unregistered">미등록</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </Field>
+                      {dialog !== 'record_edit' && (
+                        <Field>
+                          <FieldLabel>구독 상태</FieldLabel>
+                          <Select
+                            value={farmForm.subscriptionStatus}
+                            onValueChange={(value) =>
+                              setFarmForm((current) => ({
+                                ...current,
+                                subscriptionStatus: value as SubscriptionStatus,
+                              }))
+                            }
+                          >
+                            <SelectTrigger className="h-10 w-full">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="active">사용중</SelectItem>
+                              <SelectItem value="expired">만료</SelectItem>
+                              <SelectItem value="unregistered">
+                                미등록
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </Field>
+                      )}
                       <Field>
                         <FieldLabel>최초 구독 만료일</FieldLabel>
                         <Input
@@ -11128,19 +11764,22 @@ export function FarmLedgerDashboard({
                           }
                         />
                       </Field>
-                      <Field>
-                        <FieldLabel>현재 구독 만료일</FieldLabel>
-                        <Input
-                          type="date"
-                          value={farmForm.currentSubscriptionExpiresAt}
-                          onChange={(event) =>
-                            setFarmForm((current) => ({
-                              ...current,
-                              currentSubscriptionExpiresAt: event.target.value,
-                            }))
-                          }
-                        />
-                      </Field>
+                      {dialog !== 'record_edit' && (
+                        <Field>
+                          <FieldLabel>현재 구독 만료일</FieldLabel>
+                          <Input
+                            type="date"
+                            value={farmForm.currentSubscriptionExpiresAt}
+                            onChange={(event) =>
+                              setFarmForm((current) => ({
+                                ...current,
+                                currentSubscriptionExpiresAt:
+                                  event.target.value,
+                              }))
+                            }
+                          />
+                        </Field>
+                      )}
                       <Field>
                         <FieldLabel>마지막 입금일</FieldLabel>
                         <Input
@@ -11154,20 +11793,22 @@ export function FarmLedgerDashboard({
                           }
                         />
                       </Field>
-                      <Field>
-                        <FieldLabel>갱신횟수</FieldLabel>
-                        <Input
-                          type="number"
-                          min={0}
-                          value={farmForm.renewalCount}
-                          onChange={(event) =>
-                            setFarmForm((current) => ({
-                              ...current,
-                              renewalCount: Number(event.target.value),
-                            }))
-                          }
-                        />
-                      </Field>
+                      {dialog !== 'record_edit' && (
+                        <Field>
+                          <FieldLabel>갱신횟수</FieldLabel>
+                          <Input
+                            type="number"
+                            min={0}
+                            value={farmForm.renewalCount}
+                            onChange={(event) =>
+                              setFarmForm((current) => ({
+                                ...current,
+                                renewalCount: Number(event.target.value),
+                              }))
+                            }
+                          />
+                        </Field>
+                      )}
                       <Field>
                         <FieldLabel>등록자</FieldLabel>
                         <Input

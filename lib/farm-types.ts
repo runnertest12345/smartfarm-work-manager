@@ -465,10 +465,21 @@ export interface FarmSubscriptionEvent {
 
 export interface FarmSubscriptionEventInput {
   farmRecordId: string;
+  expectedCurrentExpiryDate: string;
+  expectedUpdatedAt: number;
   eventType: FarmSubscriptionEventType;
   basisExpiryDate: string;
   processedAt: string;
   newExpiryDate: string;
+  recorder: string;
+  note: string;
+}
+
+export interface FarmSubscriptionExpiryCorrectionInput {
+  farmRecordId: string;
+  expectedCurrentExpiryDate: string;
+  expectedUpdatedAt: number;
+  expiryDate: string;
   recorder: string;
   note: string;
 }
