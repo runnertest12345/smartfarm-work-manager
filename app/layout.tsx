@@ -3,12 +3,12 @@ import './globals.css';
 
 function resolveSiteUrl(value: string | undefined) {
   try {
-    const url = new URL(value || 'https://evident-minutia-460301-c9.web.app');
+    const url = new URL(value || 'https://34-64-62-115.sslip.io');
     return url.protocol === 'http:' || url.protocol === 'https:'
       ? url
-      : new URL('https://evident-minutia-460301-c9.web.app');
+      : new URL('https://34-64-62-115.sslip.io');
   } catch {
-    return new URL('https://evident-minutia-460301-c9.web.app');
+    return new URL('https://34-64-62-115.sslip.io');
   }
 }
 

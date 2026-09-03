@@ -10,7 +10,7 @@
     "build": "next build",
     "preview": "firebase emulators:start --only hosting --project demo-farmlog",
     "firebase:emulators": "firebase emulators:start --project demo-farmlog",
-    "firebase:deploy": "pnpm build && firebase deploy --only hosting,firestore:rules,firestore:indexes",
+    "firebase:deploy": "firebase deploy --only auth,firestore:rules,firestore:indexes",
     "lint": "oxlint app lib",
     "lint:all": "oxlint",
     "format": "oxfmt"

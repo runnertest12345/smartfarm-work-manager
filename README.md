@@ -7,12 +7,12 @@
 ```text
 GitHub 비공개 저장소
   → Next.js 정적 빌드
-  → Firebase Hosting (Spark 무료 요금제)
-  → Firebase Authentication (Google 로그인)
-  → Cloud Firestore (승인 사용자만 접근)
+  → Google Compute Engine VM + Caddy (3개월 한시 운영)
+  → Firebase Authentication (별도 Spark 무료 프로젝트)
+  → Cloud Firestore (승인 사용자만 접근, Spark 무료 할당량)
 ```
 
-Cloud Run, Cloud SQL, Cloud Functions, Secret Manager, Artifact Registry는 사용하지 않습니다. Firebase 프로젝트에 결제 계정을 연결하지 않으면 Spark 무료 할당량을 넘었을 때 과금되는 대신 서비스 요청이 제한됩니다.
+Cloud Run, Cloud SQL, Cloud Functions, Secret Manager, Artifact Registry와 Firebase Hosting은 사용하지 않습니다. 화면은 기존 `runner-507408` VM에서 제공하고, 데이터와 로그인은 결제 계정이 연결되지 않은 별도 Firebase 프로젝트 `smartfarm-work-manager`를 사용합니다. Spark 무료 할당량을 넘으면 과금 대신 서비스 요청이 제한됩니다.
 
 ## 구현 기능
 
@@ -28,20 +28,20 @@ Cloud Run, Cloud SQL, Cloud Functions, Secret Manager, Artifact Registry는 사�
 
 ## Firebase 최초 설정
 
-1. [Firebase Console](https://console.firebase.google.com/)에서 Google Cloud 프로젝트 `evident-minutia-460301-c9`에 Firebase를 추가합니다. 요금제는 **Spark**를 유지하고 Google Analytics는 선택 사항입니다.
+1. [Firebase Console](https://console.firebase.google.com/)에서 별도 프로젝트 `smartfarm-work-manager`를 만들고 **Spark** 요금제를 유지합니다. 결제가 연결된 `runner-507408`에는 Firebase를 추가하지 않습니다.
 2. Firestore Standard 데이터베이스를 서울 리전(`asia-northeast3`)에 만듭니다. 위치는 나중에 바꿀 수 없습니다.
-3. Authentication에서 Google 로그인 공급자를 활성화합니다.
+3. `firebase.json`의 Google 로그인 지원 이메일과 OAuth 표시 이름을 확인합니다. 공급자는 6단계의 배포 명령이 활성화합니다.
 4. 웹 앱을 등록하고 Firebase 구성값을 복사합니다.
 5. `.env.example`을 `.env.local`로 복사한 뒤 `NEXT_PUBLIC_FIREBASE_*` 값을 입력합니다. 웹 구성값은 공개 식별자이며 비밀 키가 아닙니다.
-6. 먼저 Firestore 규칙과 인덱스를 배포합니다.
+6. Google 로그인 공급자, Firestore 규칙과 인덱스를 배포합니다.
 
 ```bash
 pnpm install
 pnpm exec firebase login
-pnpm exec firebase deploy --only firestore:rules,firestore:indexes
+pnpm exec firebase deploy --only auth,firestore:rules,firestore:indexes
 ```
 
-7. `pnpm dev`에서 Google 계정으로 한 번 로그인합니다. 화면에 표시되는 UID를 복사합니다.
+7. Firebase Authentication의 Authorized domains에 실제 HTTPS 호스트를 추가하고, 배포된 사이트에서 Google 계정으로 한 번 로그인합니다. 화면에 표시되는 UID를 복사합니다.
 8. Firebase Console의 Firestore에서 `appMembers/{UID}` 문서를 만들고 Boolean 필드 `active`를 `true`로 설정합니다. 앱 사용자는 이 문서를 직접 만들거나 수정할 수 없습니다.
 
 ## 로컬 개발
@@ -68,11 +68,11 @@ pnpm build
 pnpm firebase:deploy
 ```
 
-정적 결과물은 `out/`에 생성되고 Firebase Hosting 주소는 `https://evident-minutia-460301-c9.web.app`입니다. 별도 사용자 도메인을 연결하면 `.env.local`의 `NEXT_PUBLIC_SITE_URL`과 Firebase Authentication의 Authorized domains도 함께 갱신합니다.
+`pnpm firebase:deploy`는 Google 로그인 공급자와 Firestore 규칙·인덱스를 배포합니다. 정적 결과물은 `out/`에 생성되며 `.github/workflows/deploy-gce-static.yml`을 통해 VM으로 배포합니다. 3개월 임시 주소는 `https://34-64-62-115.sslip.io`입니다. VM 준비와 GitHub 변수·비밀값 설정은 [Compute Engine 배포 문서](docs/gce-static-deployment.md)를 따릅니다.
 
 ## 보안·비용 원칙
 
-- Hosting의 HTML·JavaScript 파일은 공개로 내려받을 수 있지만, 농가·사업 데이터는 Firebase Auth와 Firestore Rules가 차단합니다.
+- VM의 HTML·JavaScript 파일은 공개로 내려받을 수 있지만, 농가·사업 데이터는 Firebase Auth와 Firestore Rules가 차단합니다.
 - 승인 여부는 클라이언트의 이메일 검사 대신 `appMembers/{uid}` 문서로 확인합니다.
 - 로그인은 브라우저 세션에만 유지하고 Firestore IndexedDB 영구 캐시는 사용하지 않습니다.
 - 모든 저장은 transaction 또는 batch로 관련 농가·사업·업무·히스토리를 함께 갱신합니다.

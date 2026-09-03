@@ -5,7 +5,6 @@ import {
   GoogleAuthProvider,
   onAuthStateChanged,
   signInWithPopup,
-  signInWithRedirect,
   signOut,
   type User,
 } from 'firebase/auth';
@@ -102,11 +101,9 @@ export function FirebaseAuthGate() {
       const { auth } = getFirebaseServices();
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: 'select_account' });
-      if (window.matchMedia('(max-width: 640px)').matches) {
-        await signInWithRedirect(auth, provider);
-      } else {
-        await signInWithPopup(auth, provider);
-      }
+      // The app is hosted outside Firebase Hosting. Popup sign-in avoids the
+      // third-party storage restrictions that can break cross-site redirects.
+      await signInWithPopup(auth, provider);
     } catch (error) {
       const code =
         typeof error === 'object' && error && 'code' in error
