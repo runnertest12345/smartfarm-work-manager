@@ -2949,7 +2949,7 @@ export function FarmLedgerDashboard({
   async function copySubscriptionReport() {
     const shortYear = String(subscriptionReport.year).slice(-2);
     const lines = [
-      '5.2 구독 실적',
+      '구독 실적',
       '',
       `- 만료 ('${shortYear}.1~${subscriptionReport.endMonth}) : ${subscriptionReport.target}개소`,
       `- 갱신 ${subscriptionReport.renewed}개소(이탈 ${subscriptionReport.churned}개소), 재가입 ${subscriptionReport.rejoined}개소`,
@@ -7370,7 +7370,7 @@ export function FarmLedgerDashboard({
 
                         <TabsContent value="report" className="mt-0">
                           <div className="mb-4">
-                            <h2 className="text-xl font-bold">5.2 구독 실적</h2>
+                            <h2 className="text-xl font-bold">구독 실적</h2>
                             <p className="mt-1 text-xs text-[#7a867d]">
                               갱신·이탈·재가입과 향후 만료를 연도·월·사업별로
                               확인합니다.
