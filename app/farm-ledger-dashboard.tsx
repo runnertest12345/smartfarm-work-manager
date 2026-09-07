@@ -153,8 +153,9 @@ import {
   summarizeProjectKpis,
   summarizeCurrentExpiry,
   summarizeSubscriptionCycles,
-  unresolvedExpiryCohorts,
 } from '@/lib/dashboard-kpis';
+import { buildRenewalReport } from '@/lib/subscription-renewal-report';
+import { SubscriptionRenewalPanel } from './subscription-renewal-panel';
 import {
   ProjectKpiPanel,
   ProjectTypeSelector,
@@ -343,6 +344,7 @@ interface SubscriptionEventForm {
   expectedUpdatedAt: number;
   eventType: FarmSubscriptionEventType;
   basisExpiryDate: string;
+  basisRenewalCount: string;
   processedAt: string;
   newExpiryDate: string;
   recorder: string;
@@ -889,6 +891,7 @@ function emptySubscriptionEventForm(
     expectedUpdatedAt: record?.updatedAt ?? 0,
     eventType: 'renewed',
     basisExpiryDate: record?.currentSubscriptionExpiresAt ?? '',
+    basisRenewalCount: '',
     processedAt: localDateString(),
     newExpiryDate: record?.currentSubscriptionExpiresAt
       ? addYears(record.currentSubscriptionExpiresAt, 1)
@@ -2387,54 +2390,30 @@ export function FarmLedgerDashboard({
     const projectMatches = (projectId: string) =>
       subscriptionReportProjectType === 'all' ||
       projectById.get(projectId)?.projectType === subscriptionReportProjectType;
-    const dateInReportPeriod = (date: string) =>
-      Boolean(date) &&
-      date.slice(0, 4) === String(year) &&
-      date.slice(0, 7) <= endMonthKey;
-
     const relevantRecords = workspace.records.filter((record) =>
       projectMatches(record.projectId),
     );
     const relevantEvents = workspace.subscriptionEvents.filter((event) =>
       projectMatches(event.projectId),
     );
-    const cohortSummary = unresolvedExpiryCohorts(
-      relevantRecords,
-      relevantEvents,
-      year,
-      endMonth,
-      subscriptionToday,
+    const renewal = buildRenewalReport(
+      workspace.records,
+      workspace.subscriptionEvents,
+      workspace.projects,
+      {
+        year,
+        endMonth,
+        today: subscriptionToday,
+        projectType: subscriptionReportProjectType,
+      },
     );
-    const distinctEventCount = (
-      type: 'renewed' | 'churned' | 'rejoined',
-      useProcessedDate = false,
-    ) =>
-      new Set(
-        relevantEvents
-          .filter(
-            (event) =>
-              event.eventType === type &&
-              dateInReportPeriod(
-                useProcessedDate ? event.processedAt : event.basisExpiryDate,
-              ),
-          )
-          .map((event) =>
-            type === 'rejoined'
-              ? event.id
-              : `${event.farmRecordId}:${event.basisExpiryDate}`,
-          ),
-      ).size;
-    const renewed = distinctEventCount('renewed');
-    const churned = distinctEventCount('churned');
-    const rejoined = distinctEventCount('rejoined', true);
-    const decided = renewed + churned;
 
     const upcomingRecords = relevantRecords.filter(
       (record) =>
         effectiveRecordSubscriptionStatus(record, subscriptionToday) ===
           'active' &&
         Boolean(record.currentSubscriptionExpiresAt) &&
-        record.currentSubscriptionExpiresAt >= subscriptionToday,
+        record.currentSubscriptionExpiresAt > subscriptionToday,
     );
     const yearMap = new Map<number, Map<number, Map<string, FarmRecord[]>>>();
     for (const record of upcomingRecords) {
@@ -2500,15 +2479,10 @@ export function FarmLedgerDashboard({
         relevantEvents,
         subscriptionToday,
       ),
-      ...cohortSummary,
-      renewed,
-      churned,
-      rejoined,
+      renewal,
+      ...renewal.overall,
+      rejoined: renewal.rejoined,
       upcomingCount: upcomingRecords.length,
-      dueTodayCount: upcomingRecords.filter(
-        (record) => record.currentSubscriptionExpiresAt === subscriptionToday,
-      ).length,
-      renewalRate: decided ? Math.round((renewed / decided) * 1000) / 10 : null,
       missingExpiry: relevantRecords.filter(
         (record) =>
           record.subscriptionStatus !== 'unregistered' &&
@@ -2532,6 +2506,7 @@ export function FarmLedgerDashboard({
     subscriptionToday,
     workspace.records,
     workspace.subscriptionEvents,
+    workspace.projects,
   ]);
 
   const subscriptionListProjects = filterProjectsByScope(
@@ -3234,8 +3209,15 @@ export function FarmLedgerDashboard({
       `- 사업 타입 : ${projectTypeLabel}`,
       `- 만료 ('${shortYear}.1~${subscriptionReport.endMonth}) : ${subscriptionReport.target}개소`,
       `- 갱신 ${subscriptionReport.renewed}개소(이탈 ${subscriptionReport.churned}개소), 재가입 ${subscriptionReport.rejoined}개소`,
+      `- 첫 갱신율 : ${subscriptionReport.renewal.first.rate ?? '-'}${subscriptionReport.renewal.first.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewal.first.renewed} / 도래 ${subscriptionReport.renewal.first.target})`,
+      `- 반복 갱신율 : ${subscriptionReport.renewal.repeat.rate ?? '-'}${subscriptionReport.renewal.repeat.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewal.repeat.renewed} / 도래 ${subscriptionReport.renewal.repeat.target})`,
+      `- 전체 갱신율 : ${subscriptionReport.renewal.overall.rate ?? '-'}${subscriptionReport.renewal.overall.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewed} / 도래 ${subscriptionReport.target})`,
+      `- 선택 기간 결과 미확인 ${subscriptionReport.pending}개소, 결과 충돌 ${subscriptionReport.conflict}개소${subscriptionReport.pending + subscriptionReport.conflict > 0 ? ' · 잠정 실적' : ''}`,
+      `- 회차 미확인 도래 대상 ${subscriptionReport.renewal.unknown.target}개소는 전체에만 포함`,
+      `- 선택 기간 만료 예정 ${subscriptionReport.renewal.overall.upcoming}개소는 현재 갱신율 분모에서 제외`,
+      `- 기준: 확인 가능한 농가×사업×만료 회차. 오늘(${subscriptionReport.asOfDate})까지 도래한 대상 / 오늘까지 확인된 결과. 재가입은 갱신에 합산하지 않음.`,
       `- 만료 후 결과 미등록 (오늘 ${subscriptionReport.asOfDate} 기준, 전체 기간) : ${subscriptionReport.currentExpiry.expiredPending}개소`,
-      `- 만료 예정 (오늘 이후, 오늘 포함) : ${subscriptionReport.upcomingCount}개소`,
+      `- 현재 사용 중 만료 예정 (내일부터, 전체 기간) : ${subscriptionReport.upcomingCount}개소`,
     ];
     if (!subscriptionReport.upcoming.length) {
       lines.push('  없음');
@@ -3394,7 +3376,13 @@ export function FarmLedgerDashboard({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           kind: 'subscription_event',
-          subscriptionEvent: subscriptionEventForm,
+          subscriptionEvent: {
+            ...subscriptionEventForm,
+            basisRenewalCount:
+              subscriptionEventForm.basisRenewalCount === ''
+                ? null
+                : Number(subscriptionEventForm.basisRenewalCount),
+          },
         }),
       });
       const data = await readResponse(response);
@@ -8020,13 +8008,32 @@ export function FarmLedgerDashboard({
                                 </Field>
                               </div>
                               <p className="mt-3 text-xs leading-5 text-[#7a867d]">
-                                농가×사업 구독 1건을 1개소로 집계합니다.
-                                갱신·이탈은 기준 만료일, 재가입은 처리일을
-                                기준으로 계산합니다.
+                                농가×사업×만료 회차를 1개소로 집계합니다. 선택
+                                기간 중 오늘까지 도래한 대상의 갱신율을 계산하며
+                                재가입은 별도 집계합니다.
                               </p>
                             </CardContent>
                           </Card>
 
+                          <SubscriptionRenewalPanel
+                            key={`${subscriptionReportYear}-${subscriptionReportEndMonth}-${subscriptionReportProjectType}`}
+                            report={subscriptionReport.renewal}
+                            projects={workspace.projects}
+                            records={workspace.records}
+                            farms={workspace.farms}
+                            onOpenRecord={(record, projectId) =>
+                              openFarm(record.farmId, '', projectId)
+                            }
+                            onRegister={(record, expiryDate) => {
+                              openSubscriptionEventDialog(record);
+                              setSubscriptionEventForm((current) => ({
+                                ...current,
+                                basisExpiryDate: expiryDate,
+                                basisRenewalCount: '',
+                                newExpiryDate: addYears(expiryDate, 1),
+                              }));
+                            }}
+                          />
                           <SubscriptionCyclePanel
                             counts={subscriptionCycleCounts}
                           />
@@ -8050,7 +8057,7 @@ export function FarmLedgerDashboard({
                                 {
                                   label: '만료 예정',
                                   value: subscriptionReport.upcomingCount,
-                                  note: `현재 사용 중 · 오늘 만료 ${subscriptionReport.dueTodayCount}개소 포함`,
+                                  note: '현재 사용 중 · 내일부터 만료 · 전체 기간',
                                 },
                                 {
                                   label: '만료일 미입력',
@@ -8077,68 +8084,13 @@ export function FarmLedgerDashboard({
                               ))}
                             </div>
                           </section>
-                          <h2 className="mb-3 text-base font-bold">
-                            선택 기간 구독 실적 · {subscriptionReport.year}.1~
-                            {subscriptionReport.endMonth}
-                          </h2>
-                          <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-                            {[
-                              {
-                                label: `만료 대상 · ${subscriptionReport.year}.1~${subscriptionReport.endMonth}`,
-                                value: subscriptionReport.target,
-                                tone: 'text-[#203027]',
-                              },
-                              {
-                                label: '갱신',
-                                value: subscriptionReport.renewed,
-                                tone: 'text-[#2f7b59]',
-                              },
-                              {
-                                label: '이탈',
-                                value: subscriptionReport.churned,
-                                tone: 'text-[#b46438]',
-                              },
-                              {
-                                label: '재가입',
-                                value: subscriptionReport.rejoined,
-                                tone: 'text-[#416c9c]',
-                              },
-                              {
-                                label: '갱신률',
-                                value:
-                                  subscriptionReport.renewalRate === null
-                                    ? '-'
-                                    : `${subscriptionReport.renewalRate}%`,
-                                tone: 'text-[#765b9d]',
-                                raw: true,
-                              },
-                            ].map((metric) => (
-                              <Card
-                                key={metric.label}
-                                className="border-0 bg-white ring-[#dfe6dd]"
-                              >
-                                <CardContent>
-                                  <p className="text-xs text-[#7a867d]">
-                                    {metric.label}
-                                  </p>
-                                  <p
-                                    className={`mt-1 text-2xl font-bold ${metric.tone}`}
-                                  >
-                                    {metric.value}
-                                    {!metric.raw && '개소'}
-                                  </p>
-                                </CardContent>
-                              </Card>
-                            ))}
-                          </div>
-
                           {(subscriptionReport.currentExpiry.expiredPending >
                             0 ||
                             subscriptionReport.missingExpiry > 0) && (
                             <div className="mb-4 flex items-start gap-2 rounded-xl border border-[#eadfca] bg-[#fffaf0] px-4 py-3 text-xs leading-5 text-[#80663f]">
                               <CircleAlert className="mt-0.5 size-4 shrink-0" />
                               <p>
-                                {`오늘(${subscriptionReport.asOfDate}) 기준 만료 후 결과 미등록 ${subscriptionReport.currentExpiry.expiredPending}개소, 만료 예정 ${subscriptionReport.upcomingCount}개소(오늘 만료 ${subscriptionReport.dueTodayCount}개소 포함)입니다. `}
+                                {`오늘(${subscriptionReport.asOfDate}) 기준 만료 후 결과 미등록 ${subscriptionReport.currentExpiry.expiredPending}개소, 현재 사용 중 만료 예정 ${subscriptionReport.upcomingCount}개소(내일부터, 전체 기간)입니다. `}
                                 {subscriptionReport.missingExpiry > 0 &&
                                   `만료일 미입력 ${subscriptionReport.missingExpiry}개소는 만료 예정에서 제외했습니다.`}
                               </p>
@@ -8153,8 +8105,8 @@ export function FarmLedgerDashboard({
                                     <h2 className="font-bold">만료 예정</h2>
                                     <p className="mt-1 text-xs text-[#89938c]">
                                       {formatDate(subscriptionReport.asOfDate)}{' '}
-                                      기준 · 오늘 이후 만료되는 사용 중
-                                      구독(오늘 포함)
+                                      기준 · 내일부터 만료되는 사용 중 구독(전체
+                                      기간)
                                     </p>
                                   </div>
                                   <Badge variant="outline">
@@ -11190,6 +11142,7 @@ export function FarmLedgerDashboard({
                         record.currentSubscriptionExpiresAt,
                       expectedUpdatedAt: record.updatedAt,
                       basisExpiryDate: record.currentSubscriptionExpiresAt,
+                      basisRenewalCount: '',
                       newExpiryDate:
                         current.eventType === 'churned' ||
                         !record.currentSubscriptionExpiresAt
@@ -11242,6 +11195,8 @@ export function FarmLedgerDashboard({
                       setSubscriptionEventForm((current) => ({
                         ...current,
                         eventType: value as FarmSubscriptionEventType,
+                        basisRenewalCount:
+                          value === 'rejoined' ? '' : current.basisRenewalCount,
                         newExpiryDate:
                           value === 'churned'
                             ? ''
@@ -11295,6 +11250,7 @@ export function FarmLedgerDashboard({
                       setSubscriptionEventForm((current) => ({
                         ...current,
                         basisExpiryDate,
+                        basisRenewalCount: '',
                         newExpiryDate:
                           current.eventType === 'churned'
                             ? ''
@@ -11323,6 +11279,46 @@ export function FarmLedgerDashboard({
                 )}
               </div>
 
+              {subscriptionEventForm.eventType !== 'rejoined' && (
+                <Field>
+                  <FieldLabel htmlFor="subscription-basis-renewal-count">
+                    해당 만료 회차 이전의 갱신 횟수
+                  </FieldLabel>
+                  {subscriptionEventForm.basisExpiryDate ===
+                  subscriptionEventForm.expectedCurrentExpiryDate ? (
+                    <p className="text-sm text-[#53645a]">
+                      현재 회차의 갱신 전 횟수:{' '}
+                      {recordById.get(subscriptionEventForm.farmRecordId)
+                        ?.renewalCount ?? '미확인'}
+                      회. 처리 전에 자동 저장합니다. 과거 회차의 현재 횟수
+                      역산에는 사용하지 않습니다.
+                    </p>
+                  ) : (
+                    <>
+                      <Input
+                        id="subscription-basis-renewal-count"
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="확인되지 않으면 비워 두세요"
+                        value={subscriptionEventForm.basisRenewalCount}
+                        onChange={(event) =>
+                          setSubscriptionEventForm((current) => ({
+                            ...current,
+                            basisRenewalCount: event.target.value,
+                          }))
+                        }
+                      />
+                      <p className="text-xs leading-5 text-[#627269]">
+                        과거 계약·갱신 증빙으로 확인한 값만 입력하세요. 0회는 첫
+                        갱신 대상, 1회 이상은 반복 갱신 대상입니다. 공란은 회차
+                        미확인으로 남으며 저장한 처리 이력은 여기서 수정할 수
+                        없습니다.
+                      </p>
+                    </>
+                  )}
+                </Field>
+              )}
               <Field>
                 <FieldLabel htmlFor="subscription-recorder">
                   처리 담당자

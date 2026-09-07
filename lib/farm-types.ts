@@ -456,6 +456,8 @@ export interface FarmSubscriptionEvent {
   projectId: string;
   eventType: FarmSubscriptionEventType;
   basisExpiryDate: string;
+  /** Renewals completed before this expiry cycle; absent legacy values are unknown. */
+  basisRenewalCount?: number | null;
   processedAt: string;
   newExpiryDate: string;
   recorder: string;
@@ -469,6 +471,8 @@ export interface FarmSubscriptionEventInput {
   expectedUpdatedAt: number;
   eventType: FarmSubscriptionEventType;
   basisExpiryDate: string;
+  /** Optional verified count for historical backfills; current cycles are snapshotted in the transaction. */
+  basisRenewalCount?: number | null;
   processedAt: string;
   newExpiryDate: string;
   recorder: string;

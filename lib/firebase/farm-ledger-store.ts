@@ -63,6 +63,7 @@ import {
   getFirebaseServices,
   requireSignedInUser,
 } from './client';
+import { renewalCountBeforeEvent } from '@/lib/subscription-renewal-report';
 
 const COLLECTIONS = {
   projects: 'projects',
@@ -400,6 +401,22 @@ function parseSubscriptionEventInput(
     },
     '구독 처리 입력값을 확인해 주세요.',
   );
+  const basisRenewalCount = asObject(
+    value,
+    '구독 처리 입력값을 확인해 주세요.',
+  ).basisRenewalCount;
+  if (basisRenewalCount !== undefined && basisRenewalCount !== null) {
+    if (
+      typeof basisRenewalCount !== 'number' ||
+      !Number.isSafeInteger(basisRenewalCount) ||
+      basisRenewalCount < 0
+    ) {
+      throw new Error(
+        '기준 만료 회차 이전의 갱신 횟수는 0 이상의 정수로 입력해 주세요.',
+      );
+    }
+    input.basisRenewalCount = basisRenewalCount;
+  }
   assertEnum(
     input.eventType,
     FARM_SUBSCRIPTION_EVENT_TYPES,
@@ -1772,12 +1789,26 @@ async function createSubscriptionEvent(input: FarmSubscriptionEventInput) {
         '재가입은 만료 또는 이탈 이력이 있는 구독에만 등록할 수 있습니다.',
       );
     }
+    if (
+      input.basisRenewalCount != null &&
+      input.basisExpiryDate === record.currentSubscriptionExpiresAt &&
+      input.basisRenewalCount !== record.renewalCount
+    ) {
+      throw new Error(
+        '현재 회차의 갱신 전 횟수가 관리대장과 다릅니다. 최신 내용을 확인해 주세요.',
+      );
+    }
     const subscriptionEvent: FarmSubscriptionEvent = {
       id: crypto.randomUUID(),
       farmRecordId: input.farmRecordId,
       projectId: record.projectId,
       eventType: input.eventType,
       basisExpiryDate: input.basisExpiryDate,
+      basisRenewalCount: renewalCountBeforeEvent(
+        record,
+        input.basisExpiryDate,
+        input.basisRenewalCount,
+      ),
       processedAt: input.processedAt,
       newExpiryDate: input.newExpiryDate,
       recorder: input.recorder,
