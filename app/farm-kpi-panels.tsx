@@ -264,11 +264,7 @@ export function SubscriptionCyclePanel({
   counts: ReturnType<typeof summarizeSubscriptionCycles>;
 }) {
   const metrics = [
-    [
-      '입금 기록 없음',
-      counts.noPayment,
-      '확인된 구독 입금 0건 · 실제 미입금 확정 아님',
-    ],
+    ['갱신 이력 없음', counts.noPayment, '확인된 구독 입금 0건 · 1차 갱신 전'],
     ['1차 갱신', counts.first, '첫 갱신 · 구독 입금 1건'],
     ['2차 갱신', counts.second, '구독 입금 2건'],
     ['3차 이상 갱신', counts.thirdPlus, '구독 입금 3건 이상'],

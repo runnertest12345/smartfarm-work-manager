@@ -89,7 +89,7 @@ export function SubscriptionPaymentYearPanel({
           </p>
           {report.total.count === 0 && (
             <p className="mt-2 text-sm">
-              선택한 사업 타입에 연결된 입금 기록이 없습니다.
+              선택한 사업 타입의 갱신 이력이 없습니다. 확인된 입금은 0건입니다.
             </p>
           )}
           {(report.possiblyLimited ||

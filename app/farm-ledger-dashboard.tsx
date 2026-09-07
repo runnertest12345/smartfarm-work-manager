@@ -3263,7 +3263,6 @@ export function FarmLedgerDashboard({
               (month) =>
                 `  ${Number(month.key.slice(5))}월: ${month.annualTarget} / ${month.target} / ${month.renewed} / ${month.notRenewed} / ${month.rate === null ? '-' : `${month.rate}%`} / ${month.upcoming + month.dueToday}`,
             ),
-            `- 현재 미갱신 (오늘 ${subscriptionReport.asOfDate} 기준, 전체 연도) : ${subscriptionReport.currentNonRenewed}개소`,
             `- 현재 사용 중 만료 예정 (내일부터, 전체 기간) : ${subscriptionReport.upcomingCount}개소`,
           ];
     if (
@@ -8120,62 +8119,6 @@ export function FarmLedgerDashboard({
                           <SubscriptionCyclePanel
                             counts={subscriptionCycleCounts}
                           />
-                          <section
-                            className="mb-5"
-                            aria-label="오늘 기준 구독 만료 현황"
-                          >
-                            <h2 className="mb-3 text-base font-bold">
-                              오늘 기준 만료 현황 ·{' '}
-                              {subscriptionReport.asOfDate}
-                            </h2>
-                            <div className="grid gap-3 sm:grid-cols-3">
-                              {[
-                                {
-                                  label: '현재 미갱신',
-                                  value: subscriptionReport.currentNonRenewed,
-                                  note: '오늘 이전 현재 만료일 · 갱신 미완료 · 전체 연도',
-                                },
-                                {
-                                  label: '만료 예정',
-                                  value: subscriptionReport.upcomingCount,
-                                  note: '현재 사용 중 · 내일부터 만료 · 전체 기간',
-                                },
-                                {
-                                  label: '만료일 미입력',
-                                  value: subscriptionReport.missingExpiry,
-                                  note: '만료 여부·예정 확인에 날짜가 필요합니다',
-                                },
-                              ].map((metric) => (
-                                <Card
-                                  key={metric.label}
-                                  className="border-0 bg-white ring-[#dfe6dd]"
-                                >
-                                  <CardContent>
-                                    <p className="text-sm text-[#627269]">
-                                      {metric.label}
-                                    </p>
-                                    <p className="mt-1 text-2xl font-bold text-[#255f43]">
-                                      {metric.value}개소
-                                    </p>
-                                    <p className="mt-1 text-xs leading-5 text-[#718077]">
-                                      {metric.note}
-                                    </p>
-                                  </CardContent>
-                                </Card>
-                              ))}
-                            </div>
-                          </section>
-                          {(subscriptionReport.currentNonRenewed > 0 ||
-                            subscriptionReport.missingExpiry > 0) && (
-                            <div className="mb-4 flex items-start gap-2 rounded-xl border border-[#eadfca] bg-[#fffaf0] px-4 py-3 text-xs leading-5 text-[#80663f]">
-                              <CircleAlert className="mt-0.5 size-4 shrink-0" />
-                              <p>
-                                {`오늘(${subscriptionReport.asOfDate}) 기준 현재 미갱신 ${subscriptionReport.currentNonRenewed}개소, 현재 사용 중 만료 예정 ${subscriptionReport.upcomingCount}개소(내일부터, 전체 연도)입니다. `}
-                                {subscriptionReport.missingExpiry > 0 &&
-                                  `만료일 미입력 ${subscriptionReport.missingExpiry}개소는 만료 예정에서 제외했습니다.`}
-                              </p>
-                            </div>
-                          )}
 
                           <div className="mb-8 grid gap-4 2xl:grid-cols-[minmax(0,1fr)_360px]">
                             <Card className="border-0 bg-white ring-[#dfe6dd]">
@@ -8647,13 +8590,18 @@ export function FarmLedgerDashboard({
                                                     ),
                                                   ),
                                                 )
-                                              : '입금 기록 없음'}
+                                              : subscriptionPaymentCount(
+                                                    record,
+                                                    0,
+                                                  ) > 0
+                                                ? '최근 입금 이력 확인 중'
+                                                : '갱신 이력 없음'}
                                           </TableCell>
                                           <TableCell>
                                             <p className="whitespace-nowrap font-semibold">
                                               {
                                                 {
-                                                  noPayment: '입금 기록 없음',
+                                                  noPayment: '갱신 이력 없음',
                                                   first: '1차 갱신',
                                                   second: '2차 갱신',
                                                   thirdPlus: `${subscriptionPaymentCount(record, payment?.count ?? 0)}차 갱신`,

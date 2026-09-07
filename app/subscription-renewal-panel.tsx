@@ -21,8 +21,8 @@ const rateLabel = (rate: number | null) =>
     : `${rate.toLocaleString('ko-KR', { maximumFractionDigits: 2 })}%`;
 const stageLabels = {
   all: '전체 구독',
-  first: '1차 갱신',
-  repeat: '반복 갱신 · 2차 이상',
+  first: '첫 갱신 대상 · 1차',
+  repeat: '반복 갱신 대상 · 2차 이상',
   unknown: '과거 입금 연결 필요',
 };
 const outcomeLabels = {
@@ -296,10 +296,14 @@ export function SubscriptionRenewalPanel({
                                             {projectById.get(cycle.projectId)
                                               ?.name ?? '사업 미확인'}{' '}
                                             · 만료 {cycle.expiryDate} ·{' '}
-                                            {stageLabels[cycle.stage]}
+                                            {cycle.paymentCount === 0
+                                              ? '갱신 이력 없음'
+                                              : `현재 ${cycle.paymentCount}차 갱신`}
                                             {' · '}입금 {cycle.paymentCount}건
-                                            {cycle.paymentOrdinal !== null
-                                              ? ` · 해당 입금 ${cycle.paymentOrdinal}차`
+                                            {cycle.paymentCount > 0 &&
+                                            cycle.outcome === 'renewed' &&
+                                            cycle.paymentOrdinal !== null
+                                              ? ` · 해당 만료 건 갱신 ${cycle.paymentOrdinal}차`
                                               : cycle.stage === 'unknown'
                                                 ? ' · 해당 만료 건과 입금 연결 필요'
                                                 : ''}

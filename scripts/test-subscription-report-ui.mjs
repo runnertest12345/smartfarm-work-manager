@@ -89,11 +89,11 @@ const props = {
   onOpenRecord() {},
   onRegister() {},
 };
-function render() {
+function render(inputProps = props) {
   cursor = 0;
   buttons = [];
   return renderToStaticMarkup(
-    React.createElement(SubscriptionRenewalPanel, props),
+    React.createElement(SubscriptionRenewalPanel, inputProps),
   );
 }
 test('월별 표는 8열이고 26년 총계가 첫 행, 삭제한 두 열은 없다', () => {
@@ -126,4 +126,64 @@ test('농가 보기 클릭은 해당 월 바로 아래 펼치고 농가 접기�
   html = render();
   assert.ok(!html.includes('월별 테스트 농가'));
   assert.ok(!html.includes('aria-expanded="true"'));
+});
+
+test('입금 0건 상세는 갱신 이력 없음이며 첫 갱신 대상 분모는 유지한다', () => {
+  states = [];
+  render();
+  buttons
+    .find((button) => button.children === '농가 보기' && !button.disabled)
+    .onClick();
+  const html = render();
+  const detail = html.slice(
+    html.indexOf('aria-label="만료 회차 대상 상세"'),
+    html.indexOf('</section>'),
+  );
+  assert.ok(detail.includes('갱신 이력 없음'));
+  assert.ok(detail.includes('입금 0건'));
+  assert.ok(!detail.includes('현재 1차 갱신'));
+  assert.ok(!detail.includes('해당 만료 건 갱신 1차'));
+  assert.equal(report.first.target, 1);
+  assert.equal(report.first.rate, 0);
+});
+
+test('입금 1건이 있는 현재 구독만 1차 갱신 이력으로 표시한다', () => {
+  const paidReport = reportLib.buildRenewalReport(records, [], projects, {
+    year: 2026,
+    today: '2026-09-07',
+    workItems: [{ id: 'w', farmRecordId: 'r', workType: 'payment' }],
+    historyEntries: [
+      {
+        id: 'h',
+        workItemId: 'w',
+        amount: 66000,
+        occurredAt: new Date('2025-01-01T12:00:00').getTime(),
+      },
+    ],
+  });
+  const paidProps = { ...props, report: paidReport };
+  states = [];
+  render(paidProps);
+  buttons
+    .find((button) => button.children === '농가 보기' && !button.disabled)
+    .onClick();
+  const html = render(paidProps);
+  const detail = html.slice(
+    html.indexOf('aria-label="만료 회차 대상 상세"'),
+    html.indexOf('</section>'),
+  );
+  assert.ok(detail.includes('현재 1차 갱신'));
+  assert.ok(detail.includes('입금 1건'));
+  assert.ok(!detail.includes('갱신 이력 없음'));
+});
+
+test('구독 실적에서는 오늘 기준 카드와 중복 운영 경고를 제거한다', () => {
+  const dashboard = readFileSync(
+    new URL('../app/farm-ledger-dashboard.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.ok(!dashboard.includes('aria-label="오늘 기준 구독 만료 현황"'));
+  assert.ok(!dashboard.includes('오늘 기준 만료 현황 ·'));
+  assert.ok(!dashboard.includes('subscriptionReport.currentNonRenewed > 0'));
+  assert.ok(dashboard.includes("noPayment: '갱신 이력 없음'"));
 });

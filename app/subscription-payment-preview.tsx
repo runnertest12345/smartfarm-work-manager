@@ -25,7 +25,7 @@ export function SubscriptionPaymentPreview({
         paymentDate,
         today,
       });
-      message = `기존 입금 ${paymentCount}건 → 이번 입금 ${paymentCount + 1}차 갱신 · ${plan.years}년 연장\n${plan.basisExpiryDate} → ${plan.newExpiryDate}\n${plan.withinGrace ? '만료 전 또는 만료 후 2개월 이내: 기존 만료일 기준' : '만료 후 2개월 초과: 결제일부터 연장한 해당 월의 마지막 날'}`;
+      message = `현재 ${paymentCount === 0 ? '갱신 이력 없음' : `${paymentCount}차 갱신`} · 입금 ${paymentCount}건\n저장 후 ${paymentCount + 1}차 갱신 예정 · ${plan.years}년 연장\n${plan.basisExpiryDate} → ${plan.newExpiryDate}\n${plan.withinGrace ? '만료 전 또는 만료 후 2개월 이내: 기존 만료일 기준' : '만료 후 2개월 초과: 결제일부터 연장한 해당 월의 마지막 날'}`;
     } catch (error) {
       invalid = true;
       message =
