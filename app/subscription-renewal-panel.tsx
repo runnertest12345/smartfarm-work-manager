@@ -21,15 +21,15 @@ const rateLabel = (rate: number | null) =>
     : `${rate.toLocaleString('ko-KR', { maximumFractionDigits: 2 })}%`;
 const stageLabels = {
   all: '전체 구독',
-  first: '첫 갱신',
-  repeat: '반복 갱신',
-  unknown: '회차 미확인',
+  first: '1차 갱신',
+  repeat: '반복 갱신 · 2차 이상',
+  unknown: '과거 입금 연결 필요',
 };
 const outcomeLabels = {
   renewed: '갱신 완료',
-  churned: '이탈 확정',
-  pending: '결과 미확인',
-  conflict: '결과 충돌',
+  churned: '미갱신 · 이탈 기록',
+  pending: '미갱신',
+  conflict: '기록 확인 필요',
 };
 
 export function SubscriptionRenewalPanel({
@@ -58,7 +58,7 @@ export function SubscriptionRenewalPanel({
   const filtered = report.cycles.filter(
     (cycle) => stage === 'all' || cycle.stage === stage,
   );
-  const groups = groupRenewalCycles(filtered, grouping, projects);
+  const groups = groupRenewalCycles(filtered, grouping, projects, report.year);
   const summary = summarizeRenewalCycles(filtered);
   const selected = groups.find((group) => group.key === selectedGroup);
   const groupName = (key: string) =>
@@ -87,17 +87,20 @@ export function SubscriptionRenewalPanel({
   };
   const cells = (metric: typeof summary) => (
     <>
+      <td className="p-3 text-right font-semibold">{metric.annualTarget}</td>
       <td className="p-3 text-right font-semibold">{metric.target}</td>
       <td className="p-3 text-right text-emerald-800">{metric.renewed}</td>
-      <td className="p-3 text-right">{metric.churned}</td>
-      <td className="p-3 text-right">{metric.pending}</td>
+      <td className="p-3 text-right text-amber-800">{metric.notRenewed}</td>
       <td className="p-3 text-right">{metric.conflict}</td>
       <td className="p-3 text-right font-bold">
         {rateLabel(metric.rate)}
-        {metric.target > 0 && metric.pending + metric.conflict > 0 && (
-          <span className="ml-1 text-xs font-normal text-amber-800">잠정</span>
+        {metric.conflict > 0 && (
+          <span className="ml-1 text-xs font-normal text-amber-800">
+            기록 확인
+          </span>
         )}
       </td>
+      <td className="p-3 text-right">{metric.dueToday}</td>
       <td className="p-3 text-right">{metric.upcoming}</td>
     </>
   );
@@ -108,109 +111,29 @@ export function SubscriptionRenewalPanel({
     >
       <div>
         <h2 id="renewal-performance-heading" className="text-lg font-bold">
-          첫 갱신과 반복 갱신 비교
+          {report.year}년 구독 실적 · 1월~12월
         </h2>
         <p className="mt-1 text-sm text-[#627269]">
-          {report.startDate} ~ {report.endDate} 만료 회차 · 오늘({report.today}
-          )까지 도래한 대상과 오늘까지 확인된 결과
+          연간 만료 대상 {report.overall.annualTarget}개소 · 기준일{' '}
+          {report.today}. 만료일이 지났고 갱신 완료가 없으면 미갱신입니다.
         </p>
-      </div>
-      <div className="grid gap-3 md:grid-cols-3">
-        {(
-          [
-            {
-              key: 'first',
-              title: '첫 갱신율',
-              description: '첫 만료 회차 · 이전 갱신 0회',
-              metric: report.first,
-            },
-            {
-              key: 'repeat',
-              title: '반복 갱신율',
-              description: '다시 만료되는 회차 · 이전 갱신 1회 이상',
-              metric: report.repeat,
-            },
-            {
-              key: 'all',
-              title: '전체 갱신율',
-              description: '회차 미확인을 포함한 모든 만료 도래 대상',
-              metric: report.overall,
-            },
-          ] as const
-        ).map(({ key, title, description, metric }) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => chooseStage(key)}
-            aria-pressed={stage === key}
-            className={`rounded-xl border bg-white p-5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${stage === key ? 'border-emerald-700 ring-1 ring-emerald-700' : 'border-[#dfe6dd] hover:border-emerald-600'}`}
-          >
-            <span className="block font-semibold">{title}</span>
-            <span className="mt-2 block text-3xl font-bold tabular-nums text-emerald-800">
-              {rateLabel(metric.rate)}
-            </span>
-            <span className="mt-2 block text-sm">
-              갱신 {metric.renewed} / 만료 도래 {metric.target}개소
-            </span>
-            <span className="mt-1 block text-xs leading-5 text-[#627269]">
-              {description}
-            </span>
-            <span className="mt-2 block text-xs font-medium text-amber-800">
-              {metric.pending + metric.conflict > 0
-                ? `잠정 실적 · 미확인 ${metric.pending} · 충돌 ${metric.conflict}`
-                : metric.target
-                  ? '등록 결과 기준'
-                  : '도래 대상 없음'}{' '}
-              · 표 보기
-            </span>
-          </button>
-        ))}
-      </div>
-      <div className="rounded-xl border border-[#dfe6dd] bg-white p-4 text-sm leading-6">
-        <p>
-          선택 기간 만료 도래 <strong>{report.overall.target}개소</strong> 중
-          갱신 {report.overall.renewed}, 이탈 {report.overall.churned}, 결과
-          미확인 {report.overall.pending}, 결과 충돌 {report.overall.conflict}
-          개소입니다.
-        </p>
-        <p>
-          만료 예정 <strong>{report.overall.upcoming}개소</strong>는 분모에서
-          제외합니다. 재가입 <strong>{report.rejoined}개소</strong>는 별도
-          실적이며 갱신에 합산하지 않습니다.
-        </p>
-        {report.unknown.target + report.unknown.upcoming > 0 && (
-          <p className="mt-1 text-amber-900">
-            회차 미확인: 도래 {report.unknown.target} / 예정{' '}
-            {report.unknown.upcoming}개소. 전체에는 포함되지만 첫·반복 비교에는
-            포함되지 않습니다.{' '}
-            <button
-              type="button"
-              className="font-semibold underline underline-offset-4"
-              onClick={() => chooseStage('unknown')}
-            >
-              미확인 회차 보기
-            </button>
-          </p>
-        )}
-        {report.excluded > 0 && (
-          <p className="text-amber-900">
-            전체 원자료에서 날짜·연결 오류 {report.excluded}건을 제외했습니다.
-            관리대장의 원자료 확인이 필요합니다.
-          </p>
-        )}
       </div>
       <Card className="border-0 bg-white ring-[#dfe6dd]">
         <CardContent>
           <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
             <div>
-              <h3 className="font-bold">갱신 실적 집계표</h3>
+              <h3 className="font-bold">
+                {grouping === 'month'
+                  ? '1월~12월 월별 만료 농가'
+                  : '연간 구독 실적 집계표'}
+              </h3>
               <p className="mt-1 text-xs text-[#627269]">
                 {stageLabels[stage]} · 농가×사업×만료 회차 기준(개소). 같은
                 농가도 회차가 다르면 각각 집계됩니다.
               </p>
             </div>
             <div className="flex flex-wrap gap-3">
-              <label className="text-xs font-medium">
+              <label className="text-sm font-medium">
                 구독 구분
                 <select
                   aria-label="갱신 집계 구독 구분"
@@ -227,7 +150,7 @@ export function SubscriptionRenewalPanel({
                   ))}
                 </select>
               </label>
-              <label className="text-xs font-medium">
+              <label className="text-sm font-medium">
                 묶어 보기
                 <select
                   aria-label="갱신 집계 기준"
@@ -251,21 +174,22 @@ export function SubscriptionRenewalPanel({
           <div className="overflow-x-auto rounded-lg border">
             <table className="w-full min-w-[840px] text-sm tabular-nums">
               <caption className="sr-only">
-                {stageLabels[stage]} 갱신 실적. 만료 예정은 현재 갱신율 분모에서
-                제외.
+                {report.year}년 1월부터 12월 {stageLabels[stage]} 갱신 실적.
+                오늘 만료와 만료 예정은 갱신율 분모에서 제외.
               </caption>
               <thead className="bg-[#f3f6f3] text-xs">
                 <tr>
                   {[
                     '구분',
-                    '만료 도래 대상',
+                    '만료 농가',
+                    '만료 경과',
                     '갱신 완료',
-                    '이탈 확정',
-                    '결과 미확인',
-                    '결과 충돌',
+                    '미갱신',
+                    '기록 확인',
                     '갱신율',
+                    '오늘 만료',
                     '만료 예정',
-                    '상세',
+                    '농가',
                   ].map((heading, index) => (
                     <th
                       key={heading}
@@ -291,6 +215,7 @@ export function SubscriptionRenewalPanel({
                           variant="outline"
                           size="sm"
                           aria-expanded={selectedGroup === group.key}
+                          disabled={group.cycles.length === 0}
                           onClick={() => {
                             setSelectedGroup(
                               selectedGroup === group.key ? null : group.key,
@@ -298,14 +223,14 @@ export function SubscriptionRenewalPanel({
                             setPage(0);
                           }}
                         >
-                          대상 보기
+                          농가 보기
                         </Button>
                       </td>
                     </tr>
                   ))}
                 {!groups.length && (
                   <tr>
-                    <td colSpan={9} className="p-8 text-center text-[#627269]">
+                    <td colSpan={10} className="p-8 text-center text-[#627269]">
                       선택 조건에 해당하는 만료 회차가 없습니다.
                     </td>
                   </tr>
@@ -396,12 +321,18 @@ export function SubscriptionRenewalPanel({
                               '사업 미확인'}{' '}
                             · 만료 {cycle.expiryDate} ·{' '}
                             {stageLabels[cycle.stage]}
+                            {' · '}입금 {cycle.paymentCount}건
+                            {cycle.paymentOrdinal !== null
+                              ? ` · 해당 입금 ${cycle.paymentOrdinal}차`
+                              : cycle.stage === 'unknown'
+                                ? ' · 해당 만료 건과 입금 연결 필요'
+                                : ''}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-3">
                           <span>
-                            {cycle.upcoming
-                              ? `만료 예정${cycle.outcome === 'renewed' ? ' · 선갱신 완료' : ''}`
+                            {cycle.upcoming || cycle.dueToday
+                              ? `${cycle.dueToday ? '오늘 만료' : '만료 예정'}${cycle.outcome === 'renewed' ? ' · 선갱신 완료' : ''}`
                               : outcomeLabels[cycle.outcome]}
                           </span>
                           {cycle.outcome === 'pending' &&
@@ -456,33 +387,127 @@ export function SubscriptionRenewalPanel({
           )}
         </CardContent>
       </Card>
+      <div className="grid gap-3 md:grid-cols-3">
+        {(
+          [
+            {
+              key: 'first',
+              title: '첫 갱신율 · 1차',
+              description: '첫 번째 입금 대상 · 이전 입금 0회',
+              metric: report.first,
+            },
+            {
+              key: 'repeat',
+              title: '반복 갱신율 · 2차 이상',
+              description: '두 번째 이후 입금 대상 · 이전 입금 1회 이상',
+              metric: report.repeat,
+            },
+            {
+              key: 'all',
+              title: '전체 갱신율',
+              description: '과거 입금 연결 필요 건까지 포함한 만료 경과 대상',
+              metric: report.overall,
+            },
+          ] as const
+        ).map(({ key, title, description, metric }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => chooseStage(key)}
+            aria-pressed={stage === key}
+            className={`rounded-xl border bg-white p-5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${stage === key ? 'border-emerald-700 ring-1 ring-emerald-700' : 'border-[#dfe6dd] hover:border-emerald-600'}`}
+          >
+            <span className="block font-semibold">{title}</span>
+            <span className="mt-2 block text-3xl font-bold tabular-nums text-emerald-800">
+              {rateLabel(metric.rate)}
+            </span>
+            <span className="mt-2 block text-sm">
+              갱신 {metric.renewed} / 만료 경과 {metric.target}개소
+            </span>
+            <span className="mt-1 block text-xs leading-5 text-[#627269]">
+              {description}
+            </span>
+            <span className="mt-2 block text-xs font-medium text-amber-800">
+              {metric.conflict > 0
+                ? `미갱신 ${metric.notRenewed} · 기록 확인 ${metric.conflict}`
+                : metric.target
+                  ? `미갱신 ${metric.notRenewed}개소`
+                  : '만료 경과 대상 없음'}{' '}
+              · 표 보기
+            </span>
+          </button>
+        ))}
+      </div>
+      <div className="rounded-xl border border-[#dfe6dd] bg-white p-4 text-sm leading-6">
+        <p>
+          연간 만료 대상 <strong>{report.overall.annualTarget}개소</strong> 중
+          만료 경과 <strong>{report.overall.target}개소</strong>입니다. 갱신{' '}
+          {report.overall.renewed}, 미갱신 {report.overall.notRenewed}개소이며
+          별도 결과 등록이 없어도 만료일 경과 시 미갱신으로 집계합니다.
+          {report.overall.conflict > 0 &&
+            ` 상충하는 기록 ${report.overall.conflict}개소는 갱신으로 인정하지 않고 기록 확인 대상으로 구분합니다.`}
+        </p>
+        <p>
+          오늘 만료 <strong>{report.overall.dueToday}개소</strong>와 만료 예정{' '}
+          <strong>{report.overall.upcoming}개소</strong>는 아직 만료일이 지나지
+          않아 갱신율 분모에서 제외합니다. 재가입{' '}
+          <strong>{report.rejoined}개소</strong>는 별도 실적이며 갱신에 합산하지
+          않습니다.
+        </p>
+        {report.unknown.annualTarget > 0 && (
+          <p className="mt-1 text-amber-900">
+            과거 입금 연결 필요: 경과 {report.unknown.target} / 오늘{' '}
+            {report.unknown.dueToday} / 예정 {report.unknown.upcoming}개소.
+            전체에는 포함되지만 첫·반복 비교에는 포함되지 않습니다.{' '}
+            <button
+              type="button"
+              className="font-semibold underline underline-offset-4"
+              onClick={() => chooseStage('unknown')}
+            >
+              입금 연결 대상 보기
+            </button>
+          </p>
+        )}
+        {report.excluded > 0 && (
+          <p className="text-amber-900">
+            전체 원자료에서 날짜·연결 오류 {report.excluded}건을 제외했습니다.
+            관리대장의 원자료 확인이 필요합니다.
+          </p>
+        )}
+      </div>
       <details className="rounded-xl border bg-white p-4 text-sm leading-6">
         <summary className="cursor-pointer font-semibold">
           집계 기준과 원본 검토 내용
         </summary>
         <div className="mt-3 space-y-2 text-[#53645a]">
           <p>
-            갱신율 = 갱신 완료 ÷ 만료 도래 대상 × 100. 대상이 있고 갱신이 없으면
-            0%, 대상이 없으면 -입니다. 미확인·충돌도 분모에 포함하므로 해당
-            결과가 남으면 잠정 실적입니다.
+            매년 1월~12월 전체를 조회합니다. 갱신율 = 만료 경과 대상의 갱신 완료
+            ÷ 만료 경과 대상 × 100. 대상이 있고 갱신이 없으면 0%, 대상이 없으면
+            -입니다. 오늘 만료는 당일까지 유효하므로 아직 미갱신으로 보지 않고
+            내일부터 반영합니다.
           </p>
           <p>
-            첫·반복 집단은 해당 만료 회차 이전 갱신 이력으로 고정합니다. 앞으로
-            현재 회차를 처리할 때 갱신 전 횟수를 저장합니다. 과거 처리 건은
-            저장된 횟수 또는 연결된 이전 갱신 근거가 없으면 회차 미확인입니다.
-            현재 횟수로 과거 회차를 역산하지 않습니다.
+            첫 입금이 첫 갱신이며 두 번째 입금부터 반복 갱신입니다. 금액이
+            아니라 입금 기록 건수로 구분하므로 132,000원 한 번은 2년 연장·1회
+            입금입니다. 앞으로 입금 전 횟수를 갱신 이력에 고정 저장합니다. 과거
+            갱신은 연결 입금 또는 같은 날의 유일한 입금으로 회차를 확인하며,
+            연결 근거가 없으면 과거 입금 연결 필요로 표시합니다. 수기 갱신
+            횟수는 KPI 분류에 사용하지 않습니다.
           </p>
           <p>
             기록으로 확인된 만료 회차만 계산합니다. 최초 만료일이나 계약
             기간으로 누락된 과거 회차를 임의 복원하지 않습니다. 현재 미처리
-            회차는 관리대장에 등록된 갱신 횟수를 기준으로 합니다. 과거 기간
-            조회도 그 시점의 상태 복원이 아니라 오늘까지 확인된 결과입니다.
+            회차는 현재까지의 실제 입금 내역 건수를 기준으로 다음 입금 회차를
+            정합니다. 과거 기간 조회도 그 시점의 상태 복원이 아니라 오늘까지
+            확인된 결과입니다.
           </p>
           <p>
-            재가입은 선택 기간의 처리일 기준 별도 집계입니다. 결과 미확인은
-            이탈이 아닙니다. 만료 예정은 선택 기간 중 내일부터 도래하는
-            회차이며, 아래 전체 만료 예정 목록은 기간과 무관한 현재 사용 중
-            구독입니다.
+            미갱신은 만료일이 지났고 갱신 완료가 없는 경우이며 이탈 기록과
+            무기록 대상을 포함합니다. 나중에 갱신을 등록하면 갱신으로 바뀝니다.
+            상충하는 기록은 확인 대상으로 분리하되 분모에는 포함합니다. 재가입은
+            선택 연도의 처리일 기준 별도 집계입니다. 만료 예정은 선택 연도 중
+            내일부터 도래하는 회차이며, 아래 전체 만료 예정 목록은 기간과 무관한
+            현재 사용 중 구독입니다.
           </p>
           <p>
             농가 수·입금액·현재 계약 회차는 보조 현황입니다. ‘한 번 갱신하면

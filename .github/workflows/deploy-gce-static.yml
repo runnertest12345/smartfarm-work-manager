@@ -109,6 +109,7 @@ jobs:
           node scripts/test-dashboard-kpis.mjs
           node scripts/test-workspace-navigation.mjs
           node scripts/test-subscription-renewal-report.mjs
+          node scripts/test-subscription-payment.mjs
           pnpm exec tsc --noEmit --incremental false
           pnpm build
           test -f out/index.html

@@ -6,11 +6,15 @@ import {
   limit,
   onSnapshot,
   query,
+  where,
+  getDocsFromServer,
   runTransaction,
   waitForPendingWrites,
   writeBatch,
   type Unsubscribe,
-  type WriteBatch,
+  type Transaction,
+  type DocumentReference,
+  type DocumentData,
 } from 'firebase/firestore';
 
 import {
@@ -64,6 +68,10 @@ import {
   requireSignedInUser,
 } from './client';
 import { renewalCountBeforeEvent } from '@/lib/subscription-renewal-report';
+import {
+  calculateSubscriptionPayment,
+  type SubscriptionPaymentRequest,
+} from '@/lib/subscription-payment';
 
 const COLLECTIONS = {
   projects: 'projects',
@@ -81,6 +89,10 @@ const COLLECTIONS = {
 } as const;
 
 type WorkspaceKey = keyof typeof COLLECTIONS;
+type LedgerWriter = {
+  set: (reference: DocumentReference, data: DocumentData) => unknown;
+  update: (reference: DocumentReference, data: DocumentData) => unknown;
+};
 type JsonObject = Record<string, unknown>;
 type AuditFields = {
   createdByUid: string;
@@ -767,7 +779,7 @@ function updatedData<T extends { id: string }>(entity: T) {
 }
 
 function setCreated<T extends { id: string; createdAt: number }>(
-  batch: WriteBatch,
+  batch: LedgerWriter,
   key: WorkspaceKey,
   entity: T,
 ) {
@@ -775,7 +787,7 @@ function setCreated<T extends { id: string; createdAt: number }>(
 }
 
 function setUpdated<T extends { id: string }>(
-  batch: WriteBatch,
+  batch: LedgerWriter,
   key: WorkspaceKey,
   entity: T,
 ) {
@@ -783,7 +795,7 @@ function setUpdated<T extends { id: string }>(
 }
 
 function touch(
-  batch: WriteBatch,
+  batch: LedgerWriter,
   key: WorkspaceKey,
   id: string,
   updatedAt: number,
@@ -795,7 +807,7 @@ function touch(
 }
 
 function touchActivity(
-  batch: WriteBatch,
+  batch: LedgerWriter,
   key: 'records' | 'workItems',
   id: string,
   activityAt: number,
@@ -1863,7 +1875,7 @@ async function createSubscriptionEvent(input: FarmSubscriptionEventInput) {
       renewalCount: nextRenewalCount,
       subscriptionStatus: nextStatus,
       lastActivityAt: Math.max(record.lastActivityAt, now),
-      updatedAt: now,
+      updatedAt: Math.max(now, record.updatedAt + 1),
       updatedByUid: requireSignedInUser().uid,
     });
     transaction.set(
@@ -1946,7 +1958,7 @@ async function correctSubscriptionExpiry(
       currentSubscriptionExpiresAt: input.expiryDate,
       subscriptionStatus,
       lastActivityAt: record.lastActivityAt,
-      updatedAt: now,
+      updatedAt: Math.max(now, existing.updatedAt + 1),
       updatedByUid: requireSignedInUser().uid,
     });
     transaction.set(
@@ -2007,12 +2019,322 @@ async function updateInboxStatus(
   return { inboxItem };
 }
 
+function parsePaymentRequest(
+  value: unknown,
+): SubscriptionPaymentRequest | undefined {
+  if (value == null) return undefined;
+  const request = parseShape<SubscriptionPaymentRequest>(
+    value,
+    {
+      operationId: 'string',
+      expectedCurrentExpiryDate: 'string',
+      expectedUpdatedAt: 'number',
+    },
+    '구독 입금 확인 정보를 다시 불러와 주세요.',
+  );
+  if (
+    !/^[a-zA-Z0-9-]{16,80}$/.test(request.operationId) ||
+    !Number.isSafeInteger(request.expectedUpdatedAt) ||
+    request.expectedUpdatedAt < 0
+  ) {
+    throw new Error('구독 입금 확인 정보를 다시 불러와 주세요.');
+  }
+  return request;
+}
+
+async function paymentFingerprint(value: unknown): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(JSON.stringify(value)),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function readPaymentReplay(
+  transaction: Transaction,
+  request: SubscriptionPaymentRequest,
+  fingerprint: string,
+) {
+  const prior = await transaction.get(
+    documentRef('historyEntries', request.operationId),
+  );
+  if (!prior.exists()) return null;
+  const historyEntry = prior.data() as FarmHistoryEntry;
+  if (historyEntry.paymentRequestFingerprint !== fingerprint) {
+    throw new Error(
+      '이미 저장된 입금 요청의 내용이 변경되었습니다. 기존 입금과 연장 내역을 먼저 확인해 주세요.',
+    );
+  }
+  const work = await transaction.get(
+    documentRef('workItems', historyEntry.workItemId),
+  );
+  if (!work.exists())
+    throw new Error('저장된 입금의 연결 업무를 확인해 주세요.');
+  return { workItem: work.data() as FarmWorkItem, historyEntry };
+}
+
+async function savePaymentMutation(options: {
+  request: SubscriptionPaymentRequest;
+  fingerprint: string;
+  record: FarmRecord;
+  workItem: FarmWorkItem;
+  historyEntry: FarmHistoryEntry;
+  paymentHistory: FarmHistoryEntry;
+  existingWork?: FarmWorkItem;
+  sourceInbox?: FarmInboxItem;
+  write: (transaction: Transaction) => void;
+}) {
+  const {
+    request,
+    fingerprint,
+    record,
+    workItem,
+    historyEntry,
+    paymentHistory,
+    existingWork,
+    sourceInbox,
+    write,
+  } = options;
+  // Independent listeners can arrive out of order; payment ordinals use server evidence.
+  const [eventSnapshot, paymentWorkSnapshot] = await Promise.all([
+    getDocsFromServer(
+      query(
+        collectionRef('subscriptionEvents'),
+        where('farmRecordId', '==', record.id),
+        limit(5000),
+      ),
+    ),
+    getDocsFromServer(
+      query(
+        collectionRef('workItems'),
+        where('farmRecordId', '==', record.id),
+        limit(5000),
+      ),
+    ),
+  ]);
+  if (eventSnapshot.size >= 5000 || paymentWorkSnapshot.size >= 5000)
+    throw new Error(
+      '기록이 조회 한도에 도달했습니다. 입금 회차 확인 후 처리해 주세요.',
+    );
+  const serverPriorEvents = eventSnapshot.docs
+    .map((snapshot) => snapshot.data() as FarmSubscriptionEvent)
+    .filter(
+      (event) => event.basisExpiryDate === request.expectedCurrentExpiryDate,
+    );
+  const paymentWorkIds = paymentWorkSnapshot.docs
+    .filter((snapshot) => snapshot.data().workType === 'payment')
+    .map((snapshot) => snapshot.id);
+  const serverPayments: FarmHistoryEntry[] = [];
+  for (let offset = 0; offset < paymentWorkIds.length; offset += 30) {
+    const payments = await getDocsFromServer(
+      query(
+        collectionRef('historyEntries'),
+        where('workItemId', 'in', paymentWorkIds.slice(offset, offset + 30)),
+        limit(5000),
+      ),
+    );
+    if (payments.size >= 5000)
+      throw new Error(
+        '입금 기록이 조회 한도에 도달했습니다. 회차 확인 후 처리해 주세요.',
+      );
+    serverPayments.push(
+      ...payments.docs.map((snapshot) => snapshot.data() as FarmHistoryEntry),
+    );
+  }
+  return runTransaction(getFirebaseServices().db, async (transaction) => {
+    const replay = await readPaymentReplay(transaction, request, fingerprint);
+    if (replay) return replay;
+    const [recordSnapshot, workSnapshot, inboxSnapshot, projectSnapshot] =
+      await Promise.all([
+        transaction.get(documentRef('records', record.id)),
+        transaction.get(documentRef('workItems', workItem.id)),
+        sourceInbox
+          ? transaction.get(documentRef('inboxItems', sourceInbox.id))
+          : Promise.resolve(null),
+        transaction.get(documentRef('projects', record.projectId)),
+      ]);
+    if (!recordSnapshot.exists() || !projectSnapshot.exists())
+      throw new Error('농가와 사업 정보를 다시 확인해 주세요.');
+    const current = recordSnapshot.data() as FarmRecord;
+    if (
+      current.updatedAt !== request.expectedUpdatedAt ||
+      current.currentSubscriptionExpiresAt !==
+        request.expectedCurrentExpiryDate ||
+      current.projectId !== record.projectId ||
+      current.farmId !== record.farmId
+    ) {
+      throw new Error(
+        '구독 정보가 변경되어 입금을 저장하지 않았습니다. 창을 닫고 최신 만료일을 확인한 뒤 다시 등록해 주세요.',
+      );
+    }
+    if (
+      existingWork
+        ? !workSnapshot.exists() ||
+          workSnapshot.data().updatedAt !== existingWork.updatedAt
+        : workSnapshot.exists()
+    ) {
+      throw new Error(
+        '업무가 변경되어 입금을 저장하지 않았습니다. 최신 내용을 확인해 주세요.',
+      );
+    }
+    if (
+      sourceInbox &&
+      (!inboxSnapshot?.exists() ||
+        inboxSnapshot.data().status !== 'unprocessed')
+    ) {
+      throw new Error(
+        '수신함 항목이 이미 처리되었습니다. 연결된 입금 내역을 확인해 주세요.',
+      );
+    }
+    if (!existingWork)
+      assertProjectEditable(projectSnapshot.data() as FarmProject);
+    if (
+      existingWork &&
+      projectSnapshot.data().status === 'completed' &&
+      workItem.status !== 'completed'
+    ) {
+      throw new Error('완료된 사업의 업무는 다시 열 수 없습니다.');
+    }
+    const now = Date.now();
+    if (paymentHistory.occurredAt > now)
+      throw new Error(
+        '미래 시각의 입금으로 구독을 연장할 수 없습니다. 실제 입금 시각을 확인해 주세요.',
+      );
+    const plan = calculateSubscriptionPayment({
+      amount: paymentHistory.amount,
+      currentExpiryDate: current.currentSubscriptionExpiresAt,
+      paymentDate: localDateAt(paymentHistory.occurredAt),
+      today: localDateAt(now),
+    });
+    const ledgerPaymentCount = new Set(
+      serverPayments
+        .filter(
+          (entry) =>
+            Number.isFinite(entry.amount) &&
+            entry.amount > 0 &&
+            Number.isFinite(entry.occurredAt) &&
+            entry.occurredAt > 0 &&
+            entry.occurredAt <= now,
+        )
+        .map((entry) => entry.id),
+    ).size;
+    const previousPaymentCount = Math.max(
+      ledgerPaymentCount,
+      Number.isSafeInteger(current.subscriptionPaymentCount) &&
+        current.subscriptionPaymentCount! >= 0
+        ? current.subscriptionPaymentCount!
+        : 0,
+    );
+    if (current.lastPaymentDate && plan.paymentDate < current.lastPaymentDate) {
+      throw new Error(
+        '마지막 입금일보다 이전인 입금은 자동 연장할 수 없습니다. 기존 입금과 만료일을 먼저 확인해 주세요.',
+      );
+    }
+    const priorSnapshots = await Promise.all(
+      serverPriorEvents.map((event) =>
+        transaction.get(documentRef('subscriptionEvents', event.id)),
+      ),
+    );
+    const confirmedPrior = priorSnapshots
+      .filter((snapshot) => snapshot.exists())
+      .map((snapshot) => snapshot.data() as FarmSubscriptionEvent);
+    if (
+      confirmedPrior.some(
+        (event) =>
+          event.eventType !== 'churned' || event.processedAt > plan.paymentDate,
+      )
+    ) {
+      throw new Error(
+        '이 만료 회차에 처리 이력이 있습니다. 중복 연장을 막기 위해 기존 기록을 먼저 확인해 주세요.',
+      );
+    }
+    const subscriptionEvent: FarmSubscriptionEvent = {
+      id: `payment-${request.operationId}`,
+      farmRecordId: current.id,
+      projectId: current.projectId,
+      eventType: 'renewed',
+      basisExpiryDate: plan.basisExpiryDate,
+      basisRenewalCount: renewalCountBeforeEvent(
+        current,
+        current.currentSubscriptionExpiresAt,
+      ),
+      basisPaymentCount: previousPaymentCount,
+      paymentOrdinal: previousPaymentCount + 1,
+      processedAt: plan.paymentDate,
+      newExpiryDate: plan.newExpiryDate,
+      recorder: paymentHistory.recorder,
+      note: `${plan.amount.toLocaleString('ko-KR')}원 입금으로 ${plan.years}년 자동 갱신 · ${plan.withinGrace ? '기존 만료일 기준(만료 전 또는 만료 후 2개월 이내)' : '결제일 기준 연장 후 해당 월 말일'}`,
+      createdAt: now,
+      paymentHistoryEntryId: paymentHistory.id,
+      paymentAmount: plan.amount,
+      yearsAdded: plan.years,
+      paymentPolicy: plan.policy,
+      supersedesEventIds: confirmedPrior.map((event) => event.id),
+    };
+    Object.assign(paymentHistory, {
+      paymentRequestFingerprint: fingerprint,
+      subscriptionEventId: subscriptionEvent.id,
+      subscriptionPreviousExpiryDate: plan.basisExpiryDate,
+      subscriptionNewExpiryDate: plan.newExpiryDate,
+      subscriptionYearsAdded: plan.years,
+      subscriptionPaymentOrdinal: previousPaymentCount + 1,
+    });
+    write(transaction);
+    setCreated(transaction, 'subscriptionEvents', subscriptionEvent);
+    transaction.update(documentRef('records', current.id), {
+      currentSubscriptionExpiresAt: plan.newExpiryDate,
+      initialSubscriptionExpiresAt:
+        current.initialSubscriptionExpiresAt || plan.basisExpiryDate,
+      subscriptionStatus:
+        plan.newExpiryDate >= localDateAt(now) ? 'active' : 'expired',
+      renewalCount: previousPaymentCount + 1,
+      subscriptionPaymentCount: previousPaymentCount + 1,
+      lastPaymentDate:
+        plan.paymentDate > current.lastPaymentDate
+          ? plan.paymentDate
+          : current.lastPaymentDate,
+      lastActivityAt: Math.max(
+        current.lastActivityAt,
+        paymentHistory.occurredAt,
+        now,
+      ),
+      updatedAt: Math.max(now, current.updatedAt + 1),
+      updatedByUid: requireSignedInUser().uid,
+    });
+    return { workItem, historyEntry };
+  });
+}
+
 async function createWorkItem(
   input: FarmWorkItemInput,
   initialHistory: FarmInitialHistoryEntryInput,
   checklistContents: string[],
   sourceInboxId: string,
+  paymentRequest?: SubscriptionPaymentRequest,
 ) {
+  const isPayment = input.workType === 'payment' && initialHistory.amount !== 0;
+  if (isPayment && !paymentRequest)
+    throw new Error(
+      '구독 자동 연장 정보를 확인하려면 최신 화면에서 입금을 등록해 주세요.',
+    );
+  const fingerprint = isPayment
+    ? await paymentFingerprint({
+        input,
+        initialHistory,
+        checklistContents,
+        sourceInboxId,
+      })
+    : '';
+  if (isPayment && paymentRequest) {
+    const replay = await runTransaction(
+      getFirebaseServices().db,
+      (transaction) =>
+        readPaymentReplay(transaction, paymentRequest, fingerprint),
+    );
+    if (replay) return replay;
+  }
   const workspace = currentWorkspace();
   const record = workspace.records.find(
     (item) => item.id === input.farmRecordId,
@@ -2035,7 +2357,10 @@ async function createWorkItem(
   const now = Date.now();
   const initialActionAt = sourceInbox ? now : initialHistory.occurredAt;
   const workItem: FarmWorkItem = {
-    id: crypto.randomUUID(),
+    id:
+      isPayment && paymentRequest
+        ? `${paymentRequest.operationId}-work`
+        : crypto.randomUUID(),
     ...input,
     nextAction: input.status === 'completed' ? '' : input.nextAction,
     reviewDate: input.status === 'completed' ? '' : input.reviewDate,
@@ -2055,7 +2380,10 @@ async function createWorkItem(
     updatedAt: now,
   };
   const historyEntry: FarmHistoryEntry = {
-    id: crypto.randomUUID(),
+    id:
+      isPayment && paymentRequest && !sourceInbox
+        ? paymentRequest.operationId
+        : crypto.randomUUID(),
     workItemId: workItem.id,
     ...(sourceInbox
       ? {
@@ -2073,7 +2401,10 @@ async function createWorkItem(
   };
   const transitionHistory: FarmHistoryEntry | null = sourceInbox
     ? {
-        id: crypto.randomUUID(),
+        id:
+          isPayment && paymentRequest
+            ? paymentRequest.operationId
+            : crypto.randomUUID(),
         workItemId: workItem.id,
         channel: 'system',
         sender: '',
@@ -2083,7 +2414,7 @@ async function createWorkItem(
           '수신함 내용을 업무로 정리하고 다음 행동을 설정했습니다.',
         amount: initialHistory.amount,
         recorder: initialHistory.recorder,
-        occurredAt: now,
+        occurredAt: isPayment ? initialHistory.occurredAt : now,
         referenceUrl: '',
         createdAt: now,
       }
@@ -2116,52 +2447,68 @@ async function createWorkItem(
           updatedAt: now,
         }
       : null;
+  const write = (batch: LedgerWriter) => {
+    setCreated(batch, 'workItems', workItem);
+    setCreated(batch, 'historyEntries', historyEntry);
+    if (transitionHistory)
+      setCreated(batch, 'historyEntries', transitionHistory);
+    if (blockerEpisode) setCreated(batch, 'blockerEpisodes', blockerEpisode);
+    checklistItems.forEach((item) => setCreated(batch, 'checklistItems', item));
+    if (sourceInbox) {
+      setUpdated(batch, 'inboxItems', {
+        ...sourceInbox,
+        status: 'converted',
+        convertedWorkItemId: workItem.id,
+        updatedAt: now,
+      });
+    }
+    if (!isPayment) {
+      touchActivity(batch, 'records', record.id, now, now);
+    }
+    touch(batch, 'farms', record.farmId, now);
+    touch(batch, 'projects', record.projectId, now);
+  };
+  if (isPayment && paymentRequest) {
+    return savePaymentMutation({
+      request: paymentRequest,
+      fingerprint,
+      record,
+      workItem,
+      historyEntry,
+      paymentHistory: transitionHistory ?? historyEntry,
+      sourceInbox,
+      write,
+    });
+  }
   const batch = writeBatch(getFirebaseServices().db);
-  setCreated(batch, 'workItems', workItem);
-  setCreated(batch, 'historyEntries', historyEntry);
-  if (transitionHistory) setCreated(batch, 'historyEntries', transitionHistory);
-  if (blockerEpisode) setCreated(batch, 'blockerEpisodes', blockerEpisode);
-  checklistItems.forEach((item) => setCreated(batch, 'checklistItems', item));
-  if (sourceInbox) {
-    setUpdated(batch, 'inboxItems', {
-      ...sourceInbox,
-      status: 'converted',
-      convertedWorkItemId: workItem.id,
-      updatedAt: now,
-    });
-  }
-  const paymentHistoryEntry =
-    transitionHistory && transitionHistory.amount > 0
-      ? transitionHistory
-      : historyEntry.amount > 0
-        ? historyEntry
-        : null;
-  if (workItem.workType === 'payment' && paymentHistoryEntry) {
-    const paymentDate = localDateAt(paymentHistoryEntry.occurredAt);
-    batch.update(documentRef('records', record.id), {
-      lastPaymentDate:
-        paymentDate > record.lastPaymentDate
-          ? paymentDate
-          : record.lastPaymentDate,
-      lastActivityAt: Math.max(record.lastActivityAt, now),
-      updatedAt: now,
-      updatedByUid: requireSignedInUser().uid,
-    });
-  } else {
-    touchActivity(batch, 'records', record.id, now, now);
-  }
-  touch(batch, 'farms', record.farmId, now);
-  touch(batch, 'projects', record.projectId, now);
+  write(batch);
   await batch.commit();
   return { workItem, historyEntry };
 }
 
-async function addHistoryEntry(input: AddFarmHistoryEntryInput) {
+async function addHistoryEntry(
+  input: AddFarmHistoryEntryInput,
+  paymentRequest?: SubscriptionPaymentRequest,
+) {
+  const fingerprint = paymentRequest ? await paymentFingerprint(input) : '';
+  if (paymentRequest) {
+    const replay = await runTransaction(
+      getFirebaseServices().db,
+      (transaction) =>
+        readPaymentReplay(transaction, paymentRequest, fingerprint),
+    );
+    if (replay) return replay;
+  }
   const workspace = currentWorkspace();
   const existing = workspace.workItems.find(
     (item) => item.id === input.workItemId,
   );
   if (!existing) throw new Error('업무를 찾을 수 없습니다.');
+  const isPayment = existing.workType === 'payment' && input.amount !== 0;
+  if (isPayment && !paymentRequest)
+    throw new Error(
+      '구독 자동 연장 정보를 확인하려면 최신 화면에서 입금을 등록해 주세요.',
+    );
   const record = workspace.records.find(
     (item) => item.id === existing.farmRecordId,
   );
@@ -2284,7 +2631,10 @@ async function addHistoryEntry(input: AddFarmHistoryEntryInput) {
   const isPlanningOnly =
     !historyInput.receivedContent.trim() && !historyInput.actionContent.trim();
   const historyEntry: FarmHistoryEntry = {
-    id: crypto.randomUUID(),
+    id:
+      isPayment && paymentRequest
+        ? paymentRequest.operationId
+        : crypto.randomUUID(),
     ...historyInput,
     channel: isPlanningOnly ? 'system' : historyInput.channel,
     sender: isPlanningOnly ? '' : historyInput.sender,
@@ -2330,36 +2680,40 @@ async function addHistoryEntry(input: AddFarmHistoryEntryInput) {
       updatedAt: now,
     };
   }
-  const batch = writeBatch(getFirebaseServices().db);
-  setCreated(batch, 'historyEntries', historyEntry);
-  setUpdated(batch, 'workItems', workItem);
-  if (nextEpisode) {
-    if (nextEpisode.createdAt === now)
-      setCreated(batch, 'blockerEpisodes', nextEpisode);
-    else setUpdated(batch, 'blockerEpisodes', nextEpisode);
-  }
-  if (workItem.workType === 'payment' && historyEntry.amount > 0) {
-    const paymentDate = localDateAt(historyEntry.occurredAt);
-    batch.update(documentRef('records', record.id), {
-      lastPaymentDate:
-        paymentDate > record.lastPaymentDate
-          ? paymentDate
-          : record.lastPaymentDate,
-      lastActivityAt: Math.max(record.lastActivityAt, input.occurredAt),
-      updatedAt: now,
-      updatedByUid: requireSignedInUser().uid,
+  const write = (batch: LedgerWriter) => {
+    setCreated(batch, 'historyEntries', historyEntry);
+    setUpdated(batch, 'workItems', workItem);
+    if (nextEpisode) {
+      if (nextEpisode.createdAt === now)
+        setCreated(batch, 'blockerEpisodes', nextEpisode);
+      else setUpdated(batch, 'blockerEpisodes', nextEpisode);
+    }
+    if (!isPayment) {
+      touchActivity(
+        batch,
+        'records',
+        record.id,
+        Math.max(record.lastActivityAt, input.occurredAt),
+        now,
+      );
+    }
+    touch(batch, 'farms', record.farmId, now);
+    touch(batch, 'projects', record.projectId, now);
+  };
+  if (isPayment && paymentRequest) {
+    return savePaymentMutation({
+      request: paymentRequest,
+      fingerprint,
+      record,
+      workItem,
+      historyEntry,
+      paymentHistory: historyEntry,
+      existingWork: existing,
+      write,
     });
-  } else {
-    touchActivity(
-      batch,
-      'records',
-      record.id,
-      Math.max(record.lastActivityAt, input.occurredAt),
-      now,
-    );
   }
-  touch(batch, 'farms', record.farmId, now);
-  touch(batch, 'projects', record.projectId, now);
+  const batch = writeBatch(getFirebaseServices().db);
+  write(batch);
   await batch.commit();
   return { workItem, historyEntry };
 }
@@ -2630,11 +2984,15 @@ async function mutateFarmLedger(method: string, body: JsonObject) {
       parseInitialHistory(body.history),
       parseChecklist(body.checklist),
       sourceInboxId,
+      parsePaymentRequest(body.paymentRequest),
     );
   }
 
   if (kind === 'history' && method === 'POST') {
-    return addHistoryEntry(parseHistoryInput(body.history));
+    return addHistoryEntry(
+      parseHistoryInput(body.history),
+      parsePaymentRequest(body.paymentRequest),
+    );
   }
 
   if (kind === 'visit' && method === 'POST') {

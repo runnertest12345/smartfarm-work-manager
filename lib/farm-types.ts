@@ -421,6 +421,8 @@ export interface FarmRecord {
   currentSubscriptionExpiresAt: string;
   lastPaymentDate: string;
   renewalCount: number;
+  /** Verified paid renewal count, initialized from saved payment entries. */
+  subscriptionPaymentCount?: number;
   subscriptionStatus: SubscriptionStatus;
   notes: string;
   lastActivityAt: number;
@@ -458,6 +460,14 @@ export interface FarmSubscriptionEvent {
   basisExpiryDate: string;
   /** Renewals completed before this expiry cycle; absent legacy values are unknown. */
   basisRenewalCount?: number | null;
+  basisPaymentCount?: number | null;
+  paymentOrdinal?: number;
+  /** Automatic renewal linked to exactly one saved payment. */
+  paymentHistoryEntryId?: string;
+  paymentAmount?: number;
+  yearsAdded?: number;
+  paymentPolicy?: string;
+  supersedesEventIds?: string[];
   processedAt: string;
   newExpiryDate: string;
   recorder: string;
@@ -623,6 +633,12 @@ export interface FarmHistoryEntry {
   occurredAt: number;
   referenceUrl: string;
   createdAt: number;
+  paymentRequestFingerprint?: string;
+  subscriptionEventId?: string;
+  subscriptionPreviousExpiryDate?: string;
+  subscriptionNewExpiryDate?: string;
+  subscriptionYearsAdded?: number;
+  subscriptionPaymentOrdinal?: number;
 }
 
 export interface FarmHistoryEntryInput {

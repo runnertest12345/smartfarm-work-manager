@@ -2,6 +2,8 @@ import type {
   FarmProject,
   FarmRecord,
   FarmSubscriptionEvent,
+  FarmWorkItem,
+  FarmHistoryEntry,
 } from './farm-types';
 
 export type RenewalStage = 'first' | 'repeat' | 'unknown';
@@ -13,17 +15,23 @@ export interface RenewalCycle {
   projectId: string;
   expiryDate: string;
   stage: RenewalStage;
+  paymentCount: number;
+  paymentOrdinal: number | null;
   outcome: RenewalOutcome;
   upcoming: boolean;
+  dueToday: boolean;
   futureResultDate: string | null;
 }
 export interface RenewalMetrics {
+  annualTarget: number;
   target: number;
   renewed: number;
   churned: number;
   pending: number;
+  notRenewed: number;
   conflict: number;
   upcoming: number;
+  dueToday: number;
   rate: number | null;
 }
 
@@ -52,17 +60,20 @@ export function renewalCountBeforeEvent(
 }
 
 export function summarizeRenewalCycles(cycles: RenewalCycle[]): RenewalMetrics {
-  const due = cycles.filter((cycle) => !cycle.upcoming);
+  const due = cycles.filter((cycle) => !cycle.upcoming && !cycle.dueToday);
   const count = (outcome: RenewalOutcome) =>
     due.filter((cycle) => cycle.outcome === outcome).length;
   const renewed = count('renewed');
   return {
+    annualTarget: cycles.length,
     target: due.length,
     renewed,
     churned: count('churned'),
     pending: count('pending'),
+    notRenewed: count('pending') + count('churned'),
     conflict: count('conflict'),
-    upcoming: cycles.length - due.length,
+    upcoming: cycles.filter((cycle) => cycle.upcoming).length,
+    dueToday: cycles.filter((cycle) => cycle.dueToday).length,
     rate: due.length ? Math.round((renewed / due.length) * 10000) / 100 : null,
   };
 }
@@ -74,17 +85,47 @@ export function buildRenewalReport(
   projects: FarmProject[],
   options: {
     year: number;
-    endMonth: number;
     today: string;
     projectType?: string;
+    workItems?: FarmWorkItem[];
+    historyEntries?: FarmHistoryEntry[];
   },
 ) {
-  const { year, endMonth, today, projectType = 'all' } = options;
+  const { year, today, projectType = 'all' } = options;
   const startDate = `${year}-01-01`;
-  const endDate = `${year}-${String(endMonth).padStart(2, '0')}-${new Date(year, endMonth, 0).getDate()}`;
+  const endDate = `${year}-12-31`;
   const cutoffDate = endDate < today ? endDate : today;
   const recordById = new Map(records.map((record) => [record.id, record]));
   const projectById = new Map(projects.map((project) => [project.id, project]));
+  const workById = new Map(
+    (options.workItems ?? []).map((work) => [work.id, work]),
+  );
+  const paymentsByRecord = new Map<
+    string,
+    { id: string; occurredAt: number; date: string }[]
+  >();
+  const seenPayments = new Set<string>();
+  for (const entry of options.historyEntries ?? []) {
+    const work = workById.get(entry.workItemId);
+    if (
+      seenPayments.has(entry.id) ||
+      !work ||
+      work.workType !== 'payment' ||
+      !Number.isFinite(entry.amount) ||
+      entry.amount <= 0 ||
+      !Number.isFinite(entry.occurredAt) ||
+      entry.occurredAt <= 0
+    )
+      continue;
+    const occurred = new Date(entry.occurredAt);
+    const date = `${occurred.getFullYear()}-${String(occurred.getMonth() + 1).padStart(2, '0')}-${String(occurred.getDate()).padStart(2, '0')}`;
+    if (date > today) continue;
+    seenPayments.add(entry.id);
+    paymentsByRecord.set(work.farmRecordId, [
+      ...(paymentsByRecord.get(work.farmRecordId) ?? []),
+      { id: entry.id, occurredAt: entry.occurredAt, date },
+    ]);
+  }
   const matches = (projectId: string) =>
     (projectById.has(projectId) || projectId === '') &&
     (projectType === 'all' ||
@@ -113,6 +154,9 @@ export function buildRenewalReport(
       event.processedAt,
       event.newExpiryDate,
       event.basisRenewalCount,
+      event.basisPaymentCount,
+      event.paymentHistoryEntryId,
+      event.supersedesEventIds,
     ]);
     if (eventIds.has(signature)) continue;
     eventIds.add(signature);
@@ -191,12 +235,26 @@ export function buildRenewalReport(
         event.newExpiryDate,
         event.processedAt,
         event.basisRenewalCount,
+        event.basisPaymentCount,
       ]),
     );
     identities.set(event.id, signatures);
   }
   const resolved = (cycle: { events: FarmSubscriptionEvent[] }) => {
-    const observed = cycle.events.filter((event) => event.processedAt <= today);
+    const eligible = cycle.events.filter((event) => event.processedAt <= today);
+    const observed = eligible.filter(
+      (event) =>
+        event.eventType !== 'churned' ||
+        !eligible.some(
+          (next) =>
+            next.eventType === 'renewed' &&
+            next.paymentHistoryEntryId &&
+            next.supersedesEventIds?.includes(event.id) &&
+            next.processedAt >= event.processedAt &&
+            validRenewalDate(next.newExpiryDate) &&
+            next.newExpiryDate > next.basisExpiryDate,
+        ),
+    );
     const signatures = new Set(
       observed.map((event) =>
         JSON.stringify([event.eventType, event.projectId, event.newExpiryDate]),
@@ -222,19 +280,6 @@ export function buildRenewalReport(
   const outcomes = new Map(
     [...candidates].map(([key, cycle]) => [key, resolved(cycle)]),
   );
-  const previousRenewals = new Map<string, FarmSubscriptionEvent[]>();
-  for (const [key, cycle] of candidates) {
-    if (outcomes.get(key) !== 'renewed') continue;
-    for (const event of cycle.events.filter(
-      (event) => event.processedAt <= today && event.eventType === 'renewed',
-    )) {
-      const nextKey = `${event.farmRecordId}:${event.newExpiryDate}`;
-      previousRenewals.set(nextKey, [
-        ...(previousRenewals.get(nextKey) ?? []),
-        event,
-      ]);
-    }
-  }
   const cycles: RenewalCycle[] = [];
   for (const [key, cycle] of candidates) {
     if (
@@ -243,36 +288,51 @@ export function buildRenewalReport(
       cycle.expiryDate > endDate
     )
       continue;
-    const counts = new Set(
-      cycle.events
-        .filter((event) => event.processedAt <= today)
-        .map((event) => event.basisRenewalCount)
-        .filter(validCount),
-    );
-    // A linked, confirmed previous renewal proves repeat membership without guessing an exact count.
-    const outcomeDates = cycle.events
-      .filter((event) => event.processedAt <= today)
-      .map((event) => event.processedAt)
-      .sort();
-    const previousRenewal = (previousRenewals.get(key) ?? []).some(
-      (prior) =>
-        prior.projectId === cycle.projectId &&
-        prior.basisExpiryDate < cycle.expiryDate &&
-        prior.processedAt <= (outcomeDates[0] ?? today),
-    );
+    const payments = paymentsByRecord.get(cycle.record.id) ?? [];
+    const savedCount =
+      validCount(cycle.record.subscriptionPaymentCount) &&
+      validRenewalDate(cycle.record.lastPaymentDate ?? '') &&
+      cycle.record.lastPaymentDate <= today
+        ? cycle.record.subscriptionPaymentCount
+        : 0;
+    const paymentCount = Math.max(payments.length, savedCount);
+    const counts = new Set<number>();
+    for (const event of cycle.events.filter(
+      (event) => event.processedAt <= today,
+    )) {
+      if (validCount(event.basisPaymentCount)) {
+        counts.add(event.basisPaymentCount);
+        continue;
+      }
+      const matching = payments.filter((payment) =>
+        event.paymentHistoryEntryId
+          ? payment.id === event.paymentHistoryEntryId
+          : payment.date === event.processedAt,
+      );
+      if (
+        matching.length === 1 &&
+        payments.length >= savedCount &&
+        payments.filter(
+          (payment) => payment.occurredAt === matching[0].occurredAt,
+        ).length === 1
+      ) {
+        counts.add(
+          payments.filter(
+            (payment) => payment.occurredAt < matching[0].occurredAt,
+          ).length,
+        );
+      }
+    }
     let stage: RenewalStage = 'unknown';
     if (counts.size === 1) {
       const count = [...counts][0];
-      stage = count === 0 ? (previousRenewal ? 'unknown' : 'first') : 'repeat';
-    } else if (counts.size === 0 && previousRenewal) {
-      stage = 'repeat';
+      stage = count === 0 ? 'first' : 'repeat';
     } else if (
       counts.size === 0 &&
       cycle.current &&
-      cycle.events.length === 0 &&
-      validCount(cycle.record.renewalCount)
+      cycle.events.length === 0
     ) {
-      stage = cycle.record.renewalCount === 0 ? 'first' : 'repeat';
+      stage = paymentCount === 0 ? 'first' : 'repeat';
     }
     cycles.push({
       key,
@@ -280,8 +340,11 @@ export function buildRenewalReport(
       projectId: cycle.projectId,
       expiryDate: cycle.expiryDate,
       stage,
+      paymentCount,
+      paymentOrdinal: counts.size === 1 ? [...counts][0] + 1 : null,
       outcome: outcomes.get(key) ?? 'pending',
       upcoming: cycle.expiryDate > today,
+      dueToday: cycle.expiryDate === today,
       futureResultDate:
         cycle.events
           .filter((event) => event.processedAt > today)
@@ -305,6 +368,7 @@ export function buildRenewalReport(
       .map((event) => event.id),
   ).size;
   return {
+    year,
     cycles,
     startDate,
     endDate,
@@ -312,6 +376,13 @@ export function buildRenewalReport(
     today,
     excluded,
     rejoined,
+    currentNonRenewed: [...candidates.entries()].filter(
+      ([key, cycle]) =>
+        cycle.current &&
+        matches(cycle.record.projectId) &&
+        cycle.expiryDate < today &&
+        outcomes.get(key) !== 'renewed',
+    ).length,
     overall: summarizeRenewalCycles(cycles),
     first: summarizeRenewalCycles(
       cycles.filter((cycle) => cycle.stage === 'first'),
@@ -329,9 +400,15 @@ export function groupRenewalCycles(
   cycles: RenewalCycle[],
   grouping: RenewalGrouping,
   projects: FarmProject[],
+  year?: number,
 ) {
   const projectById = new Map(projects.map((project) => [project.id, project]));
   const groups = new Map<string, RenewalCycle[]>();
+  if (year !== undefined && grouping === 'month') {
+    for (let month = 1; month <= 12; month += 1)
+      groups.set(`${year}-${String(month).padStart(2, '0')}`, []);
+  }
+  if (year !== undefined && grouping === 'year') groups.set(String(year), []);
   for (const cycle of cycles) {
     const key =
       grouping === 'year'

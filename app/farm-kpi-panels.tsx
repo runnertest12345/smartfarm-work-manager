@@ -265,32 +265,27 @@ export function SubscriptionCyclePanel({
 }) {
   const metrics = [
     [
-      '최초 구독 · 입금 확인',
-      counts.initial,
-      '구독 등록 · 연장 0회 · 입금 이력 있음',
+      '입금 기록 없음',
+      counts.noPayment,
+      '확인된 구독 입금 0건 · 실제 미입금 확정 아님',
     ],
-    ['1차 연장', counts.first, '등록된 갱신횟수 1회'],
-    ['2차 연장', counts.second, '등록된 갱신횟수 2회'],
-    ['3차 이상 연장', counts.thirdPlus, '등록된 갱신횟수 3회 이상'],
-    [
-      '최초 입금·회차 미확인',
-      counts.unverified,
-      '입금일만 입력된 경우는 미확인',
-    ],
+    ['1차 갱신', counts.first, '첫 갱신 · 구독 입금 1건'],
+    ['2차 갱신', counts.second, '구독 입금 2건'],
+    ['3차 이상 갱신', counts.thirdPlus, '구독 입금 3건 이상'],
   ] as const;
   return (
     <Collapsible
       className="mb-4 rounded-lg border border-[#d8e0e7] bg-white px-4"
-      aria-label="현재 구독 회차 현황"
+      aria-label="입금 기준 현재 갱신 회차 현황"
     >
       <CollapsibleTrigger className="flex min-h-12 w-full items-center justify-between gap-2 text-left">
-        <h2 className="text-base font-bold">현재 구독 회차</h2>
+        <h2 className="text-base font-bold">입금 기준 현재 갱신 회차</h2>
         <span className="flex items-center gap-2 text-sm text-[#586777]">
           {counts.total}개소 · 상세 보기 <ChevronDown className="size-4" />
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent className="pb-4">
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {metrics.map(([label, value, note]) => (
             <Card
               key={label}
@@ -307,9 +302,10 @@ export function SubscriptionCyclePanel({
           ))}
         </div>
         <p className="mt-2 text-xs leading-5 text-[#718077]">
-          선택한 사업 범위의 전체 구독을 현재 등록 회차로 분류합니다(만료 포함).
-          최초 구독은 해당 농가·사업에 연결된 양수 입금 이력으로 확인하며, 연장
-          회차는 등록된 갱신횟수 기준입니다.
+          선택한 사업 범위의 전체 구독을 실제 입금 건수로 분류합니다(만료 포함).
+          첫 입금은 1차 갱신, 두 번째 입금은 2차 갱신입니다. 한 번에 2년치를
+          입금해도 1회로 계산하며, 수기 갱신 횟수나 입금일만으로 회차를 늘리지
+          않습니다.
         </p>
       </CollapsibleContent>
     </Collapsible>

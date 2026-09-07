@@ -185,21 +185,25 @@ export function paymentEvidenceByRecord(
   return result;
 }
 
-export function subscriptionCycle(record: FarmRecord, hasPayment: boolean) {
-  if (!Number.isInteger(record.renewalCount) || record.renewalCount < 0)
-    return 'unverified' as const;
-  if (record.renewalCount >= 3) return 'thirdPlus' as const;
-  if (record.renewalCount === 2) return 'second' as const;
-  if (record.renewalCount === 1) return 'first' as const;
-  const hasSubscription =
-    ['active', 'expired'].includes(record.subscriptionStatus) ||
-    Boolean(
-      record.initialSubscriptionExpiresAt ||
-      record.currentSubscriptionExpiresAt,
-    );
-  return hasPayment && hasSubscription
-    ? ('initial' as const)
-    : ('unverified' as const);
+export function subscriptionPaymentCount(
+  record: FarmRecord,
+  evidenceCount: number,
+) {
+  const saved = record.subscriptionPaymentCount;
+  return Math.max(
+    Number.isSafeInteger(saved) && saved! >= 0 ? saved! : 0,
+    Number.isSafeInteger(evidenceCount) && evidenceCount >= 0
+      ? evidenceCount
+      : 0,
+  );
+}
+
+export function subscriptionCycle(record: FarmRecord, evidenceCount: number) {
+  const count = subscriptionPaymentCount(record, evidenceCount);
+  if (count >= 3) return 'thirdPlus' as const;
+  if (count === 2) return 'second' as const;
+  if (count === 1) return 'first' as const;
+  return 'noPayment' as const;
 }
 
 export function summarizeSubscriptionCycles(
@@ -207,15 +211,14 @@ export function summarizeSubscriptionCycles(
   payments: ReadonlyMap<string, PaymentEvidence>,
 ) {
   const counts = {
-    initial: 0,
+    noPayment: 0,
     first: 0,
     second: 0,
     thirdPlus: 0,
-    unverified: 0,
     total: records.length,
   };
   for (const record of records)
-    counts[subscriptionCycle(record, payments.has(record.id))] += 1;
+    counts[subscriptionCycle(record, payments.get(record.id)?.count ?? 0)] += 1;
   return counts;
 }
 

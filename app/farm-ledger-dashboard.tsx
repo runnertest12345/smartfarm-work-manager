@@ -150,12 +150,20 @@ import {
   filterProjectsByScope,
   filterSubscriptionsByScope,
   subscriptionCycle,
+  subscriptionPaymentCount,
   summarizeProjectKpis,
-  summarizeCurrentExpiry,
   summarizeSubscriptionCycles,
 } from '@/lib/dashboard-kpis';
-import { buildRenewalReport } from '@/lib/subscription-renewal-report';
+import {
+  buildRenewalReport,
+  groupRenewalCycles,
+} from '@/lib/subscription-renewal-report';
 import { SubscriptionRenewalPanel } from './subscription-renewal-panel';
+import { SubscriptionPaymentPreview } from './subscription-payment-preview';
+import {
+  calculateSubscriptionPayment,
+  type SubscriptionPaymentRequest,
+} from '@/lib/subscription-payment';
 import {
   ProjectKpiPanel,
   ProjectTypeSelector,
@@ -292,6 +300,7 @@ interface HistoryDraft {
 }
 
 interface WorkItemForm extends HistoryDraft {
+  paymentOperationId: string;
   farmRecordId: string;
   workType: WorkType;
   title: string;
@@ -311,6 +320,7 @@ interface WorkItemForm extends HistoryDraft {
 }
 
 interface HistoryForm extends HistoryDraft {
+  paymentOperationId: string;
   newStatus: WorkStatus;
   nextAction: string;
   priority: FarmWorkPriority;
@@ -445,16 +455,6 @@ function dateWithOffset(days: number) {
   const date = new Date();
   date.setDate(date.getDate() + days);
   return localDateString(date);
-}
-
-function previousMonthPeriod() {
-  const date = new Date();
-  date.setDate(1);
-  date.setMonth(date.getMonth() - 1);
-  return {
-    year: String(date.getFullYear()),
-    month: String(date.getMonth() + 1),
-  };
 }
 
 function responseTargetValue(
@@ -804,6 +804,7 @@ function emptyHistoryDraft(): HistoryDraft {
 
 function emptyWorkItemForm(farmRecordId = ''): WorkItemForm {
   return {
+    paymentOperationId: crypto.randomUUID(),
     ...emptyHistoryDraft(),
     farmRecordId,
     workType: 'communication',
@@ -838,6 +839,7 @@ function emptyHistoryForm(
   expectedUnblockDate = '',
 ): HistoryForm {
   return {
+    paymentOperationId: crypto.randomUUID(),
     ...emptyHistoryDraft(),
     newStatus: status,
     nextAction,
@@ -1094,11 +1096,8 @@ export function FarmLedgerDashboard({
   const [businessTypeFilter, setBusinessTypeFilter] = useState<
     'all' | FarmProjectType
   >('all');
-  const [subscriptionReportYear, setSubscriptionReportYear] = useState(
-    () => previousMonthPeriod().year,
-  );
-  const [subscriptionReportEndMonth, setSubscriptionReportEndMonth] = useState(
-    () => previousMonthPeriod().month,
+  const [subscriptionReportYear, setSubscriptionReportYear] = useState(() =>
+    String(new Date().getFullYear()),
   );
   const [subscriptionReportProjectType, setSubscriptionReportProjectType] =
     useState<'all' | FarmProjectType>('all');
@@ -1168,6 +1167,9 @@ export function FarmLedgerDashboard({
   const [checklistSubmitting, setChecklistSubmitting] = useState(false);
   const [subscriptionEpoch, setSubscriptionEpoch] = useState(0);
   const workspaceRef = useRef(workspace);
+  const paymentRequestsRef = useRef(
+    new Map<string, SubscriptionPaymentRequest>(),
+  );
 
   useEffect(() => {
     workspaceRef.current = workspace;
@@ -2383,10 +2385,6 @@ export function FarmLedgerDashboard({
 
   const subscriptionReport = useMemo(() => {
     const year = Number(subscriptionReportYear);
-    const endMonth = Number(subscriptionReportEndMonth);
-    const endMonthKey = `${year}-${String(endMonth).padStart(2, '0')}`;
-    const lastDay = new Date(year, endMonth, 0).getDate();
-    const cutoffDate = `${endMonthKey}-${String(lastDay).padStart(2, '0')}`;
     const projectMatches = (projectId: string) =>
       subscriptionReportProjectType === 'all' ||
       projectById.get(projectId)?.projectType === subscriptionReportProjectType;
@@ -2402,9 +2400,10 @@ export function FarmLedgerDashboard({
       workspace.projects,
       {
         year,
-        endMonth,
         today: subscriptionToday,
         projectType: subscriptionReportProjectType,
+        workItems: workspace.workItems,
+        historyEntries: workspace.historyEntries,
       },
     );
 
@@ -2471,14 +2470,8 @@ export function FarmLedgerDashboard({
 
     return {
       year,
-      endMonth,
-      cutoffDate,
       asOfDate: subscriptionToday,
-      currentExpiry: summarizeCurrentExpiry(
-        relevantRecords,
-        relevantEvents,
-        subscriptionToday,
-      ),
+      currentNonRenewed: renewal.currentNonRenewed,
       renewal,
       ...renewal.overall,
       rejoined: renewal.rejoined,
@@ -2500,13 +2493,14 @@ export function FarmLedgerDashboard({
   }, [
     farmById,
     projectById,
-    subscriptionReportEndMonth,
     subscriptionReportProjectType,
     subscriptionReportYear,
     subscriptionToday,
     workspace.records,
     workspace.subscriptionEvents,
     workspace.projects,
+    workspace.workItems,
+    workspace.historyEntries,
   ]);
 
   const subscriptionListProjects = filterProjectsByScope(
@@ -3207,16 +3201,26 @@ export function FarmLedgerDashboard({
       '구독 실적',
       '',
       `- 사업 타입 : ${projectTypeLabel}`,
-      `- 만료 ('${shortYear}.1~${subscriptionReport.endMonth}) : ${subscriptionReport.target}개소`,
-      `- 갱신 ${subscriptionReport.renewed}개소(이탈 ${subscriptionReport.churned}개소), 재가입 ${subscriptionReport.rejoined}개소`,
-      `- 첫 갱신율 : ${subscriptionReport.renewal.first.rate ?? '-'}${subscriptionReport.renewal.first.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewal.first.renewed} / 도래 ${subscriptionReport.renewal.first.target})`,
-      `- 반복 갱신율 : ${subscriptionReport.renewal.repeat.rate ?? '-'}${subscriptionReport.renewal.repeat.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewal.repeat.renewed} / 도래 ${subscriptionReport.renewal.repeat.target})`,
-      `- 전체 갱신율 : ${subscriptionReport.renewal.overall.rate ?? '-'}${subscriptionReport.renewal.overall.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewed} / 도래 ${subscriptionReport.target})`,
-      `- 선택 기간 결과 미확인 ${subscriptionReport.pending}개소, 결과 충돌 ${subscriptionReport.conflict}개소${subscriptionReport.pending + subscriptionReport.conflict > 0 ? ' · 잠정 실적' : ''}`,
-      `- 회차 미확인 도래 대상 ${subscriptionReport.renewal.unknown.target}개소는 전체에만 포함`,
-      `- 선택 기간 만료 예정 ${subscriptionReport.renewal.overall.upcoming}개소는 현재 갱신율 분모에서 제외`,
-      `- 기준: 확인 가능한 농가×사업×만료 회차. 오늘(${subscriptionReport.asOfDate})까지 도래한 대상 / 오늘까지 확인된 결과. 재가입은 갱신에 합산하지 않음.`,
-      `- 만료 후 결과 미등록 (오늘 ${subscriptionReport.asOfDate} 기준, 전체 기간) : ${subscriptionReport.currentExpiry.expiredPending}개소`,
+      `- 연간 만료 대상 ('${shortYear}.1~12) : ${subscriptionReport.annualTarget}개소`,
+      `- 만료 경과 ${subscriptionReport.target}개소 중 갱신 ${subscriptionReport.renewed}개소, 미갱신 ${subscriptionReport.notRenewed}개소, 기록 확인 ${subscriptionReport.conflict}개소`,
+      `- 재가입 ${subscriptionReport.rejoined}개소 (갱신율과 별도)`,
+      `- 첫 갱신율 : ${subscriptionReport.renewal.first.rate ?? '-'}${subscriptionReport.renewal.first.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewal.first.renewed} / 만료 경과 ${subscriptionReport.renewal.first.target})`,
+      `- 반복 갱신율 : ${subscriptionReport.renewal.repeat.rate ?? '-'}${subscriptionReport.renewal.repeat.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewal.repeat.renewed} / 만료 경과 ${subscriptionReport.renewal.repeat.target})`,
+      `- 전체 갱신율 : ${subscriptionReport.renewal.overall.rate ?? '-'}${subscriptionReport.renewal.overall.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewed} / 만료 경과 ${subscriptionReport.target})`,
+      `- 과거 입금 연결 필요 대상 ${subscriptionReport.renewal.unknown.target}개소는 전체에만 포함`,
+      `- 올해 오늘 만료 ${subscriptionReport.dueToday}개소, 만료 예정 ${subscriptionReport.renewal.overall.upcoming}개소는 갱신율 분모에서 제외`,
+      `- 기준: 확인 가능한 농가×사업×만료 회차. 오늘(${subscriptionReport.asOfDate}) 이전 만료일 경과 대상 / 오늘까지 확인된 갱신. 결과가 없으면 미갱신.`,
+      '- 월별 실적 (전체 대상 / 경과 / 갱신 / 미갱신 / 기록 확인 / 갱신율 / 오늘 / 예정)',
+      ...groupRenewalCycles(
+        subscriptionReport.renewal.cycles,
+        'month',
+        workspace.projects,
+        subscriptionReport.year,
+      ).map(
+        (month) =>
+          `  ${Number(month.key.slice(5))}월: ${month.annualTarget} / ${month.target} / ${month.renewed} / ${month.notRenewed} / ${month.conflict} / ${month.rate === null ? '-' : `${month.rate}%`} / ${month.dueToday} / ${month.upcoming}`,
+      ),
+      `- 현재 미갱신 (오늘 ${subscriptionReport.asOfDate} 기준, 전체 연도) : ${subscriptionReport.currentNonRenewed}개소`,
       `- 현재 사용 중 만료 예정 (내일부터, 전체 기간) : ${subscriptionReport.upcomingCount}개소`,
     ];
     if (!subscriptionReport.upcoming.length) {
@@ -3895,6 +3899,35 @@ export function FarmLedgerDashboard({
     }
   }
 
+  function preparePaymentRequest(
+    operationId: string,
+    recordId: string,
+    amount: number,
+    occurredAt: string,
+    isPayment: boolean,
+  ) {
+    if (!isPayment || amount === 0) return undefined;
+    const record = recordById.get(recordId);
+    if (!record) throw new Error('입금을 연결할 농가·사업을 확인해 주세요.');
+    calculateSubscriptionPayment({
+      amount,
+      currentExpiryDate: record.currentSubscriptionExpiresAt,
+      paymentDate: occurredAt.slice(0, 10),
+      today: localDateString(),
+    });
+    const prior = paymentRequestsRef.current.get(operationId);
+    if (prior) return prior;
+    const request = {
+      operationId,
+      expectedCurrentExpiryDate: record.currentSubscriptionExpiresAt,
+      expectedUpdatedAt: record.updatedAt,
+    };
+    if (paymentRequestsRef.current.size > 30)
+      paymentRequestsRef.current.clear();
+    paymentRequestsRef.current.set(operationId, request);
+    return request;
+  }
+
   async function submitWorkItem(event: FormSubmitEvent) {
     event.preventDefault();
     if (!selectedFarm) return;
@@ -3917,6 +3950,13 @@ export function FarmLedgerDashboard({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           kind: 'work_item',
+          paymentRequest: preparePaymentRequest(
+            workItemForm.paymentOperationId,
+            workItemForm.farmRecordId,
+            workItemForm.amount,
+            workItemForm.occurredAt,
+            workItemForm.workType === 'payment',
+          ),
           workItem: {
             farmId: selectedFarm.id,
             farmRecordId: workItemForm.farmRecordId,
@@ -3977,7 +4017,10 @@ export function FarmLedgerDashboard({
       setDialog(null);
       toast.add({
         title: '업무를 등록했습니다',
-        description: workItemForm.title,
+        description:
+          workItemForm.workType === 'payment' && workItemForm.amount > 0
+            ? '입금과 구독 자동 갱신을 함께 저장했습니다.'
+            : workItemForm.title,
         type: 'success',
       });
     } catch (error) {
@@ -4000,6 +4043,13 @@ export function FarmLedgerDashboard({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           kind: 'history',
+          paymentRequest: preparePaymentRequest(
+            historyForm.paymentOperationId,
+            selectedWorkItem.farmRecordId,
+            historyForm.amount,
+            historyForm.occurredAt,
+            selectedWorkItem.workType === 'payment',
+          ),
           history: {
             workItemId: selectedWorkItem.id,
             channel: historyForm.channel,
@@ -4048,7 +4098,10 @@ export function FarmLedgerDashboard({
       setDialog(null);
       toast.add({
         title: '진행 기록을 추가했습니다',
-        description: selectedWorkItem.title,
+        description:
+          selectedWorkItem.workType === 'payment' && historyForm.amount > 0
+            ? '입금과 구독 자동 갱신을 함께 저장했습니다.'
+            : selectedWorkItem.title,
         type: 'success',
       });
     } catch (error) {
@@ -7910,14 +7963,14 @@ export function FarmLedgerDashboard({
                         <TabsContent value="report" className="mt-0">
                           <div className="mb-4">
                             <h2 className="text-xl font-bold">구독 실적</h2>
-                            <p className="mt-1 text-xs text-[#7a867d]">
-                              갱신·이탈·재가입과 향후 만료를 연도·월·사업별로
+                            <p className="mt-1 text-sm text-[#627269]">
+                              매년 1월~12월 전체 만료 농가와 갱신·미갱신 실적을
                               확인합니다.
                             </p>
                           </div>
                           <Card className="mb-4 border-0 bg-white ring-[#dfe6dd]">
                             <CardContent>
-                              <div className="grid gap-3 lg:grid-cols-[160px_160px_minmax(220px,1fr)]">
+                              <div className="grid gap-3 lg:grid-cols-[180px_minmax(220px,1fr)]">
                                 <Field>
                                   <FieldLabel>기준 연도</FieldLabel>
                                   <Select
@@ -7940,35 +7993,6 @@ export function FarmLedgerDashboard({
                                           {year}년
                                         </SelectItem>
                                       ))}
-                                    </SelectContent>
-                                  </Select>
-                                </Field>
-                                <Field>
-                                  <FieldLabel>집계 종료월</FieldLabel>
-                                  <Select
-                                    value={subscriptionReportEndMonth}
-                                    onValueChange={(value) =>
-                                      value &&
-                                      setSubscriptionReportEndMonth(value)
-                                    }
-                                  >
-                                    <SelectTrigger className="h-10 w-full">
-                                      <SelectValue>
-                                        {subscriptionReportEndMonth}월
-                                      </SelectValue>
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      {Array.from(
-                                        { length: 12 },
-                                        (_, index) => (
-                                          <SelectItem
-                                            key={index + 1}
-                                            value={String(index + 1)}
-                                          >
-                                            {index + 1}월
-                                          </SelectItem>
-                                        ),
-                                      )}
                                     </SelectContent>
                                   </Select>
                                 </Field>
@@ -8008,15 +8032,16 @@ export function FarmLedgerDashboard({
                                 </Field>
                               </div>
                               <p className="mt-3 text-xs leading-5 text-[#7a867d]">
-                                농가×사업×만료 회차를 1개소로 집계합니다. 선택
-                                기간 중 오늘까지 도래한 대상의 갱신율을 계산하며
-                                재가입은 별도 집계합니다.
+                                {subscriptionReportYear}년 1월 1일~12월 31일
+                                전체를 조회합니다. 갱신율은 그중 만료일이 지난
+                                대상을 기준으로 계산합니다. 오늘 만료와 만료
+                                예정은 별도로 표시합니다.
                               </p>
                             </CardContent>
                           </Card>
 
                           <SubscriptionRenewalPanel
-                            key={`${subscriptionReportYear}-${subscriptionReportEndMonth}-${subscriptionReportProjectType}`}
+                            key={`${subscriptionReportYear}-${subscriptionReportProjectType}`}
                             report={subscriptionReport.renewal}
                             projects={workspace.projects}
                             records={workspace.records}
@@ -8048,11 +8073,9 @@ export function FarmLedgerDashboard({
                             <div className="grid gap-3 sm:grid-cols-3">
                               {[
                                 {
-                                  label: '만료 후 결과 미등록',
-                                  value:
-                                    subscriptionReport.currentExpiry
-                                      .expiredPending,
-                                  note: '오늘 이전 만료 · 전체 기간의 미처리 구독',
+                                  label: '현재 미갱신',
+                                  value: subscriptionReport.currentNonRenewed,
+                                  note: '오늘 이전 현재 만료일 · 갱신 미완료 · 전체 연도',
                                 },
                                 {
                                   label: '만료 예정',
@@ -8084,13 +8107,12 @@ export function FarmLedgerDashboard({
                               ))}
                             </div>
                           </section>
-                          {(subscriptionReport.currentExpiry.expiredPending >
-                            0 ||
+                          {(subscriptionReport.currentNonRenewed > 0 ||
                             subscriptionReport.missingExpiry > 0) && (
                             <div className="mb-4 flex items-start gap-2 rounded-xl border border-[#eadfca] bg-[#fffaf0] px-4 py-3 text-xs leading-5 text-[#80663f]">
                               <CircleAlert className="mt-0.5 size-4 shrink-0" />
                               <p>
-                                {`오늘(${subscriptionReport.asOfDate}) 기준 만료 후 결과 미등록 ${subscriptionReport.currentExpiry.expiredPending}개소, 현재 사용 중 만료 예정 ${subscriptionReport.upcomingCount}개소(내일부터, 전체 기간)입니다. `}
+                                {`오늘(${subscriptionReport.asOfDate}) 기준 현재 미갱신 ${subscriptionReport.currentNonRenewed}개소, 현재 사용 중 만료 예정 ${subscriptionReport.upcomingCount}개소(내일부터, 전체 연도)입니다. `}
                                 {subscriptionReport.missingExpiry > 0 &&
                                   `만료일 미입력 ${subscriptionReport.missingExpiry}개소는 만료 예정에서 제외했습니다.`}
                               </p>
@@ -8517,7 +8539,7 @@ export function FarmLedgerDashboard({
                                       );
                                       const cycle = subscriptionCycle(
                                         record,
-                                        Boolean(payment),
+                                        payment?.count ?? 0,
                                       );
                                       return (
                                         <TableRow key={record.id}>
@@ -8565,13 +8587,10 @@ export function FarmLedgerDashboard({
                                             <p className="whitespace-nowrap font-semibold">
                                               {
                                                 {
-                                                  initial:
-                                                    '최초 구독 · 입금 확인',
-                                                  first: '1차 연장',
-                                                  second: '2차 연장',
-                                                  thirdPlus: `${record.renewalCount}차 연장`,
-                                                  unverified:
-                                                    '최초 입금·회차 미확인',
+                                                  noPayment: '입금 기록 없음',
+                                                  first: '1차 갱신',
+                                                  second: '2차 갱신',
+                                                  thirdPlus: `${subscriptionPaymentCount(record, payment?.count ?? 0)}차 갱신`,
                                                 }[cycle]
                                               }
                                             </p>
@@ -8591,7 +8610,9 @@ export function FarmLedgerDashboard({
                                               </button>
                                             ) : (
                                               <p className="mt-1 text-xs text-[#947047]">
-                                                입금 업무 이력 없음
+                                                {record.subscriptionPaymentCount
+                                                  ? `입금 ${record.subscriptionPaymentCount}건 확인 · 상세 이력 불러오는 중`
+                                                  : '연결된 입금 업무 이력 없음'}
                                               </p>
                                             )}
                                           </TableCell>
@@ -10882,6 +10903,21 @@ export function FarmLedgerDashboard({
                                               {formatMoney(entry.amount)}
                                             </strong>
                                           )}
+                                          {entry.subscriptionNewExpiryDate && (
+                                            <span className="text-sm font-medium text-emerald-800">
+                                              구독{' '}
+                                              {entry.subscriptionPaymentOrdinal
+                                                ? `${entry.subscriptionPaymentOrdinal}차 갱신 · `
+                                                : ''}
+                                              {entry.subscriptionYearsAdded}년
+                                              자동 갱신 ·{' '}
+                                              {
+                                                entry.subscriptionPreviousExpiryDate
+                                              }{' '}
+                                              →{' '}
+                                              {entry.subscriptionNewExpiryDate}
+                                            </span>
+                                          )}
                                           {entry.referenceUrl && (
                                             <a
                                               href={entry.referenceUrl}
@@ -11279,46 +11315,12 @@ export function FarmLedgerDashboard({
                 )}
               </div>
 
-              {subscriptionEventForm.eventType !== 'rejoined' && (
-                <Field>
-                  <FieldLabel htmlFor="subscription-basis-renewal-count">
-                    해당 만료 회차 이전의 갱신 횟수
-                  </FieldLabel>
-                  {subscriptionEventForm.basisExpiryDate ===
-                  subscriptionEventForm.expectedCurrentExpiryDate ? (
-                    <p className="text-sm text-[#53645a]">
-                      현재 회차의 갱신 전 횟수:{' '}
-                      {recordById.get(subscriptionEventForm.farmRecordId)
-                        ?.renewalCount ?? '미확인'}
-                      회. 처리 전에 자동 저장합니다. 과거 회차의 현재 횟수
-                      역산에는 사용하지 않습니다.
-                    </p>
-                  ) : (
-                    <>
-                      <Input
-                        id="subscription-basis-renewal-count"
-                        type="number"
-                        min="0"
-                        step="1"
-                        placeholder="확인되지 않으면 비워 두세요"
-                        value={subscriptionEventForm.basisRenewalCount}
-                        onChange={(event) =>
-                          setSubscriptionEventForm((current) => ({
-                            ...current,
-                            basisRenewalCount: event.target.value,
-                          }))
-                        }
-                      />
-                      <p className="text-xs leading-5 text-[#627269]">
-                        과거 계약·갱신 증빙으로 확인한 값만 입력하세요. 0회는 첫
-                        갱신 대상, 1회 이상은 반복 갱신 대상입니다. 공란은 회차
-                        미확인으로 남으며 저장한 처리 이력은 여기서 수정할 수
-                        없습니다.
-                      </p>
-                    </>
-                  )}
-                </Field>
-              )}
+              <p className="rounded-lg bg-emerald-50 p-3 text-sm leading-6 text-emerald-950">
+                갱신 회차는 실제 입금 순서로 정합니다. 첫 입금은 첫 갱신, 두
+                번째부터는 반복 갱신입니다. 입금 업무에서 금액을 등록하면
+                만료일과 갱신 이력이 함께 저장됩니다. 이 창에서 과거 처리만
+                등록한 경우에는 해당 입금과의 연결이 필요할 수 있습니다.
+              </p>
               <Field>
                 <FieldLabel htmlFor="subscription-recorder">
                   처리 담당자
@@ -13629,6 +13631,7 @@ export function FarmLedgerDashboard({
                     <Input
                       type="number"
                       min={0}
+                      step={workItemForm.workType === 'payment' ? 66000 : 1}
                       value={workItemForm.amount}
                       onChange={(event) =>
                         setWorkItemForm((current) => ({
@@ -13637,6 +13640,20 @@ export function FarmLedgerDashboard({
                         }))
                       }
                     />
+                    {workItemForm.workType === 'payment' && (
+                      <SubscriptionPaymentPreview
+                        record={recordById.get(workItemForm.farmRecordId)}
+                        amount={workItemForm.amount}
+                        paymentDate={workItemForm.occurredAt.slice(0, 10)}
+                        today={subscriptionToday}
+                        paymentCount={Math.max(
+                          recordedPayments.get(workItemForm.farmRecordId)
+                            ?.count ?? 0,
+                          recordById.get(workItemForm.farmRecordId)
+                            ?.subscriptionPaymentCount ?? 0,
+                        )}
+                      />
+                    )}
                   </Field>
                   <Field className="sm:col-span-2">
                     <FieldLabel>받은 내용</FieldLabel>
@@ -14096,6 +14113,7 @@ export function FarmLedgerDashboard({
                   <Input
                     type="number"
                     min={0}
+                    step={selectedWorkItem?.workType === 'payment' ? 66000 : 1}
                     value={historyForm.amount}
                     onChange={(event) =>
                       setHistoryForm((current) => ({
@@ -14104,6 +14122,20 @@ export function FarmLedgerDashboard({
                       }))
                     }
                   />
+                  {selectedWorkItem?.workType === 'payment' && (
+                    <SubscriptionPaymentPreview
+                      record={recordById.get(selectedWorkItem.farmRecordId)}
+                      amount={historyForm.amount}
+                      paymentDate={historyForm.occurredAt.slice(0, 10)}
+                      today={subscriptionToday}
+                      paymentCount={Math.max(
+                        recordedPayments.get(selectedWorkItem.farmRecordId)
+                          ?.count ?? 0,
+                        recordById.get(selectedWorkItem.farmRecordId)
+                          ?.subscriptionPaymentCount ?? 0,
+                      )}
+                    />
+                  )}
                 </Field>
                 <Field>
                   <FieldLabel>기록자</FieldLabel>

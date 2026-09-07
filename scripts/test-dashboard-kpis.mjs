@@ -246,11 +246,10 @@ test('구독 타입과 개별 사업을 함께 제한해 같은 농가의 다른
     ['g1-record', 'g2-record'],
   );
   assert.deepEqual(summarizeSubscriptionCycles(general, evidence), {
-    initial: 1,
-    first: 1,
+    noPayment: 0,
+    first: 2,
     second: 0,
     thirdPlus: 0,
-    unverified: 0,
     total: 2,
   });
   assert.equal(
@@ -286,7 +285,7 @@ test('빈 연도의 완료율은 0% 실적으로 오인시키지 않는다', () 
   assert.equal(result.settlementRate, null);
 });
 
-test('입금 근거는 양수 입금 업무 이력만 사용하고 분할입금은 한 구독으로 묶는다', () => {
+test('입금 근거는 양수 입금 업무 이력만 사용하고 두 입금은 두 번째 갱신으로 묶는다', () => {
   const works = [
     work('pay', 'r1'),
     work('pay2', 'r2'),
@@ -315,17 +314,17 @@ test('입금 근거는 양수 입금 업무 이력만 사용하고 분할입금�
     summarizeSubscriptionCycles(
       [record('r1'), record('r2', { lastPaymentDate: today })],
       evidence,
-    ).initial,
+    ).second,
     1,
   );
 });
 
-test('최초·1차·2차·3차 이상은 현재 회차 하나에만 집계된다', () => {
+test('실제 입금 0·1·2·3건 이상으로만 분류하고 수기 횟수와 구독 상태는 무시한다', () => {
   const records = [
     record('initial'),
     record('first', { renewalCount: 1 }),
-    record('second', { renewalCount: 2 }),
-    record('third', { renewalCount: 5 }),
+    record('second', { renewalCount: 99 }),
+    record('third', { renewalCount: 0 }),
     record('no-proof', { lastPaymentDate: today }),
     record('not-a-subscription', {
       subscriptionStatus: 'unregistered',
@@ -333,19 +332,38 @@ test('최초·1차·2차·3차 이상은 현재 회차 하나에만 집계된다
       currentSubscriptionExpiresAt: '',
     }),
     record('invalid-cycle', { renewalCount: -1 }),
+    record('server-snapshot', { renewalCount: 0, subscriptionPaymentCount: 2 }),
+    record('invalid-snapshot', {
+      renewalCount: 8,
+      subscriptionPaymentCount: -1,
+    }),
   ];
   const payments = paymentEvidenceByRecord(
-    [work('i', 'initial'), work('u', 'not-a-subscription')],
-    [entry('i', 'i'), entry('u', 'u')],
+    [
+      work('i', 'initial'),
+      work('u', 'not-a-subscription'),
+      work('s', 'second'),
+      work('t', 'third'),
+      work('bad', 'invalid-cycle'),
+    ],
+    [
+      entry('i', 'i', { amount: 132000 }),
+      entry('u', 'u'),
+      entry('s1', 's'),
+      entry('s2', 's'),
+      entry('t1', 't'),
+      entry('t2', 't'),
+      entry('t3', 't'),
+      entry('bad', 'bad'),
+    ],
     now,
   );
   assert.deepEqual(summarizeSubscriptionCycles(records, payments), {
-    initial: 1,
-    first: 1,
-    second: 1,
+    noPayment: 3,
+    first: 3,
+    second: 2,
     thirdPlus: 1,
-    unverified: 3,
-    total: 7,
+    total: 9,
   });
 });
 
