@@ -142,6 +142,8 @@ export interface PaymentEvidence {
   total: number;
   firstPaidAt: number;
   latestPaidAt: number;
+  latestPaymentAmount: number;
+  latestHistoryEntryId: string;
   latestWorkItemId: string;
 }
 
@@ -168,6 +170,11 @@ export function paymentEvidenceByRecord(
       continue;
     seen.add(entry.id);
     const current = result.get(work.farmRecordId);
+    const isLatest =
+      !current ||
+      entry.occurredAt > current.latestPaidAt ||
+      (entry.occurredAt === current.latestPaidAt &&
+        entry.id.localeCompare(current.latestHistoryEntryId) > 0);
     result.set(work.farmRecordId, {
       count: (current?.count ?? 0) + 1,
       total: (current?.total ?? 0) + entry.amount,
@@ -176,10 +183,11 @@ export function paymentEvidenceByRecord(
         entry.occurredAt,
       ),
       latestPaidAt: Math.max(current?.latestPaidAt ?? 0, entry.occurredAt),
-      latestWorkItemId:
-        !current || entry.occurredAt >= current.latestPaidAt
-          ? work.id
-          : current.latestWorkItemId,
+      latestPaymentAmount: isLatest
+        ? entry.amount
+        : current.latestPaymentAmount,
+      latestHistoryEntryId: isLatest ? entry.id : current.latestHistoryEntryId,
+      latestWorkItemId: isLatest ? work.id : current.latestWorkItemId,
     });
   }
   return result;

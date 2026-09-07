@@ -159,6 +159,11 @@ import {
   groupRenewalCycles,
 } from '@/lib/subscription-renewal-report';
 import { SubscriptionRenewalPanel } from './subscription-renewal-panel';
+import { SubscriptionPaymentYearPanel } from './subscription-payment-year-panel';
+import {
+  buildPaymentYearReport,
+  paymentYearReportLines,
+} from '@/lib/subscription-payment-report';
 import { SubscriptionPaymentPreview } from './subscription-payment-preview';
 import {
   calculateSubscriptionPayment,
@@ -2365,10 +2370,30 @@ export function FarmLedgerDashboard({
     );
   }, [farmById, projectById, workspace.farms, workspace.records]);
 
+  const subscriptionPaymentYears = useMemo(
+    () =>
+      buildPaymentYearReport(
+        workspace.records,
+        workspace.projects,
+        workspace.workItems,
+        workspace.historyEntries,
+        { asOf: riskNow, projectType: subscriptionReportProjectType },
+      ),
+    [
+      workspace.records,
+      workspace.projects,
+      workspace.workItems,
+      workspace.historyEntries,
+      riskNow,
+      subscriptionReportProjectType,
+    ],
+  );
+
   const subscriptionReportYears = useMemo(() => {
     const years = new Set<number>([
       Number(subscriptionReportYear),
       new Date().getFullYear(),
+      ...subscriptionPaymentYears.years.map((row) => row.year),
     ]);
     for (const event of workspace.subscriptionEvents) {
       const basisYear = Number(event.basisExpiryDate.slice(0, 4));
@@ -2381,10 +2406,19 @@ export function FarmLedgerDashboard({
       if (year) years.add(year);
     }
     return [...years].filter(Boolean).sort((a, b) => b - a);
-  }, [subscriptionReportYear, workspace.records, workspace.subscriptionEvents]);
+  }, [
+    subscriptionReportYear,
+    workspace.records,
+    workspace.subscriptionEvents,
+    subscriptionPaymentYears.years,
+  ]);
 
   const subscriptionReport = useMemo(() => {
-    const year = Number(subscriptionReportYear);
+    const year = Number(
+      subscriptionReportYear === 'all'
+        ? subscriptionToday.slice(0, 4)
+        : subscriptionReportYear,
+    );
     const projectMatches = (projectId: string) =>
       subscriptionReportProjectType === 'all' ||
       projectById.get(projectId)?.projectType === subscriptionReportProjectType;
@@ -2566,6 +2600,11 @@ export function FarmLedgerDashboard({
           project?.name ?? '',
           record.currentSubscriptionExpiresAt,
           record.lastPaymentDate,
+          recordedPayments.get(record.id)?.latestPaidAt
+            ? localDateString(
+                new Date(recordedPayments.get(record.id)!.latestPaidAt),
+              )
+            : '',
         ]
           .join(' ')
           .toLocaleLowerCase('ko-KR');
@@ -2591,6 +2630,7 @@ export function FarmLedgerDashboard({
     subscriptionListStatus,
     subscriptionScopedRecords,
     subscriptionToday,
+    recordedPayments,
   ]);
   const subscriptionPageCount = Math.max(
     1,
@@ -3197,36 +3237,44 @@ export function FarmLedgerDashboard({
       subscriptionReportProjectType === 'all'
         ? '전체 사업 타입'
         : FARM_PROJECT_TYPE_LABELS[subscriptionReportProjectType];
-    const lines = [
-      '구독 실적',
-      '',
-      `- 사업 타입 : ${projectTypeLabel}`,
-      `- 연간 만료 대상 ('${shortYear}.1~12) : ${subscriptionReport.annualTarget}개소`,
-      `- 만료 경과 ${subscriptionReport.target}개소 중 갱신 ${subscriptionReport.renewed}개소, 미갱신 ${subscriptionReport.notRenewed}개소, 기록 확인 ${subscriptionReport.conflict}개소`,
-      `- 재가입 ${subscriptionReport.rejoined}개소 (갱신율과 별도)`,
-      `- 첫 갱신율 : ${subscriptionReport.renewal.first.rate ?? '-'}${subscriptionReport.renewal.first.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewal.first.renewed} / 만료 경과 ${subscriptionReport.renewal.first.target})`,
-      `- 반복 갱신율 : ${subscriptionReport.renewal.repeat.rate ?? '-'}${subscriptionReport.renewal.repeat.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewal.repeat.renewed} / 만료 경과 ${subscriptionReport.renewal.repeat.target})`,
-      `- 전체 갱신율 : ${subscriptionReport.renewal.overall.rate ?? '-'}${subscriptionReport.renewal.overall.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewed} / 만료 경과 ${subscriptionReport.target})`,
-      `- 과거 입금 연결 필요 대상 ${subscriptionReport.renewal.unknown.target}개소는 전체에만 포함`,
-      `- 올해 오늘 만료 ${subscriptionReport.dueToday}개소, 만료 예정 ${subscriptionReport.renewal.overall.upcoming}개소는 갱신율 분모에서 제외`,
-      `- 기준: 확인 가능한 농가×사업×만료 회차. 오늘(${subscriptionReport.asOfDate}) 이전 만료일 경과 대상 / 오늘까지 확인된 갱신. 결과가 없으면 미갱신.`,
-      '- 월별 실적 (전체 대상 / 경과 / 갱신 / 미갱신 / 기록 확인 / 갱신율 / 오늘 / 예정)',
-      ...groupRenewalCycles(
-        subscriptionReport.renewal.cycles,
-        'month',
-        workspace.projects,
-        subscriptionReport.year,
-      ).map(
-        (month) =>
-          `  ${Number(month.key.slice(5))}월: ${month.annualTarget} / ${month.target} / ${month.renewed} / ${month.notRenewed} / ${month.conflict} / ${month.rate === null ? '-' : `${month.rate}%`} / ${month.dueToday} / ${month.upcoming}`,
-      ),
-      `- 현재 미갱신 (오늘 ${subscriptionReport.asOfDate} 기준, 전체 연도) : ${subscriptionReport.currentNonRenewed}개소`,
-      `- 현재 사용 중 만료 예정 (내일부터, 전체 기간) : ${subscriptionReport.upcomingCount}개소`,
-    ];
-    if (!subscriptionReport.upcoming.length) {
+    const lines =
+      subscriptionReportYear === 'all'
+        ? paymentYearReportLines(subscriptionPaymentYears, projectTypeLabel)
+        : [
+            '구독 실적',
+            '',
+            `- 사업 타입 : ${projectTypeLabel}`,
+            `- 연간 만료 대상 ('${shortYear}.1~12) : ${subscriptionReport.annualTarget}개소`,
+            `- 만료 경과 ${subscriptionReport.target}개소 중 갱신 ${subscriptionReport.renewed}개소, 미갱신 ${subscriptionReport.notRenewed}개소, 기록 확인 ${subscriptionReport.conflict}개소`,
+            `- 재가입 ${subscriptionReport.rejoined}개소 (갱신율과 별도)`,
+            `- 첫 갱신율 : ${subscriptionReport.renewal.first.rate ?? '-'}${subscriptionReport.renewal.first.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewal.first.renewed} / 만료 경과 ${subscriptionReport.renewal.first.target})`,
+            `- 반복 갱신율 : ${subscriptionReport.renewal.repeat.rate ?? '-'}${subscriptionReport.renewal.repeat.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewal.repeat.renewed} / 만료 경과 ${subscriptionReport.renewal.repeat.target})`,
+            `- 전체 갱신율 : ${subscriptionReport.renewal.overall.rate ?? '-'}${subscriptionReport.renewal.overall.rate === null ? '' : '%'} (갱신 ${subscriptionReport.renewed} / 만료 경과 ${subscriptionReport.target})`,
+            `- 과거 입금 연결 필요 대상 ${subscriptionReport.renewal.unknown.target}개소는 전체에만 포함`,
+            `- 올해 오늘 만료 ${subscriptionReport.dueToday}개소, 만료 예정 ${subscriptionReport.renewal.overall.upcoming}개소는 갱신율 분모에서 제외`,
+            `- 기준: 확인 가능한 농가×사업×만료 회차. 오늘(${subscriptionReport.asOfDate}) 이전 만료일 경과 대상 / 오늘까지 확인된 갱신. 결과가 없으면 미갱신.`,
+            '- 월별 실적 (만료 농가 / 경과 / 갱신 / 미갱신 / 갱신율 / 예정[오늘 포함])',
+            ...groupRenewalCycles(
+              subscriptionReport.renewal.cycles,
+              'month',
+              workspace.projects,
+              subscriptionReport.year,
+            ).map(
+              (month) =>
+                `  ${Number(month.key.slice(5))}월: ${month.annualTarget} / ${month.target} / ${month.renewed} / ${month.notRenewed} / ${month.rate === null ? '-' : `${month.rate}%`} / ${month.upcoming + month.dueToday}`,
+            ),
+            `- 현재 미갱신 (오늘 ${subscriptionReport.asOfDate} 기준, 전체 연도) : ${subscriptionReport.currentNonRenewed}개소`,
+            `- 현재 사용 중 만료 예정 (내일부터, 전체 기간) : ${subscriptionReport.upcomingCount}개소`,
+          ];
+    if (
+      subscriptionReportYear !== 'all' &&
+      !subscriptionReport.upcoming.length
+    ) {
       lines.push('  없음');
     }
-    for (const year of subscriptionReport.upcoming) {
+    for (const year of subscriptionReportYear === 'all'
+      ? []
+      : subscriptionReport.upcoming) {
       lines.push(`  ${String(year.year).slice(-2)}년 : ${year.count}개소`);
       for (const month of year.months) {
         const projects = month.projects
@@ -7981,10 +8029,15 @@ export function FarmLedgerDashboard({
                                   >
                                     <SelectTrigger className="h-10 w-full">
                                       <SelectValue>
-                                        {subscriptionReportYear}년
+                                        {subscriptionReportYear === 'all'
+                                          ? '전체 연도'
+                                          : `${subscriptionReportYear}년`}
                                       </SelectValue>
                                     </SelectTrigger>
                                     <SelectContent>
+                                      <SelectItem value="all">
+                                        전체 연도
+                                      </SelectItem>
                                       {subscriptionReportYears.map((year) => (
                                         <SelectItem
                                           key={year}
@@ -8032,33 +8085,38 @@ export function FarmLedgerDashboard({
                                 </Field>
                               </div>
                               <p className="mt-3 text-xs leading-5 text-[#7a867d]">
-                                {subscriptionReportYear}년 1월 1일~12월 31일
-                                전체를 조회합니다. 갱신율은 그중 만료일이 지난
-                                대상을 기준으로 계산합니다. 오늘 만료와 만료
-                                예정은 별도로 표시합니다.
+                                {subscriptionReportYear === 'all'
+                                  ? '전체 연도는 실제 입금 연도별 갱신 차수를 비교합니다. 개별 연도를 선택하면 1월~12월 만료 농가와 갱신율을 확인합니다.'
+                                  : `${subscriptionReportYear}년 1월 1일~12월 31일 전체를 조회합니다. 갱신율은 만료일이 지난 대상을 기준으로 계산하며 만료 예정에는 오늘 만료도 포함합니다.`}
                               </p>
                             </CardContent>
                           </Card>
 
-                          <SubscriptionRenewalPanel
-                            key={`${subscriptionReportYear}-${subscriptionReportProjectType}`}
-                            report={subscriptionReport.renewal}
-                            projects={workspace.projects}
-                            records={workspace.records}
-                            farms={workspace.farms}
-                            onOpenRecord={(record, projectId) =>
-                              openFarm(record.farmId, '', projectId)
-                            }
-                            onRegister={(record, expiryDate) => {
-                              openSubscriptionEventDialog(record);
-                              setSubscriptionEventForm((current) => ({
-                                ...current,
-                                basisExpiryDate: expiryDate,
-                                basisRenewalCount: '',
-                                newExpiryDate: addYears(expiryDate, 1),
-                              }));
-                            }}
-                          />
+                          {subscriptionReportYear === 'all' ? (
+                            <SubscriptionPaymentYearPanel
+                              report={subscriptionPaymentYears}
+                            />
+                          ) : (
+                            <SubscriptionRenewalPanel
+                              key={`${subscriptionReportYear}-${subscriptionReportProjectType}`}
+                              report={subscriptionReport.renewal}
+                              projects={workspace.projects}
+                              records={workspace.records}
+                              farms={workspace.farms}
+                              onOpenRecord={(record, projectId) =>
+                                openFarm(record.farmId, '', projectId)
+                              }
+                              onRegister={(record, expiryDate) => {
+                                openSubscriptionEventDialog(record);
+                                setSubscriptionEventForm((current) => ({
+                                  ...current,
+                                  basisExpiryDate: expiryDate,
+                                  basisRenewalCount: '',
+                                  newExpiryDate: addYears(expiryDate, 1),
+                                }));
+                              }}
+                            />
+                          )}
                           <SubscriptionCyclePanel
                             counts={subscriptionCycleCounts}
                           />
@@ -8581,7 +8639,15 @@ export function FarmLedgerDashboard({
                                               )}
                                           </TableCell>
                                           <TableCell>
-                                            {formatDate(record.lastPaymentDate)}
+                                            {payment
+                                              ? formatDate(
+                                                  localDateString(
+                                                    new Date(
+                                                      payment.latestPaidAt,
+                                                    ),
+                                                  ),
+                                                )
+                                              : '입금 기록 없음'}
                                           </TableCell>
                                           <TableCell>
                                             <p className="whitespace-nowrap font-semibold">
@@ -8605,8 +8671,18 @@ export function FarmLedgerDashboard({
                                                   )
                                                 }
                                               >
-                                                입금 {payment.count}건 ·{' '}
-                                                {formatMoney(payment.total)}
+                                                최근 입금{' '}
+                                                {formatDate(
+                                                  localDateString(
+                                                    new Date(
+                                                      payment.latestPaidAt,
+                                                    ),
+                                                  ),
+                                                )}{' '}
+                                                ·{' '}
+                                                {formatMoney(
+                                                  payment.latestPaymentAmount,
+                                                )}
                                               </button>
                                             ) : (
                                               <p className="mt-1 text-xs text-[#947047]">

@@ -319,6 +319,27 @@ test('입금 근거는 양수 입금 업무 이력만 사용하고 두 입금은
   );
 });
 
+test('최근 입금일·금액·연결 업무는 같은 최신 입금 기록을 참조한다', () => {
+  const works = [work('older', 'r1'), work('latest', 'r1')];
+  const older = entry('a', 'older', { amount: 132000, occurredAt: now - 3000 });
+  const latest = entry('z', 'latest', {
+    amount: 66000,
+    occurredAt: now - 1000,
+  });
+  for (const entries of [
+    [latest, older],
+    [older, latest],
+  ]) {
+    const payment = paymentEvidenceByRecord(works, entries, now).get('r1');
+    assert.equal(payment.count, 2);
+    assert.equal(payment.total, 198000);
+    assert.equal(payment.latestPaymentAmount, 66000);
+    assert.equal(payment.latestPaidAt, latest.occurredAt);
+    assert.equal(payment.latestHistoryEntryId, latest.id);
+    assert.equal(payment.latestWorkItemId, latest.workItemId);
+  }
+});
+
 test('실제 입금 0·1·2·3건 이상으로만 분류하고 수기 횟수와 구독 상태는 무시한다', () => {
   const records = [
     record('initial'),

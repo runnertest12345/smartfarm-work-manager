@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
@@ -91,17 +91,8 @@ export function SubscriptionRenewalPanel({
       <td className="p-3 text-right font-semibold">{metric.target}</td>
       <td className="p-3 text-right text-emerald-800">{metric.renewed}</td>
       <td className="p-3 text-right text-amber-800">{metric.notRenewed}</td>
-      <td className="p-3 text-right">{metric.conflict}</td>
-      <td className="p-3 text-right font-bold">
-        {rateLabel(metric.rate)}
-        {metric.conflict > 0 && (
-          <span className="ml-1 text-xs font-normal text-amber-800">
-            기록 확인
-          </span>
-        )}
-      </td>
-      <td className="p-3 text-right">{metric.dueToday}</td>
-      <td className="p-3 text-right">{metric.upcoming}</td>
+      <td className="p-3 text-right font-bold">{rateLabel(metric.rate)}</td>
+      <td className="p-3 text-right">{metric.upcoming + metric.dueToday}</td>
     </>
   );
   return (
@@ -171,6 +162,10 @@ export function SubscriptionRenewalPanel({
               </label>
             </div>
           </div>
+          <p className="mb-3 text-sm text-[#627269]">
+            만료 예정에는 오늘 만료되는 농가도 포함합니다. 아직 만료일이 지나지
+            않은 대상은 갱신율에서 제외합니다.
+          </p>
           <div className="overflow-x-auto rounded-lg border">
             <table className="w-full min-w-[840px] text-sm tabular-nums">
               <caption className="sr-only">
@@ -185,9 +180,7 @@ export function SubscriptionRenewalPanel({
                     '만료 경과',
                     '갱신 완료',
                     '미갱신',
-                    '기록 확인',
                     '갱신율',
-                    '오늘 만료',
                     '만료 예정',
                     '농가',
                   ].map((heading, index) => (
@@ -202,54 +195,192 @@ export function SubscriptionRenewalPanel({
                 </tr>
               </thead>
               <tbody>
+                <tr className="border-b-2 border-emerald-200 bg-emerald-50">
+                  <th scope="row" className="p-3 text-left">
+                    {String(report.year).slice(-2)}년 총계
+                  </th>
+                  {cells(summary)}
+                  <td className="p-3 text-right" aria-label="연간 총계">
+                    —
+                  </td>
+                </tr>
+
                 {groups
                   .slice(currentGroupPage * 12, currentGroupPage * 12 + 12)
                   .map((group) => (
-                    <tr key={group.key} className="border-t">
-                      <th scope="row" className="p-3 text-left font-medium">
-                        {groupName(group.key)}
-                      </th>
-                      {cells(group)}
-                      <td className="p-2 text-right">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          aria-expanded={selectedGroup === group.key}
-                          disabled={group.cycles.length === 0}
-                          onClick={() => {
-                            setSelectedGroup(
-                              selectedGroup === group.key ? null : group.key,
-                            );
-                            setPage(0);
-                          }}
-                        >
-                          농가 보기
-                        </Button>
-                      </td>
-                    </tr>
+                    <Fragment key={group.key}>
+                      <tr className="border-t">
+                        <th scope="row" className="p-3 text-left font-medium">
+                          {groupName(group.key)}
+                        </th>
+                        {cells(group)}
+                        <td className="p-2 text-right">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            aria-expanded={selectedGroup === group.key}
+                            aria-controls={
+                              selectedGroup === group.key
+                                ? `renewal-farms-${grouping}-${group.key}`
+                                : undefined
+                            }
+                            disabled={group.cycles.length === 0}
+                            onClick={() => {
+                              setSelectedGroup(
+                                selectedGroup === group.key ? null : group.key,
+                              );
+                              setPage(0);
+                            }}
+                          >
+                            {selectedGroup === group.key
+                              ? '농가 접기'
+                              : '농가 보기'}
+                          </Button>
+                        </td>
+                      </tr>
+                      {selectedGroup === group.key && selected && (
+                        <tr className="border-t bg-emerald-50/30">
+                          <td colSpan={8} className="p-3">
+                            <section
+                              className="rounded-lg border bg-white p-4"
+                              id={`renewal-farms-${grouping}-${selected.key}`}
+                              aria-label="만료 회차 대상 상세"
+                            >
+                              <div className="mb-3 flex items-center justify-between gap-3">
+                                <h4 className="font-bold">
+                                  {groupName(selected.key)} ·{' '}
+                                  {stageLabels[stage]} {selected.cycles.length}
+                                  개소
+                                </h4>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setSelectedGroup(null)}
+                                >
+                                  농가 접기
+                                </Button>
+                              </div>
+                              <ul className="divide-y">
+                                {selected.cycles
+                                  .slice(
+                                    currentPage * 10,
+                                    currentPage * 10 + 10,
+                                  )
+                                  .map((cycle) => {
+                                    const record = recordById.get(
+                                      cycle.farmRecordId,
+                                    );
+                                    return (
+                                      <li
+                                        key={cycle.key}
+                                        className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm"
+                                      >
+                                        <div>
+                                          <button
+                                            type="button"
+                                            className="font-semibold text-emerald-800 underline underline-offset-4"
+                                            onClick={() =>
+                                              record &&
+                                              onOpenRecord(
+                                                record,
+                                                cycle.projectId,
+                                              )
+                                            }
+                                          >
+                                            {record
+                                              ? (farmById.get(record.farmId)
+                                                  ?.name ?? '농가 미확인')
+                                              : '농가 미확인'}
+                                          </button>
+                                          <p className="mt-1 text-xs text-[#627269]">
+                                            {projectById.get(cycle.projectId)
+                                              ?.name ?? '사업 미확인'}{' '}
+                                            · 만료 {cycle.expiryDate} ·{' '}
+                                            {stageLabels[cycle.stage]}
+                                            {' · '}입금 {cycle.paymentCount}건
+                                            {cycle.paymentOrdinal !== null
+                                              ? ` · 해당 입금 ${cycle.paymentOrdinal}차`
+                                              : cycle.stage === 'unknown'
+                                                ? ' · 해당 만료 건과 입금 연결 필요'
+                                                : ''}
+                                          </p>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-3">
+                                          <span>
+                                            {cycle.upcoming || cycle.dueToday
+                                              ? `${cycle.dueToday ? '오늘 만료' : '만료 예정'}${cycle.outcome === 'renewed' ? ' · 선갱신 완료' : ''}`
+                                              : outcomeLabels[cycle.outcome]}
+                                          </span>
+                                          {cycle.outcome === 'pending' &&
+                                            cycle.futureResultDate && (
+                                              <span className="text-xs text-amber-900">
+                                                미래 처리 기록{' '}
+                                                {cycle.futureResultDate} ·
+                                                상세에서 확인
+                                              </span>
+                                            )}
+                                          {record &&
+                                            cycle.outcome === 'pending' &&
+                                            !cycle.futureResultDate && (
+                                              <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() =>
+                                                  onRegister(
+                                                    record,
+                                                    cycle.expiryDate,
+                                                  )
+                                                }
+                                              >
+                                                결과 등록
+                                              </Button>
+                                            )}
+                                        </div>
+                                      </li>
+                                    );
+                                  })}
+                              </ul>
+                              {selected.cycles.length > 10 && (
+                                <div className="mt-3 flex items-center justify-end gap-3 text-sm">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={currentPage === 0}
+                                    onClick={() => setPage(currentPage - 1)}
+                                  >
+                                    이전
+                                  </Button>
+                                  <span>
+                                    {currentPage + 1} /{' '}
+                                    {Math.ceil(selected.cycles.length / 10)}
+                                  </span>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={
+                                      (currentPage + 1) * 10 >=
+                                      selected.cycles.length
+                                    }
+                                    onClick={() => setPage(currentPage + 1)}
+                                  >
+                                    다음
+                                  </Button>
+                                </div>
+                              )}
+                            </section>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   ))}
                 {!groups.length && (
                   <tr>
-                    <td colSpan={10} className="p-8 text-center text-[#627269]">
+                    <td colSpan={8} className="p-8 text-center text-[#627269]">
                       선택 조건에 해당하는 만료 회차가 없습니다.
                     </td>
                   </tr>
                 )}
               </tbody>
-              <tfoot className="border-t bg-[#f3f6f3]">
-                <tr>
-                  <th scope="row" className="p-3 text-left">
-                    합계
-                  </th>
-                  {cells(summary)}
-                  <td
-                    className="p-3 text-right"
-                    aria-label="합계에는 상세 동작 없음"
-                  >
-                    —
-                  </td>
-                </tr>
-              </tfoot>
             </table>
           </div>
           {groups.length > 12 && (
@@ -274,116 +405,6 @@ export function SubscriptionRenewalPanel({
                 다음
               </Button>
             </div>
-          )}
-          {selected && (
-            <section
-              className="mt-5 rounded-lg border p-4"
-              aria-label="만료 회차 대상 상세"
-            >
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <h4 className="font-bold">
-                  {groupName(selected.key)} · {stageLabels[stage]}{' '}
-                  {selected.cycles.length}개소
-                </h4>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setSelectedGroup(null)}
-                >
-                  닫기
-                </Button>
-              </div>
-              <ul className="divide-y">
-                {selected.cycles
-                  .slice(currentPage * 10, currentPage * 10 + 10)
-                  .map((cycle) => {
-                    const record = recordById.get(cycle.farmRecordId);
-                    return (
-                      <li
-                        key={cycle.key}
-                        className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm"
-                      >
-                        <div>
-                          <button
-                            type="button"
-                            className="font-semibold text-emerald-800 underline underline-offset-4"
-                            onClick={() =>
-                              record && onOpenRecord(record, cycle.projectId)
-                            }
-                          >
-                            {record
-                              ? (farmById.get(record.farmId)?.name ??
-                                '농가 미확인')
-                              : '농가 미확인'}
-                          </button>
-                          <p className="mt-1 text-xs text-[#627269]">
-                            {projectById.get(cycle.projectId)?.name ??
-                              '사업 미확인'}{' '}
-                            · 만료 {cycle.expiryDate} ·{' '}
-                            {stageLabels[cycle.stage]}
-                            {' · '}입금 {cycle.paymentCount}건
-                            {cycle.paymentOrdinal !== null
-                              ? ` · 해당 입금 ${cycle.paymentOrdinal}차`
-                              : cycle.stage === 'unknown'
-                                ? ' · 해당 만료 건과 입금 연결 필요'
-                                : ''}
-                          </p>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-3">
-                          <span>
-                            {cycle.upcoming || cycle.dueToday
-                              ? `${cycle.dueToday ? '오늘 만료' : '만료 예정'}${cycle.outcome === 'renewed' ? ' · 선갱신 완료' : ''}`
-                              : outcomeLabels[cycle.outcome]}
-                          </span>
-                          {cycle.outcome === 'pending' &&
-                            cycle.futureResultDate && (
-                              <span className="text-xs text-amber-900">
-                                미래 처리 기록 {cycle.futureResultDate} ·
-                                상세에서 확인
-                              </span>
-                            )}
-                          {record &&
-                            cycle.outcome === 'pending' &&
-                            !cycle.futureResultDate && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() =>
-                                  onRegister(record, cycle.expiryDate)
-                                }
-                              >
-                                결과 등록
-                              </Button>
-                            )}
-                        </div>
-                      </li>
-                    );
-                  })}
-              </ul>
-              {selected.cycles.length > 10 && (
-                <div className="mt-3 flex items-center justify-end gap-3 text-sm">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={currentPage === 0}
-                    onClick={() => setPage(currentPage - 1)}
-                  >
-                    이전
-                  </Button>
-                  <span>
-                    {currentPage + 1} / {Math.ceil(selected.cycles.length / 10)}
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={(currentPage + 1) * 10 >= selected.cycles.length}
-                    onClick={() => setPage(currentPage + 1)}
-                  >
-                    다음
-                  </Button>
-                </div>
-              )}
-            </section>
           )}
         </CardContent>
       </Card>
