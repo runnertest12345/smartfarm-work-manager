@@ -12,6 +12,9 @@ const reportLib = load('../lib/subscription-renewal-report.ts');
 let states = [],
   cursor = 0,
   buttons = [];
+let popoverOpen = [],
+  popoverCursor = 0;
+const PopoverContext = React.createContext(null);
 function load(path) {
   const compiled = ts.transpileModule(
     readFileSync(new URL(path, import.meta.url), 'utf8'),
@@ -43,6 +46,39 @@ function load(path) {
       };
     if (name === '@/lib/farm-types') return types;
     if (name === '@/lib/subscription-renewal-report') return reportLib;
+    // Exercise our help wiring without a browser; dismissal/focus are owned by Base UI.
+    if (name === '@/components/ui/popover')
+      return {
+        Popover: ({ children }) => {
+          const index = popoverCursor++;
+          return React.createElement(
+            PopoverContext.Provider,
+            {
+              value: {
+                open: !!popoverOpen[index],
+                toggle: () => {
+                  popoverOpen[index] = !popoverOpen[index];
+                },
+              },
+            },
+            children,
+          );
+        },
+        PopoverTrigger: (props) => {
+          const { open, toggle } = React.useContext(PopoverContext);
+          const trigger = { ...props, 'aria-expanded': open, onClick: toggle };
+          buttons.push(trigger);
+          return React.createElement('button', trigger);
+        },
+        PopoverContent: ({ children }) =>
+          React.useContext(PopoverContext).open
+            ? React.createElement('div', { role: 'dialog' }, children)
+            : null,
+        PopoverTitle: ({ children }) =>
+          React.createElement('h4', null, children),
+        PopoverDescription: ({ children }) =>
+          React.createElement('p', null, children),
+      };
     if (name === '@/components/ui/card')
       return {
         Card: ({ children }) => React.createElement('div', null, children),
@@ -91,6 +127,7 @@ const props = {
 };
 function render(inputProps = props) {
   cursor = 0;
+  popoverCursor = 0;
   buttons = [];
   return renderToStaticMarkup(
     React.createElement(SubscriptionRenewalPanel, inputProps),
@@ -186,4 +223,54 @@ test('구독 실적에서는 오늘 기준 카드와 중복 운영 경고를 제
   assert.ok(!dashboard.includes('오늘 기준 만료 현황 ·'));
   assert.ok(!dashboard.includes('subscriptionReport.currentNonRenewed > 0'));
   assert.ok(dashboard.includes("noPayment: '갱신 이력 없음'"));
+});
+
+test('기존 여섯 열 이름을 유지하고 각 ? 버튼으로 의미와 산식을 열고 닫는다', () => {
+  states = [];
+  popoverOpen = [];
+  const explanations = {
+    '만료 농가': '만료 농가 = 만료 경과 + 만료 예정',
+    '만료 경과': '이미 갱신한 농가도 포함하므로 미갱신 농가 수와는 다릅니다.',
+    '갱신 완료':
+      '미리 갱신했더라도 기준 만료일이 아직 지나지 않았다면 만료 예정에 포함합니다.',
+    미갱신: '미갱신 = 만료 경과 − 갱신 완료 − 기록 확인 대상.',
+    갱신율: '갱신율 = 갱신 완료 ÷ 만료 경과 × 100',
+    '만료 예정': '만료 예정 = 만료 농가 − 만료 경과.',
+  };
+  const initial = render();
+  assert.equal(
+    buttons.filter((button) => button['aria-label']?.endsWith(' 용어 설명'))
+      .length,
+    6,
+  );
+  assert.ok(!initial.includes('role="dialog"'));
+  for (const [heading, explanation] of Object.entries(explanations)) {
+    assert.ok(initial.includes(`${heading} 용어 설명`));
+    buttons
+      .find((button) => button['aria-label'] === `${heading} 용어 설명`)
+      .onClick();
+    let html = render();
+    assert.ok(html.includes('role="dialog"'));
+    assert.ok(html.includes(explanation));
+    if (heading === '만료 경과') {
+      assert.ok(html.includes('만료 경과 = 갱신 완료 + 미갱신 + 기록 확인 대상'));
+      assert.ok(html.includes('서로 상충하는 경우'));
+    }
+    buttons
+      .find((button) => button['aria-label'] === `${heading} 용어 설명`)
+      .onClick();
+    html = render();
+    assert.ok(!html.includes('role="dialog"'));
+    assert.equal((html.match(/scope="col"/g) ?? []).length, 8);
+  }
+  assert.equal(
+    report.overall.target,
+    report.overall.renewed +
+      report.overall.notRenewed +
+      report.overall.conflict,
+  );
+  assert.equal(
+    report.overall.annualTarget,
+    report.overall.target + report.overall.upcoming + report.overall.dueToday,
+  );
 });

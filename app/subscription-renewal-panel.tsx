@@ -2,6 +2,13 @@ import { Fragment, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
+  Popover,
+  PopoverContent,
+  PopoverDescription,
+  PopoverTitle,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import {
   FARM_PROJECT_TYPE_LABELS,
   type Farm,
   type FarmProject,
@@ -30,6 +37,41 @@ const outcomeLabels = {
   churned: '미갱신 · 이탈 기록',
   pending: '미갱신',
   conflict: '기록 확인 필요',
+};
+
+const renewalTermHelp: Record<string, { meaning: string; formula: string }> = {
+  '만료 농가': {
+    meaning:
+      '선택한 연도·월에 기준 만료일이 있는 전체 대상입니다. 이미 갱신한 대상과 앞으로 만료될 대상도 포함합니다. 같은 농가라도 사업·만료 회차가 다르면 각각 집계합니다.',
+    formula: '만료 농가 = 만료 경과 + 만료 예정',
+  },
+  '만료 경과': {
+    meaning:
+      '기준 만료일이 오늘보다 이전인 대상입니다. 이미 갱신한 농가도 포함하므로 미갱신 농가 수와는 다릅니다. 갱신율의 분모로 사용합니다.',
+    formula:
+      '만료 경과 = 갱신 완료 + 미갱신 + 기록 확인 대상. 기록 확인 대상은 갱신·이탈 기록이 서로 상충하는 경우입니다.',
+  },
+  '갱신 완료': {
+    meaning:
+      '만료 경과 대상 중 오늘까지 갱신이 확인된 대상입니다. 미리 갱신했더라도 기준 만료일이 아직 지나지 않았다면 만료 예정에 포함합니다. 재가입은 별도 실적입니다.',
+    formula: '갱신율의 분자이며, 만료 경과 대상 안에서만 집계합니다.',
+  },
+  미갱신: {
+    meaning:
+      '기준 만료일이 지났지만 갱신이 확인되지 않은 대상입니다. 이탈 기록이 있거나 결과를 등록하지 않은 대상도 포함하며, 나중에 갱신이 확인되면 갱신 완료로 바뀝니다.',
+    formula:
+      '미갱신 = 만료 경과 − 갱신 완료 − 기록 확인 대상. 상충하는 기록은 별도로 구분합니다.',
+  },
+  갱신율: {
+    meaning:
+      '만료일이 지난 전체 대상 중 갱신을 완료한 비율입니다. 오늘 만료와 미래 만료는 제외하고, 재가입은 갱신에 더하지 않습니다. 대상이 없으면 -, 대상은 있지만 갱신이 없으면 0%입니다.',
+    formula: '갱신율 = 갱신 완료 ÷ 만료 경과 × 100',
+  },
+  '만료 예정': {
+    meaning:
+      '선택한 연도·월의 대상 중 기준 만료일이 오늘이거나 이후인 대상입니다. 오늘 만료도 당일까지 유효하므로 포함합니다. 미리 갱신한 대상도 기준 만료일이 지나기 전에는 이 열에 포함합니다.',
+    formula: '만료 예정 = 만료 농가 − 만료 경과. 현재 갱신율에서는 제외합니다.',
+  },
 };
 
 export function SubscriptionRenewalPanel({
@@ -189,7 +231,36 @@ export function SubscriptionRenewalPanel({
                       scope="col"
                       className={`p-3 ${index === 0 ? 'text-left' : 'text-right'}`}
                     >
-                      {heading}
+                      <span
+                        className={`inline-flex items-center gap-1 ${index === 0 ? '' : 'justify-end'}`}
+                      >
+                        {heading}
+                        {renewalTermHelp[heading] && (
+                          <Popover>
+                            <PopoverTrigger
+                              type="button"
+                              aria-label={`${heading} 용어 설명`}
+                              className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[#b9c9bd] bg-white text-sm font-semibold text-[#53645a] hover:bg-emerald-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+                            >
+                              <span aria-hidden="true">?</span>
+                            </PopoverTrigger>
+                            <PopoverContent
+                              align="end"
+                              className="w-80 max-w-[calc(100vw-2rem)] p-4 text-left font-normal leading-6"
+                            >
+                              <PopoverTitle className="text-base font-semibold">
+                                {heading}
+                              </PopoverTitle>
+                              <PopoverDescription className="text-sm text-[#53645a]">
+                                {renewalTermHelp[heading].meaning}
+                              </PopoverDescription>
+                              <p className="rounded-md bg-emerald-50 p-3 text-sm text-emerald-900">
+                                {renewalTermHelp[heading].formula}
+                              </p>
+                            </PopoverContent>
+                          </Popover>
+                        )}
+                      </span>
                     </th>
                   ))}
                 </tr>
