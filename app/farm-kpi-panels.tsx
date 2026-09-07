@@ -1,4 +1,10 @@
 import { Card, CardContent } from '@/components/ui/card';
+import { ArrowUpRight, ChevronDown } from 'lucide-react';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import { Field, FieldLabel } from '@/components/ui/field';
 import {
   Select,
@@ -78,10 +84,7 @@ export function ProjectYearSummary({
     (a, b) => b - a,
   );
   return (
-    <div
-      className="mb-4 flex gap-2 overflow-x-auto pb-1"
-      aria-label="연도별 사업 집계"
-    >
+    <div className="mb-4 flex flex-wrap gap-2" aria-label="연도별 사업 집계">
       {['all', ...years.map(String)].map((year) => {
         const scoped = filterProjectsByScope(projects, year, projectType);
         return (
@@ -90,15 +93,16 @@ export function ProjectYearSummary({
             type="button"
             aria-pressed={selectedYear === year}
             onClick={() => onYearChange(year)}
-            className={`min-w-44 shrink-0 rounded-xl border px-4 py-3 text-left transition-colors ${selectedYear === year ? 'border-[#2f7b59] bg-[#eaf5ed] text-[#245e43]' : 'border-[#dfe6dd] bg-white text-[#526159] hover:bg-[#f2f7f1]'}`}
+            title={`진행 ${scoped.filter((project) => project.status === 'active').length} · 완료 ${scoped.filter((project) => project.status === 'completed').length} · 보류 ${scoped.filter((project) => project.status === 'on_hold').length}`}
+            className={`flex min-h-10 items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${selectedYear === year ? 'border-[#176448] bg-[#e4f1eb] text-[#125638]' : 'border-[#d8e0e7] bg-white text-[#526172] hover:bg-[#f2f7f1]'}`}
           >
             <span className="block text-sm font-semibold">
               {year === 'all' ? '전체 연도' : `${year}년 사업`}
             </span>
-            <span className="mt-1 block text-xl font-bold">
+            <span className="rounded bg-black/5 px-1.5 text-sm font-bold">
               {scoped.length}개
             </span>
-            <span className="mt-1 block text-xs">
+            <span className="sr-only">
               진행{' '}
               {scoped.filter((project) => project.status === 'active').length} ·
               완료{' '}
@@ -120,10 +124,12 @@ export function ProjectKpiPanel({
   summary,
   year,
   projectType,
+  onSelect,
 }: {
   summary: ProjectKpis;
   year: string;
   projectType: ProjectTypeScope;
+  onSelect?: (target: 'projects' | 'tasks' | 'attention') => void;
 }) {
   const metrics = [
     {
@@ -191,33 +197,63 @@ export function ProjectKpiPanel({
   ];
   return (
     <section className="mb-5" aria-label="사업연도 핵심 지표">
-      <p className="mb-3 text-sm text-[#617166]">
+      <p className="mb-2 text-sm text-[#617166]">
         {year === 'all' ? '전체 연도' : `${year}년 사업`} ·{' '}
         {projectType === 'all'
           ? '전체 사업 타입'
           : FARM_PROJECT_TYPE_LABELS[projectType]}{' '}
-        KPI · 검색·상태·위험 조건은 아래 목록에 적용됩니다.
+        집계 · 검색 조건은 목록에만 적용
       </p>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {metrics.map((metric) => (
-          <Card
-            key={metric.label}
-            className="border-0 bg-white shadow-sm ring-[#dfe6dd]"
+        {[0, 4, 5, 6].map((index) => (
+          <button
+            key={metrics[index].label}
+            type="button"
+            className="metric-link"
+            onClick={() =>
+              onSelect?.(
+                index === 0 ? 'projects' : index === 6 ? 'attention' : 'tasks',
+              )
+            }
+            aria-label={`${metrics[index].label} ${metrics[index].value}, 해당 목록 보기`}
           >
-            <CardContent className="px-4 py-0">
-              <p className="text-sm text-[#627269]">{metric.label}</p>
-              <p
-                className={`mt-1 font-bold ${metric.compact ? 'text-lg' : 'text-2xl'} ${metric.warning ? 'text-[#a64e30]' : 'text-[#255f43]'}`}
-              >
-                {metric.value}
-              </p>
-              <p className="mt-1 text-xs leading-5 text-[#718077]">
-                {metric.note}
-              </p>
-            </CardContent>
-          </Card>
+            <span className="metric-label">
+              {metrics[index].label}
+              <ArrowUpRight aria-hidden="true" className="size-4" />
+            </span>
+            <span
+              className="metric-value"
+              style={
+                index === 6 && metrics[index].warning
+                  ? { color: '#ad432b' }
+                  : undefined
+              }
+            >
+              {metrics[index].value}
+            </span>
+            <span className="metric-note">{metrics[index].note}</span>
+          </button>
         ))}
       </div>
+      <Collapsible className="mt-2">
+        <CollapsibleTrigger className="flex min-h-10 items-center gap-2 text-sm font-semibold text-[#176448]">
+          설치·구독·서류·정산 지표{' '}
+          <ChevronDown className="size-4" aria-hidden="true" />
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="grid gap-3 pb-3 sm:grid-cols-2 xl:grid-cols-4">
+            {metrics
+              .filter((_, index) => ![0, 4, 5, 6].includes(index))
+              .map((metric) => (
+                <div key={metric.label} className="metric-link">
+                  <p className="metric-label">{metric.label}</p>
+                  <p className="text-xl font-bold">{metric.value}</p>
+                  <p className="metric-note">{metric.note}</p>
+                </div>
+              ))}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     </section>
   );
 }
@@ -243,34 +279,39 @@ export function SubscriptionCyclePanel({
     ],
   ] as const;
   return (
-    <section className="mb-5" aria-label="현재 구독 회차 KPI">
-      <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+    <Collapsible
+      className="mb-4 rounded-lg border border-[#d8e0e7] bg-white px-4"
+      aria-label="현재 구독 회차 현황"
+    >
+      <CollapsibleTrigger className="flex min-h-12 w-full items-center justify-between gap-2 text-left">
         <h2 className="text-base font-bold">현재 구독 회차</h2>
-        <p className="text-xs text-[#68796e]">
-          농가×사업 {counts.total}개소 · 현재 회차별 중복 없이 집계
+        <span className="flex items-center gap-2 text-sm text-[#586777]">
+          {counts.total}개소 · 상세 보기 <ChevronDown className="size-4" />
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="pb-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {metrics.map(([label, value, note]) => (
+            <Card
+              key={label}
+              className="border-0 bg-white shadow-sm ring-[#dfe6dd]"
+            >
+              <CardContent className="px-4 py-0">
+                <p className="text-sm text-[#627269]">{label}</p>
+                <p className="mt-1 text-2xl font-bold text-[#255f43]">
+                  {value}개소
+                </p>
+                <p className="mt-1 text-xs leading-5 text-[#718077]">{note}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+        <p className="mt-2 text-xs leading-5 text-[#718077]">
+          선택한 사업 범위의 전체 구독을 현재 등록 회차로 분류합니다(만료 포함).
+          최초 구독은 해당 농가·사업에 연결된 양수 입금 이력으로 확인하며, 연장
+          회차는 등록된 갱신횟수 기준입니다.
         </p>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        {metrics.map(([label, value, note]) => (
-          <Card
-            key={label}
-            className="border-0 bg-white shadow-sm ring-[#dfe6dd]"
-          >
-            <CardContent className="px-4 py-0">
-              <p className="text-sm text-[#627269]">{label}</p>
-              <p className="mt-1 text-2xl font-bold text-[#255f43]">
-                {value}개소
-              </p>
-              <p className="mt-1 text-xs leading-5 text-[#718077]">{note}</p>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-      <p className="mt-2 text-xs leading-5 text-[#718077]">
-        선택한 사업 범위의 전체 구독을 현재 등록 회차로 분류합니다(만료 포함).
-        최초 구독은 해당 농가·사업에 연결된 양수 입금 이력으로 확인하며, 연장
-        회차는 등록된 갱신횟수 기준입니다.
-      </p>
-    </section>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

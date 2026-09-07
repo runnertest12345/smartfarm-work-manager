@@ -53,30 +53,30 @@ body {
 }
 
 :root {
-  --background: oklch(0.974 0.012 135);
-  --foreground: oklch(0.27 0.035 150);
+  --background: #f3f5f8;
+  --foreground: #182b3a;
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.27 0.035 261);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.27 0.035 261);
-  --primary: oklch(0.5 0.105 155);
+  --primary: #176448;
   --primary-foreground: oklch(0.99 0.003 145);
   --secondary: oklch(0.95 0.02 140);
   --secondary-foreground: oklch(0.38 0.06 150);
   --muted: oklch(0.96 0.012 140);
-  --muted-foreground: oklch(0.56 0.025 150);
+  --muted-foreground: #586777;
   --accent: oklch(0.94 0.03 145);
   --accent-foreground: oklch(0.38 0.08 150);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.91 0.018 140);
-  --input: oklch(0.89 0.022 140);
-  --ring: oklch(0.62 0.08 150);
+  --border: #d8e0e7;
+  --input: #bcc9d2;
+  --ring: #176448;
   --chart-1: oklch(0.56 0.12 155);
   --chart-2: oklch(0.66 0.12 125);
   --chart-3: oklch(0.72 0.14 75);
   --chart-4: oklch(0.64 0.12 310);
   --chart-5: oklch(0.62 0.14 25);
-  --radius: 0.75rem;
+  --radius: 0.625rem;
   --sidebar: oklch(0.31 0.06 155);
   --sidebar-foreground: oklch(0.96 0.01 145);
   --sidebar-primary: oklch(0.68 0.11 150);
@@ -99,7 +99,7 @@ body {
   --secondary: oklch(0.3 0.035 263);
   --secondary-foreground: oklch(0.93 0.01 260);
   --muted: oklch(0.29 0.025 263);
-  --muted-foreground: oklch(0.69 0.02 260);
+  --muted-foreground: oklch(0.78 0.02 260);
   --accent: oklch(0.33 0.05 263);
   --accent-foreground: oklch(0.95 0.01 260);
   --destructive: oklch(0.704 0.191 22.216);
@@ -119,6 +119,181 @@ body {
   --sidebar-accent-foreground: oklch(0.96 0.01 260);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+}
+
+/* Shared working-surface rules: readable Korean text, clear focus and compact data. */
+.farm-app {
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 1rem;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+}
+.farm-app :is(button, a, input, textarea, [role='combobox']):focus-visible {
+  outline: 3px solid #176448;
+  outline-offset: 3px;
+}
+.farm-app :is(.text-xs, .text-\[10px\], .text-\[11px\]) {
+  font-size: 0.8125rem;
+}
+.farm-app
+  :is(
+    [data-slot='field-label'],
+    [data-slot='table-head'],
+    [data-slot='badge']
+  ) {
+  font-size: 0.875rem;
+}
+.farm-app [class*='text-[#7'],
+.farm-app [class*='text-[#8'],
+.farm-app [class*='text-[#9'] {
+  color: #586777;
+}
+.farm-app [data-slot='table-head'] {
+  color: #45566a;
+  font-weight: 650;
+  background: #edf2f6;
+}
+.farm-app [data-slot='table-cell'] {
+  padding-block: 0.85rem;
+}
+.farm-app [data-slot='table-row']:hover {
+  background-color: #f1f7f5;
+}
+.farm-app [data-slot='badge'] {
+  border-radius: 0.35rem;
+}
+.farm-app
+  :is([data-slot='button'], [data-slot='input'], [data-slot='select-trigger']) {
+  min-height: 2.5rem;
+}
+.farm-app :is(h1, h2, h3) {
+  color: #182b3a;
+  text-wrap: balance;
+}
+.farm-app h1 {
+  font-size: clamp(1.5rem, 2vw, 1.875rem);
+  font-weight: 750;
+  letter-spacing: -0.035em;
+}
+.farm-app .page-content {
+  padding: 1.5rem clamp(1rem, 2vw, 2rem);
+}
+.farm-app .detail-tabs {
+  position: sticky;
+  top: 4.5rem;
+  z-index: 15;
+  width: 100%;
+  height: auto;
+  min-height: 3rem;
+  justify-content: flex-start;
+  overflow-x: auto;
+  border: 1px solid #d8e0e7;
+  background: #fff;
+  padding: 0.3rem;
+}
+.farm-app .detail-tabs [role='tab'] {
+  min-height: 2.5rem;
+  flex: 0 0 auto;
+  padding-inline: 1rem;
+}
+.farm-app .detail-tabs [role='tab'][data-active] {
+  background: #e4f1eb;
+  color: #125638;
+  font-weight: 700;
+}
+.farm-app .metric-link {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  gap: 0.35rem;
+  border: 1px solid #d8e0e7;
+  border-radius: 0.625rem;
+  background: #fff;
+  padding: 1rem 1.125rem;
+  text-align: left;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+.farm-app button.metric-link:hover {
+  border-color: #176448;
+  box-shadow: 0 2px 8px #153f3210;
+}
+.farm-app .metric-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #526172;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.farm-app .metric-value {
+  color: #182b3a;
+  font-size: 1.75rem;
+  font-weight: 750;
+  line-height: 1.3;
+}
+.farm-app .metric-note {
+  color: #586777;
+  font-size: 0.8125rem;
+}
+.farm-app .skip-link {
+  position: fixed;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 100;
+  transform: translateY(-160%);
+  border-radius: 0.5rem;
+  background: #fff;
+  padding: 0.75rem 1rem;
+}
+.farm-app .skip-link:focus {
+  transform: translateY(0);
+}
+.farm-dialog {
+  color: #182b3a;
+  background: #fff;
+}
+.farm-dialog [data-slot='dialog-title'] {
+  padding-right: 2rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+.farm-dialog [data-slot='dialog-header'] {
+  padding-right: 0.5rem;
+}
+.farm-dialog [data-slot='dialog-footer'] {
+  position: sticky;
+  bottom: -1.5rem;
+  z-index: 20;
+  margin-inline: -1.25rem;
+  margin-bottom: -1.25rem;
+  padding: 1rem 1.25rem;
+  background: #fff;
+  box-shadow: 0 -6px 16px #182b3a0a;
+}
+.farm-dialog :is(input, textarea) {
+  font-size: 1rem;
+}
+@media (max-width: 639px) {
+  .farm-app .detail-tabs {
+    position: static;
+  }
+  .farm-app .metric-value {
+    font-size: 1.5rem;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .farm-app *,
+  .farm-app *::before,
+  .farm-app *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
+    animation: none !important;
+  }
 }
 
 @layer base {
