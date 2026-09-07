@@ -131,6 +131,19 @@ import {
   waitForFarmLedgerSync,
 } from '@/lib/firebase/farm-ledger-store';
 import { registerFarmLedgerTools } from '@/lib/webmcp/farm-ledger-tools';
+import {
+  paymentEvidenceByRecord,
+  subscriptionCycle,
+  summarizeProjectKpis,
+  summarizeCurrentExpiry,
+  summarizeSubscriptionCycles,
+  unresolvedExpiryCohorts,
+} from '@/lib/dashboard-kpis';
+import {
+  ProjectKpiPanel,
+  ProjectYearSummary,
+  SubscriptionCyclePanel,
+} from './farm-kpi-panels';
 
 type View =
   | 'overview'
@@ -307,6 +320,7 @@ interface InboxForm {
 interface QualityIssue {
   id: string;
   farmId: string;
+  projectId?: string;
   category: 'duplicate' | 'contact' | 'installation' | 'subscription';
   title: string;
   description: string;
@@ -1099,6 +1113,7 @@ export function FarmLedgerDashboard({
     const unsubscribe = subscribeFarmLedgerWorkspace(
       (data) => {
         setWorkspace(data);
+        setRiskNow(Date.now());
         setSelectedProjectId((current) =>
           data.projects.some((project) => project.id === current)
             ? current
@@ -1521,9 +1536,18 @@ export function FarmLedgerDashboard({
   const projectSnapshots = new Map(
     workspace.projects.map((project) => [project.id, projectSnapshot(project)]),
   );
+  const yearProjects = workspace.projects.filter(
+    (project) =>
+      projectYearFilter === 'all' || project.year === Number(projectYearFilter),
+  );
+  const yearProjectKpis = summarizeProjectKpis(
+    yearProjects,
+    projectSnapshots,
+    subscriptionToday,
+  );
 
   const overviewQuery = overviewSearch.trim().toLocaleLowerCase('ko-KR');
-  const overviewAllProjectRows = workspace.projects
+  const overviewAllProjectRows = yearProjects
     .map((project) => {
       const snapshot = projectSnapshots.get(project.id)!;
       const workItems = [...snapshot.workItems].sort((left, right) => {
@@ -1627,40 +1651,6 @@ export function FarmLedgerDashboard({
         row.project.status === overviewProjectStatus) &&
       (!overviewQuery || row.searchableText.includes(overviewQuery)),
   );
-
-  const overviewProjectWorkItems = Array.from(
-    new Map(
-      overviewAllProjectRows.flatMap((row) =>
-        row.workItems.map((item) => [item.id, item] as const),
-      ),
-    ).values(),
-  );
-
-  const overviewCompletedWorkItems = overviewProjectWorkItems.filter(
-    (item) => item.status === 'completed',
-  ).length;
-  const overviewOpenWorkItems = overviewProjectWorkItems.filter(
-    (item) => item.status === 'open',
-  ).length;
-  const overviewInProgressWorkItems = overviewProjectWorkItems.filter(
-    (item) => item.status === 'in_progress',
-  ).length;
-  const overviewWaitingWorkItems = overviewProjectWorkItems.filter(
-    (item) => item.status === 'waiting',
-  ).length;
-  const overviewIncompleteWorkItems =
-    overviewOpenWorkItems +
-    overviewInProgressWorkItems +
-    overviewWaitingWorkItems;
-  const overviewCompletionRate = overviewProjectWorkItems.length
-    ? Math.round(
-        (overviewCompletedWorkItems / overviewProjectWorkItems.length) * 100,
-      )
-    : null;
-  const projectsWithoutWorkItems = workspace.projects.filter(
-    (project) =>
-      (projectSnapshots.get(project.id)?.workItems.length ?? 0) === 0,
-  ).length;
 
   function latestEntryWith(
     workItem: FarmWorkItem,
@@ -2241,6 +2231,7 @@ export function FarmLedgerDashboard({
       issues.push({
         id: `participation-${record.farmId}-${record.projectId}`,
         farmId: record.farmId,
+        projectId: record.projectId,
         category: 'duplicate',
         title: '같은 프로젝트에 농가 중복 등록',
         description: `${farm?.name ?? '농가'}가 ${project?.name ?? '프로젝트'}에 ${records.length}번 연결되어 있습니다. 참여 정보를 확인해 주세요.`,
@@ -2253,6 +2244,7 @@ export function FarmLedgerDashboard({
         issues.push({
           id: `installation-${record.id}`,
           farmId: record.farmId,
+          projectId: record.projectId,
           category: 'installation',
           title: '설치일 미입력',
           description: `${farm?.name ?? '농가'}의 ${projectById.get(record.projectId)?.name ?? '사업'} 설치일이 없습니다.`,
@@ -2266,6 +2258,7 @@ export function FarmLedgerDashboard({
         issues.push({
           id: `subscription-${record.id}`,
           farmId: record.farmId,
+          projectId: record.projectId,
           category: 'subscription',
           title: '구독 기준 누락',
           description: `${farm?.name ?? '농가'}의 구독기간 또는 현재 만료일을 확인해 주세요.`,
@@ -2320,19 +2313,13 @@ export function FarmLedgerDashboard({
     const relevantEvents = workspace.subscriptionEvents.filter((event) =>
       projectMatches(event.projectId),
     );
-    const outcomes = relevantEvents.filter(
-      (event) =>
-        (event.eventType === 'renewed' || event.eventType === 'churned') &&
-        dateInReportPeriod(event.basisExpiryDate),
+    const cohortSummary = unresolvedExpiryCohorts(
+      relevantRecords,
+      relevantEvents,
+      year,
+      endMonth,
+      subscriptionToday,
     );
-    const cohortKeys = new Set(
-      outcomes.map((event) => `${event.farmRecordId}:${event.basisExpiryDate}`),
-    );
-    for (const record of relevantRecords) {
-      if (dateInReportPeriod(record.currentSubscriptionExpiresAt)) {
-        cohortKeys.add(`${record.id}:${record.currentSubscriptionExpiresAt}`);
-      }
-    }
     const distinctEventCount = (
       type: 'renewed' | 'churned' | 'rejoined',
       useProcessedDate = false,
@@ -2355,7 +2342,6 @@ export function FarmLedgerDashboard({
     const renewed = distinctEventCount('renewed');
     const churned = distinctEventCount('churned');
     const rejoined = distinctEventCount('rejoined', true);
-    const pending = Math.max(0, cohortKeys.size - renewed - churned);
     const decided = renewed + churned;
 
     const upcomingRecords = relevantRecords.filter(
@@ -2363,7 +2349,7 @@ export function FarmLedgerDashboard({
         effectiveRecordSubscriptionStatus(record, subscriptionToday) ===
           'active' &&
         Boolean(record.currentSubscriptionExpiresAt) &&
-        record.currentSubscriptionExpiresAt > cutoffDate,
+        record.currentSubscriptionExpiresAt >= subscriptionToday,
     );
     const yearMap = new Map<number, Map<number, Map<string, FarmRecord[]>>>();
     for (const record of upcomingRecords) {
@@ -2423,11 +2409,20 @@ export function FarmLedgerDashboard({
       year,
       endMonth,
       cutoffDate,
-      target: cohortKeys.size,
+      asOfDate: subscriptionToday,
+      currentExpiry: summarizeCurrentExpiry(
+        relevantRecords,
+        relevantEvents,
+        subscriptionToday,
+      ),
+      ...cohortSummary,
       renewed,
       churned,
       rejoined,
-      pending,
+      upcomingCount: upcomingRecords.length,
+      dueTodayCount: upcomingRecords.filter(
+        (record) => record.currentSubscriptionExpiresAt === subscriptionToday,
+      ).length,
       renewalRate: decided ? Math.round((renewed / decided) * 1000) / 10 : null,
       missingExpiry: relevantRecords.filter(
         (record) =>
@@ -2462,6 +2457,28 @@ export function FarmLedgerDashboard({
           record.projectId === subscriptionListProjectId,
       ),
     [subscriptionListProjectId, workspace.records],
+  );
+  const recordedPayments = useMemo(
+    () =>
+      paymentEvidenceByRecord(
+        workspace.workItems,
+        workspace.historyEntries,
+        riskNow,
+      ),
+    [workspace.workItems, workspace.historyEntries, riskNow],
+  );
+  const subscriptionCycleRecords =
+    subscriptionMode === 'management'
+      ? subscriptionScopedRecords
+      : workspace.records.filter(
+          (record) =>
+            subscriptionReportProjectType === 'all' ||
+            projectById.get(record.projectId)?.projectType ===
+              subscriptionReportProjectType,
+        );
+  const subscriptionCycleCounts = summarizeSubscriptionCycles(
+    subscriptionCycleRecords,
+    recordedPayments,
   );
   const subscriptionListRecords = useMemo(() => {
     const query = subscriptionListSearch.trim().toLocaleLowerCase('ko-KR');
@@ -2566,15 +2583,35 @@ export function FarmLedgerDashboard({
     .sort((left, right) => right.label.localeCompare(left.label))
     .slice(0, 6);
 
-  const activeProjects = workspace.projects.filter(
-    (project) => project.status === 'active',
-  ).length;
   const activeSubscriptions = workspace.records.filter(
     (record) =>
       effectiveRecordSubscriptionStatus(record, subscriptionToday) === 'active',
   ).length;
   const expiredSubscriptions = workspace.records.length - activeSubscriptions;
-  const installFollowups = workspace.records.filter(
+  const overviewRecords = yearProjects.flatMap(
+    (project) => projectSnapshots.get(project.id)?.records ?? [],
+  );
+  const overviewWorkIds = new Set(
+    yearProjects.flatMap(
+      (project) =>
+        projectSnapshots.get(project.id)?.workItems.map((item) => item.id) ??
+        [],
+    ),
+  );
+  const overviewFarmIds = new Set(
+    overviewRecords.map((record) => record.farmId),
+  );
+  const overviewInactiveSubscriptions = overviewRecords.filter(
+    (record) =>
+      effectiveRecordSubscriptionStatus(record, subscriptionToday) !== 'active',
+  ).length;
+  const overviewProjectIds = new Set(yearProjects.map((project) => project.id));
+  const overviewQualityCount = qualityIssues.filter((issue) =>
+    issue.projectId
+      ? overviewProjectIds.has(issue.projectId)
+      : overviewFarmIds.has(issue.farmId),
+  ).length;
+  const installFollowups = overviewRecords.filter(
     (record) => !record.commissioningDate || !record.educationDate,
   ).length;
   const serviceWorkItems = workspace.workItems.filter(
@@ -2586,7 +2623,8 @@ export function FarmLedgerDashboard({
   const openWorkItems = workspace.workItems.filter(
     (workItem) => workItem.status !== 'completed',
   ).length;
-  const recentHistoryEntries = [...workspace.historyEntries]
+  const recentHistoryEntries = workspace.historyEntries
+    .filter((entry) => overviewWorkIds.has(entry.workItemId))
     .sort((a, b) => b.occurredAt - a.occurredAt || b.createdAt - a.createdAt)
     .slice(0, 6);
 
@@ -3011,7 +3049,8 @@ export function FarmLedgerDashboard({
       `- 사업 타입 : ${projectTypeLabel}`,
       `- 만료 ('${shortYear}.1~${subscriptionReport.endMonth}) : ${subscriptionReport.target}개소`,
       `- 갱신 ${subscriptionReport.renewed}개소(이탈 ${subscriptionReport.churned}개소), 재가입 ${subscriptionReport.rejoined}개소`,
-      '- 만료 예정',
+      `- 만료 후 결과 미등록 (오늘 ${subscriptionReport.asOfDate} 기준, 전체 기간) : ${subscriptionReport.currentExpiry.expiredPending}개소`,
+      `- 만료 예정 (오늘 이후, 오늘 포함) : ${subscriptionReport.upcomingCount}개소`,
     ];
     if (!subscriptionReport.upcoming.length) {
       lines.push('  없음');
@@ -4420,65 +4459,15 @@ export function FarmLedgerDashboard({
                           </div>
                         </div>
                       </div>
-                      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                        {[
-                          {
-                            label: '전체 프로젝트',
-                            value: `${workspace.projects.length}개`,
-                            note: `진행 ${activeProjects} · 보류 ${workspace.projects.filter((project) => project.status === 'on_hold').length} · 완료 ${workspace.projects.filter((project) => project.status === 'completed').length}`,
-                            icon: BriefcaseBusiness,
-                            tone: 'bg-[#e6f3ea] text-[#2f7b59]',
-                          },
-                          {
-                            label: '프로젝트 하위 업무',
-                            value: `${overviewProjectWorkItems.length}건`,
-                            note: `업무 미등록 프로젝트 ${projectsWithoutWorkItems}개`,
-                            icon: ClipboardList,
-                            tone: 'bg-[#e9f0df] text-[#66843d]',
-                          },
-                          {
-                            label: '처리 필요 업무',
-                            value: `${overviewIncompleteWorkItems}건`,
-                            note: `접수 ${overviewOpenWorkItems} · 처리 중 ${overviewInProgressWorkItems} · 대기·막힘 ${overviewWaitingWorkItems}`,
-                            icon: CalendarClock,
-                            tone: 'bg-[#fff0e6] text-[#b46438]',
-                          },
-                          {
-                            label: '하위 업무 완료율',
-                            value:
-                              overviewCompletionRate === null
-                                ? '-'
-                                : `${overviewCompletionRate}%`,
-                            note: `완료 ${overviewCompletedWorkItems}/${overviewProjectWorkItems.length}건`,
-                            icon: CheckCircle2,
-                            tone: 'bg-[#edf5e8] text-[#5c823e]',
-                          },
-                        ].map((metric) => (
-                          <Card
-                            key={metric.label}
-                            className="border-0 bg-white shadow-sm ring-[#e0e7de]"
-                          >
-                            <CardContent className="flex items-center justify-between px-5 py-1">
-                              <div>
-                                <p className="text-xs text-[#78847b]">
-                                  {metric.label}
-                                </p>
-                                <p className="mt-1 text-2xl font-bold">
-                                  {metric.value}
-                                </p>
-                                <p className="mt-1 text-[11px] text-[#929c95]">
-                                  {metric.note}
-                                </p>
-                              </div>
-                              <div
-                                className={`grid size-11 place-items-center rounded-2xl ${metric.tone}`}
-                              >
-                                <metric.icon className="size-5" />
-                              </div>
-                            </CardContent>
-                          </Card>
-                        ))}
-                      </section>
+                      <ProjectYearSummary
+                        projects={workspace.projects}
+                        selectedYear={projectYearFilter}
+                        onYearChange={setProjectYearFilter}
+                      />
+                      <ProjectKpiPanel
+                        summary={yearProjectKpis}
+                        year={projectYearFilter}
+                      />
 
                       <section className="mt-5 overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
                         <div className="flex flex-col gap-4 border-b border-[#e5ebe3] px-5 py-4 xl:flex-row xl:items-end xl:justify-between">
@@ -4505,26 +4494,26 @@ export function FarmLedgerDashboard({
                                 {
                                   value: 'all',
                                   label: '전체',
-                                  count: workspace.projects.length,
+                                  count: yearProjects.length,
                                 },
                                 {
                                   value: 'active',
                                   label: '진행',
-                                  count: workspace.projects.filter(
+                                  count: yearProjects.filter(
                                     (project) => project.status === 'active',
                                   ).length,
                                 },
                                 {
                                   value: 'on_hold',
                                   label: '보류',
-                                  count: workspace.projects.filter(
+                                  count: yearProjects.filter(
                                     (project) => project.status === 'on_hold',
                                   ).length,
                                 },
                                 {
                                   value: 'completed',
                                   label: '완료',
-                                  count: workspace.projects.filter(
+                                  count: yearProjects.filter(
                                     (project) => project.status === 'completed',
                                   ).length,
                                 },
@@ -5016,7 +5005,7 @@ export function FarmLedgerDashboard({
                                 마감 지연 업무
                               </p>
                               <p className="mt-1 text-sm font-bold">
-                                {overdueWorkItems.length}건
+                                {yearProjectKpis.overdueTasks}건
                               </p>
                               <p className="mt-1 text-xs text-[#8b7a70]">
                                 지연 업무부터 확인하고 처리 기록을 이어갑니다.
@@ -5028,10 +5017,10 @@ export function FarmLedgerDashboard({
                               className="w-full rounded-xl bg-[#f4f8f1] p-4 text-left"
                             >
                               <p className="text-xs font-semibold text-[#5e7b43]">
-                                구독 만료
+                                구독 만료·미등록
                               </p>
                               <p className="mt-1 text-sm font-bold">
-                                {expiredSubscriptions}개 농가 갱신 확인
+                                {overviewInactiveSubscriptions}개소 구독 확인
                               </p>
                             </button>
                             <button
@@ -5043,10 +5032,10 @@ export function FarmLedgerDashboard({
                                 데이터 점검
                               </p>
                               <p className="mt-1 text-sm font-bold">
-                                확인 필요 {qualityIssues.length}건
+                                참여 농가 확인 필요 {overviewQualityCount}건
                               </p>
                               <p className="mt-1 text-xs text-[#7b877f]">
-                                설치 후속 단계 {installFollowups}곳 포함
+                                시운전·교육 후속 확인 {installFollowups}개소
                               </p>
                             </button>
                           </div>
@@ -6614,6 +6603,15 @@ export function FarmLedgerDashboard({
                           프로젝트 추가
                         </Button>
                       </div>
+                      <ProjectYearSummary
+                        projects={workspace.projects}
+                        selectedYear={projectYearFilter}
+                        onYearChange={setProjectYearFilter}
+                      />
+                      <ProjectKpiPanel
+                        summary={yearProjectKpis}
+                        year={projectYearFilter}
+                      />
                       <div className="mb-5 grid gap-3 rounded-2xl border border-[#dfe6dd] bg-white p-3 sm:grid-cols-2 xl:grid-cols-[1fr_180px_220px]">
                         <div className="relative">
                           <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#879088]" />
@@ -7553,6 +7551,60 @@ export function FarmLedgerDashboard({
                             </CardContent>
                           </Card>
 
+                          <SubscriptionCyclePanel
+                            counts={subscriptionCycleCounts}
+                          />
+                          <section
+                            className="mb-5"
+                            aria-label="오늘 기준 구독 만료 현황"
+                          >
+                            <h2 className="mb-3 text-base font-bold">
+                              오늘 기준 만료 현황 ·{' '}
+                              {subscriptionReport.asOfDate}
+                            </h2>
+                            <div className="grid gap-3 sm:grid-cols-3">
+                              {[
+                                {
+                                  label: '만료 후 결과 미등록',
+                                  value:
+                                    subscriptionReport.currentExpiry
+                                      .expiredPending,
+                                  note: '오늘 이전 만료 · 전체 기간의 미처리 구독',
+                                },
+                                {
+                                  label: '만료 예정',
+                                  value: subscriptionReport.upcomingCount,
+                                  note: `현재 사용 중 · 오늘 만료 ${subscriptionReport.dueTodayCount}개소 포함`,
+                                },
+                                {
+                                  label: '만료일 미입력',
+                                  value: subscriptionReport.missingExpiry,
+                                  note: '만료 여부·예정 확인에 날짜가 필요합니다',
+                                },
+                              ].map((metric) => (
+                                <Card
+                                  key={metric.label}
+                                  className="border-0 bg-white ring-[#dfe6dd]"
+                                >
+                                  <CardContent>
+                                    <p className="text-sm text-[#627269]">
+                                      {metric.label}
+                                    </p>
+                                    <p className="mt-1 text-2xl font-bold text-[#255f43]">
+                                      {metric.value}개소
+                                    </p>
+                                    <p className="mt-1 text-xs leading-5 text-[#718077]">
+                                      {metric.note}
+                                    </p>
+                                  </CardContent>
+                                </Card>
+                              ))}
+                            </div>
+                          </section>
+                          <h2 className="mb-3 text-base font-bold">
+                            선택 기간 구독 실적 · {subscriptionReport.year}.1~
+                            {subscriptionReport.endMonth}
+                          </h2>
                           <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                             {[
                               {
@@ -7604,13 +7656,13 @@ export function FarmLedgerDashboard({
                             ))}
                           </div>
 
-                          {(subscriptionReport.pending > 0 ||
+                          {(subscriptionReport.currentExpiry.expiredPending >
+                            0 ||
                             subscriptionReport.missingExpiry > 0) && (
                             <div className="mb-4 flex items-start gap-2 rounded-xl border border-[#eadfca] bg-[#fffaf0] px-4 py-3 text-xs leading-5 text-[#80663f]">
                               <CircleAlert className="mt-0.5 size-4 shrink-0" />
                               <p>
-                                {subscriptionReport.pending > 0 &&
-                                  `선택 기간 만료 대상 중 결과 미등록 ${subscriptionReport.pending}개소가 있습니다. `}
+                                {`오늘(${subscriptionReport.asOfDate}) 기준 만료 후 결과 미등록 ${subscriptionReport.currentExpiry.expiredPending}개소, 만료 예정 ${subscriptionReport.upcomingCount}개소(오늘 만료 ${subscriptionReport.dueTodayCount}개소 포함)입니다. `}
                                 {subscriptionReport.missingExpiry > 0 &&
                                   `만료일 미입력 ${subscriptionReport.missingExpiry}개소는 만료 예정에서 제외했습니다.`}
                               </p>
@@ -7624,10 +7676,9 @@ export function FarmLedgerDashboard({
                                   <div>
                                     <h2 className="font-bold">만료 예정</h2>
                                     <p className="mt-1 text-xs text-[#89938c]">
-                                      {formatDate(
-                                        subscriptionReport.cutoffDate,
-                                      )}{' '}
-                                      이후 사용 중 구독
+                                      {formatDate(subscriptionReport.asOfDate)}{' '}
+                                      기준 · 오늘 이후 만료되는 사용 중
+                                      구독(오늘 포함)
                                     </p>
                                   </div>
                                   <Badge variant="outline">
@@ -7706,8 +7757,7 @@ export function FarmLedgerDashboard({
                                   ))}
                                   {!subscriptionReport.upcoming.length && (
                                     <div className="rounded-xl border border-dashed py-10 text-center text-sm text-[#89938c]">
-                                      선택한 기준 이후 만료 예정 구독이
-                                      없습니다.
+                                      오늘 이후 만료 예정 구독이 없습니다.
                                     </div>
                                   )}
                                 </div>
@@ -7900,6 +7950,9 @@ export function FarmLedgerDashboard({
                               </p>
                             </CardContent>
                           </Card>
+                          <SubscriptionCyclePanel
+                            counts={subscriptionCycleCounts}
+                          />
                           <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                             <Card className="border-0 bg-white ring-[#dfe6dd]">
                               <CardContent>
@@ -7975,7 +8028,7 @@ export function FarmLedgerDashboard({
                                       <TableHead>사업</TableHead>
                                       <TableHead>구독 만료일</TableHead>
                                       <TableHead>마지막 입금일</TableHead>
-                                      <TableHead>갱신</TableHead>
+                                      <TableHead>구독 회차·입금 근거</TableHead>
                                       <TableHead>상태</TableHead>
                                       <TableHead className="pr-5">
                                         처리
@@ -7995,6 +8048,13 @@ export function FarmLedgerDashboard({
                                         );
                                       const expiryDays = daysUntil(
                                         record.currentSubscriptionExpiresAt,
+                                      );
+                                      const payment = recordedPayments.get(
+                                        record.id,
+                                      );
+                                      const cycle = subscriptionCycle(
+                                        record,
+                                        Boolean(payment),
                                       );
                                       return (
                                         <TableRow key={record.id}>
@@ -8035,7 +8095,38 @@ export function FarmLedgerDashboard({
                                             {formatDate(record.lastPaymentDate)}
                                           </TableCell>
                                           <TableCell>
-                                            {record.renewalCount}회
+                                            <p className="whitespace-nowrap font-semibold">
+                                              {
+                                                {
+                                                  initial:
+                                                    '최초 구독 · 입금 확인',
+                                                  first: '1차 연장',
+                                                  second: '2차 연장',
+                                                  thirdPlus: `${record.renewalCount}차 연장`,
+                                                  unverified:
+                                                    '최초 입금·회차 미확인',
+                                                }[cycle]
+                                              }
+                                            </p>
+                                            {payment ? (
+                                              <button
+                                                type="button"
+                                                className="mt-1 whitespace-nowrap text-xs text-[#2f7b59] underline underline-offset-2"
+                                                onClick={() =>
+                                                  openFarm(
+                                                    record.farmId,
+                                                    payment.latestWorkItemId,
+                                                  )
+                                                }
+                                              >
+                                                입금 {payment.count}건 ·{' '}
+                                                {formatMoney(payment.total)}
+                                              </button>
+                                            ) : (
+                                              <p className="mt-1 text-xs text-[#947047]">
+                                                입금 업무 이력 없음
+                                              </p>
+                                            )}
                                           </TableCell>
                                           <TableCell>
                                             <Badge
