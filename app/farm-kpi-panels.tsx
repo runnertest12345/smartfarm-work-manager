@@ -1,4 +1,17 @@
 import { Card, CardContent } from '@/components/ui/card';
+import { Field, FieldLabel } from '@/components/ui/field';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { FARM_PROJECT_TYPES, FARM_PROJECT_TYPE_LABELS } from '@/lib/farm-types';
+import {
+  filterProjectsByScope,
+  type ProjectTypeScope,
+} from '@/lib/dashboard-kpis';
 import type { FarmProject } from '@/lib/farm-types';
 import type {
   ProjectKpis,
@@ -8,14 +21,58 @@ import type {
 const rateLabel = (value: number | null) =>
   value === null ? '-' : `${value}%`;
 
+export function ProjectTypeSelector({
+  id,
+  value,
+  onChange,
+}: {
+  id: string;
+  value: ProjectTypeScope;
+  onChange: (value: ProjectTypeScope) => void;
+}) {
+  return (
+    <Field>
+      <FieldLabel htmlFor={id}>사업 타입</FieldLabel>
+      <Select
+        value={value}
+        onValueChange={(next) => {
+          if (
+            next === 'all' ||
+            FARM_PROJECT_TYPES.some((type) => type === next)
+          )
+            onChange(next as ProjectTypeScope);
+        }}
+      >
+        <SelectTrigger id={id} className="h-10 w-full bg-white">
+          <SelectValue>
+            {value === 'all'
+              ? '전체 사업 타입'
+              : FARM_PROJECT_TYPE_LABELS[value]}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">전체 사업 타입</SelectItem>
+          {FARM_PROJECT_TYPES.map((type) => (
+            <SelectItem key={type} value={type}>
+              {FARM_PROJECT_TYPE_LABELS[type]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
 export function ProjectYearSummary({
   projects,
   selectedYear,
   onYearChange,
+  projectType,
 }: {
   projects: FarmProject[];
   selectedYear: string;
   onYearChange: (year: string) => void;
+  projectType: ProjectTypeScope;
 }) {
   const years = [...new Set(projects.map((project) => project.year))].sort(
     (a, b) => b - a,
@@ -26,9 +83,7 @@ export function ProjectYearSummary({
       aria-label="연도별 사업 집계"
     >
       {['all', ...years.map(String)].map((year) => {
-        const scoped = projects.filter(
-          (project) => year === 'all' || project.year === Number(year),
-        );
+        const scoped = filterProjectsByScope(projects, year, projectType);
         return (
           <button
             key={year}
@@ -64,9 +119,11 @@ export function ProjectYearSummary({
 export function ProjectKpiPanel({
   summary,
   year,
+  projectType,
 }: {
   summary: ProjectKpis;
   year: string;
+  projectType: ProjectTypeScope;
 }) {
   const metrics = [
     {
@@ -77,7 +134,7 @@ export function ProjectKpiPanel({
     {
       label: '진행 중 사업',
       value: `${summary.active}개`,
-      note: '선택 사업연도 기준',
+      note: '선택 연도·사업 타입 기준',
     },
     {
       label: '완료 사업',
@@ -135,8 +192,11 @@ export function ProjectKpiPanel({
   return (
     <section className="mb-5" aria-label="사업연도 핵심 지표">
       <p className="mb-3 text-sm text-[#617166]">
-        {year === 'all' ? '전체 연도' : `${year}년 사업`} KPI · 검색·상태·위험
-        조건은 아래 목록에 적용됩니다.
+        {year === 'all' ? '전체 연도' : `${year}년 사업`} ·{' '}
+        {projectType === 'all'
+          ? '전체 사업 타입'
+          : FARM_PROJECT_TYPE_LABELS[projectType]}{' '}
+        KPI · 검색·상태·위험 조건은 아래 목록에 적용됩니다.
       </p>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {metrics.map((metric) => (

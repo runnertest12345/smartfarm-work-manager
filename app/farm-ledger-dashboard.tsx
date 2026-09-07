@@ -133,6 +133,8 @@ import {
 import { registerFarmLedgerTools } from '@/lib/webmcp/farm-ledger-tools';
 import {
   paymentEvidenceByRecord,
+  filterProjectsByScope,
+  filterSubscriptionsByScope,
   subscriptionCycle,
   summarizeProjectKpis,
   summarizeCurrentExpiry,
@@ -141,6 +143,7 @@ import {
 } from '@/lib/dashboard-kpis';
 import {
   ProjectKpiPanel,
+  ProjectTypeSelector,
   ProjectYearSummary,
   SubscriptionCyclePanel,
 } from './farm-kpi-panels';
@@ -1019,6 +1022,9 @@ export function FarmLedgerDashboard({
   const [overviewExpandedTaskProjects, setOverviewExpandedTaskProjects] =
     useState<string[]>([]);
   const [projectYearFilter, setProjectYearFilter] = useState('all');
+  const [projectTypeFilter, setProjectTypeFilter] = useState<
+    'all' | FarmProjectType
+  >('all');
   const [projectRiskFilter, setProjectRiskFilter] = useState<
     'all' | 'blocked' | 'documents' | 'subscription' | 'settlement'
   >('all');
@@ -1048,6 +1054,8 @@ export function FarmLedgerDashboard({
     useState<'all' | FarmProjectType>('all');
   const [subscriptionListProjectId, setSubscriptionListProjectId] =
     useState('all');
+  const [subscriptionListProjectType, setSubscriptionListProjectType] =
+    useState<'all' | FarmProjectType>('all');
   const [subscriptionMode, setSubscriptionMode] =
     useState<SubscriptionMode>('management');
   const [subscriptionListSearch, setSubscriptionListSearch] = useState('');
@@ -1536,9 +1544,10 @@ export function FarmLedgerDashboard({
   const projectSnapshots = new Map(
     workspace.projects.map((project) => [project.id, projectSnapshot(project)]),
   );
-  const yearProjects = workspace.projects.filter(
-    (project) =>
-      projectYearFilter === 'all' || project.year === Number(projectYearFilter),
+  const yearProjects = filterProjectsByScope(
+    workspace.projects,
+    projectYearFilter,
+    projectTypeFilter,
   );
   const yearProjectKpis = summarizeProjectKpis(
     yearProjects,
@@ -2449,14 +2458,25 @@ export function FarmLedgerDashboard({
     workspace.subscriptionEvents,
   ]);
 
+  const subscriptionListProjects = filterProjectsByScope(
+    workspace.projects,
+    'all',
+    subscriptionListProjectType,
+  );
   const subscriptionScopedRecords = useMemo(
     () =>
-      workspace.records.filter(
-        (record) =>
-          subscriptionListProjectId === 'all' ||
-          record.projectId === subscriptionListProjectId,
+      filterSubscriptionsByScope(
+        workspace.records,
+        workspace.projects,
+        subscriptionListProjectType,
+        subscriptionListProjectId,
       ),
-    [subscriptionListProjectId, workspace.records],
+    [
+      subscriptionListProjectId,
+      subscriptionListProjectType,
+      workspace.records,
+      workspace.projects,
+    ],
   );
   const recordedPayments = useMemo(
     () =>
@@ -4107,12 +4127,9 @@ export function FarmLedgerDashboard({
     );
   };
   const normalizedProjectSearch = projectSearch.trim().toLocaleLowerCase();
-  const filteredProjects = workspace.projects
+  const filteredProjects = yearProjects
     .filter((project) => {
       const snapshot = projectSnapshots.get(project.id);
-      const matchesYear =
-        projectYearFilter === 'all' ||
-        project.year === Number(projectYearFilter);
       const matchesSearch =
         !normalizedProjectSearch ||
         [
@@ -4124,7 +4141,7 @@ export function FarmLedgerDashboard({
           .join(' ')
           .toLocaleLowerCase()
           .includes(normalizedProjectSearch);
-      if (!matchesYear || !matchesSearch || !snapshot) return false;
+      if (!matchesSearch || !snapshot) return false;
       if (projectRiskFilter === 'blocked')
         return (
           snapshot.openProjectBlockers.length + snapshot.blockedItems.length > 0
@@ -4459,14 +4476,23 @@ export function FarmLedgerDashboard({
                           </div>
                         </div>
                       </div>
+                      <div className="mb-4 max-w-xs">
+                        <ProjectTypeSelector
+                          id="project-type-scope"
+                          value={projectTypeFilter}
+                          onChange={setProjectTypeFilter}
+                        />
+                      </div>
                       <ProjectYearSummary
                         projects={workspace.projects}
                         selectedYear={projectYearFilter}
                         onYearChange={setProjectYearFilter}
+                        projectType={projectTypeFilter}
                       />
                       <ProjectKpiPanel
                         summary={yearProjectKpis}
                         year={projectYearFilter}
+                        projectType={projectTypeFilter}
                       />
 
                       <section className="mt-5 overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
@@ -4869,7 +4895,7 @@ export function FarmLedgerDashboard({
                               <BriefcaseBusiness className="mx-auto size-8 text-[#97a29a]" />
                               <p className="mt-3 font-semibold">
                                 {workspace.projects.length
-                                  ? '검색·상태 조건에 맞는 프로젝트가 없습니다.'
+                                  ? '선택한 연도·사업 타입·검색·상태에 맞는 프로젝트가 없습니다.'
                                   : '아직 등록된 프로젝트가 없습니다.'}
                               </p>
                               <p className="mt-1 text-sm text-[#89938c]">
@@ -4885,6 +4911,8 @@ export function FarmLedgerDashboard({
                                   onClick={() => {
                                     setOverviewSearch('');
                                     setOverviewProjectStatus('all');
+                                    setProjectYearFilter('all');
+                                    setProjectTypeFilter('all');
                                   }}
                                 >
                                   필터 초기화
@@ -6603,14 +6631,23 @@ export function FarmLedgerDashboard({
                           프로젝트 추가
                         </Button>
                       </div>
+                      <div className="mb-4 max-w-xs">
+                        <ProjectTypeSelector
+                          id="project-type-scope"
+                          value={projectTypeFilter}
+                          onChange={setProjectTypeFilter}
+                        />
+                      </div>
                       <ProjectYearSummary
                         projects={workspace.projects}
                         selectedYear={projectYearFilter}
                         onYearChange={setProjectYearFilter}
+                        projectType={projectTypeFilter}
                       />
                       <ProjectKpiPanel
                         summary={yearProjectKpis}
                         year={projectYearFilter}
+                        projectType={projectTypeFilter}
                       />
                       <div className="mb-5 grid gap-3 rounded-2xl border border-[#dfe6dd] bg-white p-3 sm:grid-cols-2 xl:grid-cols-[1fr_180px_220px]">
                         <div className="relative">
@@ -6922,7 +6959,7 @@ export function FarmLedgerDashboard({
                             <BriefcaseBusiness className="mx-auto size-8 text-[#97a29a]" />
                             <p className="mt-3 font-semibold">
                               {workspace.projects.length
-                                ? '검색·위험 조건에 맞는 프로젝트가 없습니다.'
+                                ? '선택한 연도·사업 타입·검색·위험에 맞는 프로젝트가 없습니다.'
                                 : '아직 등록된 프로젝트가 없습니다.'}
                             </p>
                             <p className="mt-1 text-sm text-[#89938c]">
@@ -7849,7 +7886,7 @@ export function FarmLedgerDashboard({
                           </div>
                           <Card className="mb-4 border-0 bg-white ring-[#dfe6dd]">
                             <CardContent>
-                              <div className="grid gap-3 lg:grid-cols-[minmax(240px,1fr)_minmax(220px,1fr)_180px]">
+                              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(200px,1fr)_180px_minmax(200px,1fr)_160px]">
                                 <Field>
                                   <FieldLabel htmlFor="subscription-list-search">
                                     농가·사업 검색
@@ -7870,6 +7907,15 @@ export function FarmLedgerDashboard({
                                     />
                                   </div>
                                 </Field>
+                                <ProjectTypeSelector
+                                  id="subscription-management-type"
+                                  value={subscriptionListProjectType}
+                                  onChange={(type) => {
+                                    setSubscriptionListProjectType(type);
+                                    setSubscriptionListProjectId('all');
+                                    setSubscriptionListPage(1);
+                                  }}
+                                />
                                 <Field>
                                   <FieldLabel>개별 사업</FieldLabel>
                                   <Select
@@ -7894,14 +7940,16 @@ export function FarmLedgerDashboard({
                                       <SelectItem value="all">
                                         전체 사업
                                       </SelectItem>
-                                      {workspace.projects.map((project) => (
-                                        <SelectItem
-                                          key={project.id}
-                                          value={project.id}
-                                        >
-                                          {project.year} · {project.name}
-                                        </SelectItem>
-                                      ))}
+                                      {subscriptionListProjects.map(
+                                        (project) => (
+                                          <SelectItem
+                                            key={project.id}
+                                            value={project.id}
+                                          >
+                                            {project.year} · {project.name}
+                                          </SelectItem>
+                                        ),
+                                      )}
                                     </SelectContent>
                                   </Select>
                                 </Field>
@@ -8017,7 +8065,7 @@ export function FarmLedgerDashboard({
                             <div className="min-w-0 space-y-3">
                               <div className="overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
                                 <Table
-                                  key={`${subscriptionListProjectId}:${subscriptionListStatus}:${subscriptionListSearch}:${effectiveSubscriptionListPage}`}
+                                  key={`${subscriptionListProjectType}:${subscriptionListProjectId}:${subscriptionListStatus}:${subscriptionListSearch}:${effectiveSubscriptionListPage}`}
                                   containerClassName="max-h-[640px] overflow-auto"
                                 >
                                   <TableHeader className="sticky top-0 z-10 bg-[#f7f9f6]">

@@ -35,6 +35,7 @@
 
 ## 카드와 공통 기준
 
+- [사업 타입 선택](common/cards/project-type-filter.md): 연도·타입 교차 집계와 구독 관리의 사업 범위.
 - [연도별 공통 KPI](common/annual-kpis.md): 통합 현황·프로젝트 관리의 연도 선택과 12개 상단 지표.
 - [카드 전체 목록](CARD-INDEX.md): 카드 이름으로 해당 문서를 찾는다.
 - [공통 화면 구성과 이동](common/navigation.md): 메뉴 숫자, 상세 화면 이동, 새로고침, 로딩 상태.

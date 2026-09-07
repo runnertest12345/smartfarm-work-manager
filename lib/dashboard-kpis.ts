@@ -1,10 +1,40 @@
 import type {
   FarmHistoryEntry,
   FarmProject,
+  FarmProjectType,
   FarmRecord,
   FarmSubscriptionEvent,
   FarmWorkItem,
 } from './farm-types';
+
+export type ProjectTypeScope = 'all' | FarmProjectType;
+
+export function filterProjectsByScope(
+  projects: FarmProject[],
+  year: string,
+  projectType: ProjectTypeScope,
+) {
+  return projects.filter(
+    (project) =>
+      (year === 'all' || project.year === Number(year)) &&
+      (projectType === 'all' || project.projectType === projectType),
+  );
+}
+
+export function filterSubscriptionsByScope(
+  records: FarmRecord[],
+  projects: FarmProject[],
+  projectType: ProjectTypeScope,
+  projectId: string,
+) {
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  return records.filter(
+    (record) =>
+      (projectId === 'all' || record.projectId === projectId) &&
+      (projectType === 'all' ||
+        projectById.get(record.projectId)?.projectType === projectType),
+  );
+}
 
 export interface ProjectKpiSnapshot {
   records: FarmRecord[];

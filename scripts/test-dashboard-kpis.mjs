@@ -14,6 +14,8 @@ const compiled = ts.transpileModule(source, {
   },
 }).outputText;
 const {
+  filterProjectsByScope,
+  filterSubscriptionsByScope,
   summarizeProjectKpis,
   paymentEvidenceByRecord,
   summarizeSubscriptionCycles,
@@ -141,6 +143,138 @@ test('연도 선택 후 사업 수, 업무 및 가중 설치율의 분모가 일
   assert.equal(result.overdueTasks, 1);
   assert.equal(result.documentRate, 25);
   assert.equal(result.settled, 1); // approval alone is not payment completion.
+});
+
+test('연도와 사업 타입을 교차 선택하며 다른 타입의 업무·농가·서류·정산은 제외한다', () => {
+  const projects = [
+    {
+      id: 'general-old',
+      year: 2025,
+      projectType: 'general',
+      status: 'completed',
+      settlementStatus: 'closed',
+    },
+    {
+      id: 'general-new',
+      year: 2026,
+      projectType: 'general',
+      status: 'active',
+      settlementStatus: 'paid',
+    },
+    {
+      id: 'research-new',
+      year: 2026,
+      projectType: 'research',
+      status: 'on_hold',
+      settlementStatus: 'approved',
+    },
+  ];
+  const snapshots = new Map(
+    projects.map((project) => [
+      project.id,
+      snapshot(
+        [
+          record(project.id, {
+            projectId: project.id,
+            installationDate: project.projectType === 'general' ? today : '',
+          }),
+        ],
+        [
+          work(project.id, project.id, {
+            status: project.status === 'active' ? 'completed' : 'waiting',
+          }),
+        ],
+        {
+          requiredDocuments: [1],
+          approvedDocuments: project.projectType === 'general' ? [1] : [],
+        },
+      ),
+    ]),
+  );
+  assert.equal(filterProjectsByScope(projects, 'all', 'all').length, 3);
+  assert.deepEqual(
+    filterProjectsByScope(projects, 'all', 'general').map((p) => p.id),
+    ['general-old', 'general-new'],
+  );
+  const selected = filterProjectsByScope(projects, '2026', 'general');
+  const kpis = summarizeProjectKpis(selected, snapshots, today);
+  assert.equal(kpis.projects, 1);
+  assert.equal(kpis.general, 1);
+  assert.equal(kpis.research, 0);
+  assert.equal(kpis.tasks, 1);
+  assert.equal(kpis.farms, 1);
+  assert.equal(kpis.taskCompletionRate, 100);
+  assert.equal(kpis.installationRate, 100);
+  assert.equal(kpis.documentRate, 100);
+  assert.equal(kpis.settled, 1);
+  const empty = summarizeProjectKpis(
+    filterProjectsByScope(projects, '2025', 'research'),
+    snapshots,
+    today,
+  );
+  assert.equal(empty.projects, 0);
+  assert.equal(empty.taskCompletionRate, null);
+  assert.equal(empty.subscriptionRate, null);
+});
+
+test('구독 타입과 개별 사업을 함께 제한해 같은 농가의 다른 타입 입금을 제외한다', () => {
+  const projects = [
+    { id: 'g1', year: 2026, projectType: 'general' },
+    { id: 'g2', year: 2025, projectType: 'general' },
+    { id: 'r1', year: 2026, projectType: 'research' },
+  ];
+  const records = [
+    record('g1-record', { farmId: 'shared', projectId: 'g1' }),
+    record('g2-record', { farmId: 'shared', projectId: 'g2', renewalCount: 1 }),
+    record('r1-record', { farmId: 'shared', projectId: 'r1', renewalCount: 2 }),
+    record('orphan', { projectId: 'missing' }),
+  ];
+  const works = records.slice(0, 3).map((r) => work(r.id, r.id));
+  const evidence = paymentEvidenceByRecord(
+    works,
+    works.map((w, i) => entry(w.id, w.id, { amount: (i + 1) * 100 })),
+    now,
+  );
+  const general = filterSubscriptionsByScope(
+    records,
+    projects,
+    'general',
+    'all',
+  );
+  assert.deepEqual(
+    general.map((r) => r.id),
+    ['g1-record', 'g2-record'],
+  );
+  assert.deepEqual(summarizeSubscriptionCycles(general, evidence), {
+    initial: 1,
+    first: 1,
+    second: 0,
+    thirdPlus: 0,
+    unverified: 0,
+    total: 2,
+  });
+  assert.equal(
+    general.reduce((total, r) => total + (evidence.get(r.id)?.total ?? 0), 0),
+    300,
+  );
+  assert.equal(
+    filterSubscriptionsByScope(records, projects, 'general', 'g1').length,
+    1,
+  );
+  assert.equal(
+    filterSubscriptionsByScope(records, projects, 'research', 'g1').length,
+    0,
+  );
+  assert.deepEqual(
+    filterSubscriptionsByScope(records, projects, 'research', 'all').map(
+      (r) => r.id,
+    ),
+    ['r1-record'],
+  );
+  assert.equal(
+    filterSubscriptionsByScope(records, projects, 'all', 'all').length,
+    4,
+  );
 });
 
 test('빈 연도의 완료율은 0% 실적으로 오인시키지 않는다', () => {
