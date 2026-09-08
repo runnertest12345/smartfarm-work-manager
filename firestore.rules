@@ -97,6 +97,66 @@ service cloud.firestore {
           && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workItems/$(request.resource.data.workItemId)).data.id == request.resource.data.workItemId);
     }
 
+    function openTask(data) {
+      return data.get('status', 'open') == 'completed' ? 0 : 1;
+    }
+
+    function childCounterChange(workspaceId, documentId, before, after) {
+      let childId = after.get('lastChildMutationId', '');
+      let childPath = /databases/$(database)/documents/workspaces/$(workspaceId)/workItems/$(childId);
+      let existed = exists(childPath);
+      let oldChild = existed ? get(childPath).data : {'status': 'completed'};
+      let child = getAfter(childPath).data;
+      let oldIds = before.get('childWorkItemIds', []);
+      let newIds = after.get('childWorkItemIds', []);
+      return childId != '' && childId != documentId
+        && child.get('parentWorkItemId', '') == documentId
+        && child.get('projectId', '') == after.get('projectId', '')
+        && after.get('openChildCount', 0) == before.get('openChildCount', 0) + openTask(child) - openTask(oldChild)
+        && (existed
+          ? oldChild.get('parentWorkItemId', '') == documentId && newIds == oldIds && childId in newIds
+          : !(childId in oldIds) && childId in newIds && newIds.hasAll(oldIds) && newIds.size() == oldIds.size() + 1);
+    }
+
+    function linkedParent(workspaceId, documentId, before, after, creating) {
+      let parentId = after.parentWorkItemId;
+      let path = /databases/$(database)/documents/workspaces/$(workspaceId)/workItems/$(parentId);
+      let parent = get(path).data;
+      let nextParent = getAfter(path).data;
+      let delta = openTask(after) - (creating ? 0 : openTask(before));
+      return parentId != documentId
+        && parent.id == parentId
+        && parent.get('farmRecordId', '') == '' && after.farmRecordId == ''
+        && after.workType in ['communication', 'installation', 'service', 'note']
+        && parent.workType in ['communication', 'installation', 'service', 'note']
+        && parent.get('projectId', '') == after.get('projectId', '')
+        && documentId in nextParent.get('childWorkItemIds', [])
+        && (openTask(after) == 0 || nextParent.get('status', 'open') != 'completed')
+        && (!creating || parent.get('status', 'open') != 'completed')
+        && ((delta == 0 && !creating)
+          || (nextParent.get('lastChildMutationId', '') == documentId
+            && nextParent.get('openChildCount', 0) == parent.get('openChildCount', 0) + delta));
+    }
+
+    function validWorkTree(workspaceId, documentId, creating) {
+      let after = request.resource.data;
+      let before = creating ? {} : resource.data;
+      let ids = after.get('childWorkItemIds', []);
+      let count = after.get('openChildCount', 0);
+      let parentId = after.get('parentWorkItemId', '');
+      return parentId is string && ids is list && count is int
+        && ids.size() <= 500 && ids.toSet().size() == ids.size()
+        && !(documentId in ids) && count >= 0 && count <= ids.size()
+        && (openTask(after) != 0 || count == 0)
+        && (!creating || (ids.size() == 0 && count == 0))
+        && (creating || parentId == before.get('parentWorkItemId', ''))
+        && (creating || (parentId == '' && ids.size() == 0)
+          || (after.get('projectId', '') == before.get('projectId', '') && after.farmRecordId == before.farmRecordId))
+        && (parentId == '' || linkedParent(workspaceId, documentId, before, after, creating))
+        && (creating || (ids == before.get('childWorkItemIds', []) && count == before.get('openChildCount', 0))
+          || childCounterChange(workspaceId, documentId, before, after));
+    }
+
     match /appMembers/{userId} {
       allow get: if signedIn() && request.auth.uid == userId;
       allow list, create, update, delete: if false;
@@ -112,12 +172,14 @@ service cloud.firestore {
       allow create: if activeMember()
         && knownCollection(collectionName)
         && validCreate(documentId)
+        && (collectionName != 'workItems' || validWorkTree(workspaceId, documentId, true))
         && validRelations(workspaceId, collectionName);
 
       allow update: if activeMember()
         && knownCollection(collectionName)
         && !(collectionName in ['subscriptionEvents', 'historyEntries'])
         && validUpdate(documentId)
+        && (collectionName != 'workItems' || validWorkTree(workspaceId, documentId, false))
         && validRelations(workspaceId, collectionName);
 
       allow delete: if false;

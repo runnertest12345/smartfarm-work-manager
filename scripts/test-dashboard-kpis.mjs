@@ -7,12 +7,24 @@ const source = readFileSync(
   new URL('../lib/dashboard-kpis.ts', import.meta.url),
   'utf8',
 );
-const compiled = ts.transpileModule(source, {
-  compilerOptions: {
-    target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.ESNext,
+const hierarchyCode = ts.transpileModule(
+  readFileSync(new URL('../lib/work-hierarchy.ts', import.meta.url), 'utf8'),
+  {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+    },
   },
-}).outputText;
+).outputText;
+const hierarchyUrl = `data:text/javascript;base64,${Buffer.from(hierarchyCode).toString('base64')}`;
+const compiled = ts
+  .transpileModule(source, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+    },
+  })
+  .outputText.replace("'./work-hierarchy'", JSON.stringify(hierarchyUrl));
 const {
   filterProjectsByScope,
   filterSubscriptionsByScope,
@@ -69,6 +81,39 @@ const snapshot = (records, workItems = [], patch = {}) => ({
   openProjectBlockers: [],
   documentRisks: [],
   ...patch,
+});
+
+test('프로젝트 KPI는 상위·세부 수를 구분하고 최하위 실행 업무 완료율만 계산한다', () => {
+  const project = { id: 'p1', status: 'active', projectType: 'general' };
+  const items = [
+    work('parent', '', { status: 'open', childWorkItemIds: ['one', 'two'] }),
+    work('one', '', { parentWorkItemId: 'parent', status: 'completed' }),
+    work('two', '', {
+      parentWorkItemId: 'parent',
+      status: 'waiting',
+      dueDate: '2026-01-01',
+    }),
+  ];
+  const result = summarizeProjectKpis(
+    [project],
+    new Map([['p1', snapshot([], items)]]),
+    today,
+  );
+  assert.equal(result.tasks, 3);
+  assert.equal(result.rootTasks, 1);
+  assert.equal(result.subtasks, 2);
+  assert.equal(result.executableTasks, 2);
+  assert.equal(result.taskCompletionRate, 50);
+  assert.equal(result.incompleteTasks, 1);
+  assert.equal(result.overdueTasks, 1);
+  assert.equal(
+    summarizeProjectKpis(
+      [project],
+      new Map([['p1', snapshot([], items.slice(0, 2))]]),
+      today,
+    ).taskCompletionRate,
+    null,
+  );
 });
 
 test('연도 선택 후 사업 수, 업무 및 가중 설치율의 분모가 일치한다', () => {

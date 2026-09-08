@@ -156,6 +156,172 @@ check('existing farm payment relation remains allowed', 'ALLOW', {
   parent: { id: 'record-test' },
 });
 
+function treeCase(
+  name,
+  expectation,
+  before,
+  after,
+  documents = {},
+  afterDocuments = {},
+) {
+  const mocks = [
+    {
+      function: 'get',
+      args: [{ exactValue: `${base}/appMembers/test-user` }],
+      result: { value: { data: { active: true } } },
+    },
+  ];
+  for (const [id, data] of Object.entries(documents)) {
+    const path = `${workspace}/workItems/${id}`;
+    mocks.push({
+      function: 'exists',
+      args: [{ exactValue: path }],
+      result: { value: data !== null },
+    });
+    if (data)
+      mocks.push({
+        function: 'get',
+        args: [{ exactValue: path }],
+        result: { value: { data } },
+      });
+  }
+  for (const [id, data] of Object.entries(afterDocuments))
+    mocks.push({
+      function: 'getAfter',
+      args: [{ exactValue: `${workspace}/workItems/${id}` }],
+      result: { value: { data } },
+    });
+  mocks.push({
+    function: 'getAfter',
+    args: [{ exactValue: `${workspace}/projects/project-test` }],
+    result: { value: { data: { id: 'project-test' } } },
+  });
+  cases.push({
+    name,
+    test: {
+      expectation,
+      request: {
+        path: `${workspace}/workItems/${after.id}`,
+        method: before ? 'update' : 'create',
+        auth: member,
+        resource: { data: after },
+      },
+      ...(before ? { resource: { data: before } } : {}),
+      functionMocks: mocks,
+    },
+  });
+}
+const root = {
+  ...audit,
+  id: 'root-task',
+  farmId: '',
+  farmRecordId: '',
+  projectId: 'project-test',
+  workType: 'communication',
+  status: 'open',
+  childWorkItemIds: [],
+  openChildCount: 0,
+};
+const child = { ...root, id: 'child-task', parentWorkItemId: root.id };
+const linked = {
+  ...root,
+  childWorkItemIds: [child.id],
+  openChildCount: 1,
+  lastChildMutationId: child.id,
+  updatedAt: 2,
+};
+treeCase(
+  'child create links existing same-project parent atomically',
+  'ALLOW',
+  null,
+  child,
+  { [root.id]: root },
+  { [root.id]: linked },
+);
+treeCase(
+  'child without atomic parent link denied',
+  'DENY',
+  null,
+  child,
+  { [root.id]: root },
+  { [root.id]: root },
+);
+treeCase(
+  'child from another project denied',
+  'DENY',
+  null,
+  { ...child, projectId: 'wrong-project' },
+  { [root.id]: root },
+  { [root.id]: linked },
+);
+treeCase(
+  'child under completed parent denied',
+  'DENY',
+  null,
+  child,
+  { [root.id]: { ...root, status: 'completed' } },
+  { [root.id]: linked },
+);
+treeCase(
+  'parent counter increments for new child',
+  'ALLOW',
+  root,
+  linked,
+  { [child.id]: null },
+  { [child.id]: child },
+);
+treeCase(
+  'counter cannot be forged without child transition',
+  'DENY',
+  linked,
+  { ...linked, openChildCount: 0 },
+  { [child.id]: child },
+  { [child.id]: child },
+);
+treeCase('parent with unfinished child cannot complete', 'DENY', linked, {
+  ...linked,
+  status: 'completed',
+});
+const doneChild = { ...child, status: 'completed', updatedAt: 2 };
+const readyParent = { ...linked, openChildCount: 0, updatedAt: 3 };
+treeCase(
+  'child completion decrements parent counter',
+  'ALLOW',
+  child,
+  doneChild,
+  { [root.id]: linked },
+  { [root.id]: readyParent },
+);
+treeCase(
+  'parent counter decrements only for completed child',
+  'ALLOW',
+  linked,
+  readyParent,
+  { [child.id]: child },
+  { [child.id]: doneChild },
+);
+treeCase('parent can complete after children complete', 'ALLOW', readyParent, {
+  ...readyParent,
+  status: 'completed',
+  updatedAt: 4,
+});
+treeCase(
+  'child reopening under completed parent denied',
+  'DENY',
+  doneChild,
+  { ...child, updatedAt: 3 },
+  { [root.id]: { ...readyParent, status: 'completed' } },
+  { [root.id]: { ...linked, status: 'completed' } },
+);
+treeCase('reparenting and self-cycle denied', 'DENY', child, {
+  ...child,
+  parentWorkItemId: child.id,
+});
+treeCase('root cannot seed fake completed descendants', 'DENY', null, {
+  ...root,
+  childWorkItemIds: ['invented-child'],
+});
+
 try {
   const options = { project: 'smartfarm-work-manager', nonInteractive: true };
   const account = auth.getGlobalDefaultAccount();

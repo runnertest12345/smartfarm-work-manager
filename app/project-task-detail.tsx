@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button';
+import type { ReactNode } from 'react';
 import {
   FARM_HISTORY_CHANNEL_LABELS,
   FARM_WORK_STATUS_LABELS,
@@ -14,12 +15,20 @@ export function ProjectTaskDetail({
   history,
   onBack,
   onRecord,
+  parentTask,
+  onParent,
+  onAddChild,
+  childrenContent,
 }: {
   task: FarmWorkItem;
   project?: FarmProject;
   history: FarmHistoryEntry[];
   onBack: () => void;
   onRecord: () => void;
+  parentTask?: FarmWorkItem;
+  onParent?: () => void;
+  onAddChild?: () => void;
+  childrenContent?: ReactNode;
 }) {
   return (
     <section
@@ -29,6 +38,11 @@ export function ProjectTaskDetail({
       <Button variant="outline" onClick={onBack}>
         ← 이전 화면
       </Button>
+      {parentTask && (
+        <Button variant="ghost" onClick={onParent}>
+          상위 업무: {parentTask.title}
+        </Button>
+      )}
       <header className="flex flex-wrap items-start justify-between gap-4 rounded-xl border bg-white p-5">
         <div>
           <p className="text-sm text-emerald-800">
@@ -42,8 +56,22 @@ export function ProjectTaskDetail({
             {task.owner || '미지정'} · 기한 {task.dueDate || '미지정'}
           </p>
         </div>
-        <Button onClick={onRecord}>처리 기록·상태 변경</Button>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={onRecord}>처리 기록·상태 변경</Button>
+          {onAddChild && (
+            <Button
+              variant="outline"
+              onClick={onAddChild}
+              disabled={
+                task.status === 'completed' || project?.status === 'completed'
+              }
+            >
+              세부 업무 추가
+            </Button>
+          )}
+        </div>
       </header>
+      {childrenContent}
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="rounded-xl border bg-white p-4">
           <h2 className="font-semibold">다음 행동</h2>

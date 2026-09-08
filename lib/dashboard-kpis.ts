@@ -7,6 +7,8 @@ import type {
   FarmWorkItem,
 } from './farm-types';
 
+import { summarizeWorkHierarchy } from './work-hierarchy';
+
 export type ProjectTypeScope = 'all' | FarmProjectType;
 
 export function filterProjectsByScope(
@@ -66,10 +68,13 @@ export function summarizeProjectKpis(
       ),
     ).values(),
   ];
-  const completedTasks = tasks.filter(
+  const hierarchy = summarizeWorkHierarchy(tasks);
+  const completedTasks = hierarchy.leaves.filter(
     (item) => item.status === 'completed',
   ).length;
-  const incompleteTasks = tasks.filter((item) => item.status !== 'completed');
+  const incompleteTasks = hierarchy.leaves.filter(
+    (item) => item.status !== 'completed',
+  );
   const required = selected.reduce(
     (sum, item) => sum + item.requiredDocuments.length,
     0,
@@ -98,10 +103,14 @@ export function summarizeProjectKpis(
     farms: new Set(records.map((record) => record.farmId)).size,
     participations: records.length,
     tasks: tasks.length,
+    rootTasks: hierarchy.rootCount,
+    subtasks: hierarchy.subtaskCount,
+    executableTasks: hierarchy.leafCount,
     completedTasks,
-    taskCompletionRate: percent(completedTasks, tasks.length),
+    taskCompletionRate: hierarchy.completionRate,
     incompleteTasks: incompleteTasks.length,
-    waitingTasks: tasks.filter((item) => item.status === 'waiting').length,
+    waitingTasks: hierarchy.leaves.filter((item) => item.status === 'waiting')
+      .length,
     overdueTasks: incompleteTasks.filter(
       (item) => item.dueDate && item.dueDate < today,
     ).length,

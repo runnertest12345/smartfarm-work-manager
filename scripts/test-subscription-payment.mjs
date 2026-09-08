@@ -1,4 +1,185 @@
 import assert from 'node:assert/strict';
+function projectWork(h, parentId = '', operationId = '') {
+  const base = h.body();
+  return {
+    ...base,
+    paymentRequest: undefined,
+    operationId,
+    workItem: {
+      ...base.workItem,
+      farmRecordId: '',
+      projectId: 'p1',
+      parentWorkItemId: parentId,
+      workType: 'communication',
+      title: parentId ? '세부 실행' : '상위 견적 제출',
+      status: 'open',
+    },
+    history: h.history(0),
+  };
+}
+async function changeTask(h, id, newStatus, extra = {}) {
+  h.sync();
+  const task = h.list('workItems').find((item) => item.id === id);
+  return h.api.post({
+    kind: 'history',
+    history: {
+      ...h.history(0),
+      workItemId: id,
+      expectedUpdatedAt: task.updatedAt,
+      newStatus,
+      ...extra,
+    },
+  });
+}
+test('3단계 업무의 부모 연결·완료 방지·완료 후 다시 열기 순서를 지킨다', async () => {
+  const h = harness();
+  const parent = (await h.api.post(projectWork(h))).workItem;
+  h.sync();
+  const child = (
+    await h.api.post(projectWork(h, parent.id, 'child-operation-0001'))
+  ).workItem;
+  h.sync();
+  const grandchild = (
+    await h.api.post(projectWork(h, child.id, 'child-operation-0002'))
+  ).workItem;
+  assert.equal(
+    h.list('workItems').find((x) => x.id === parent.id).openChildCount,
+    1,
+  );
+  assert.equal(
+    h.list('workItems').find((x) => x.id === child.id).openChildCount,
+    1,
+  );
+  await assert.rejects(changeTask(h, parent.id, 'completed'), /세부|하위/);
+  await assert.rejects(changeTask(h, child.id, 'completed'), /세부|하위/);
+  await changeTask(h, grandchild.id, 'completed');
+  assert.equal(
+    h.list('workItems').find((x) => x.id === child.id).openChildCount,
+    0,
+  );
+  await changeTask(h, child.id, 'completed');
+  await changeTask(h, parent.id, 'completed');
+  await assert.rejects(changeTask(h, grandchild.id, 'open'), /상위/);
+  await changeTask(h, parent.id, 'open');
+  await changeTask(h, child.id, 'open');
+  await changeTask(h, grandchild.id, 'open');
+  assert.equal(
+    h.list('workItems').find((x) => x.id === parent.id).openChildCount,
+    1,
+  );
+  assert.equal(
+    h.list('workItems').find((x) => x.id === child.id).openChildCount,
+    1,
+  );
+  assert.equal(h.list('subscriptionEvents').length, 0);
+});
+test('자식 생성 동시 재전송·응답 실패 재시도는 부모와 자식을 한 번만 변경한다', async () => {
+  const h = harness();
+  const parent = (await h.api.post(projectWork(h))).workItem;
+  h.sync();
+  const body = projectWork(h, parent.id, 'child-operation-retry1');
+  const results = await Promise.all([h.api.post(body), h.api.post(body)]);
+  h.sync();
+  await h.api.post(body);
+  assert.equal(results[0].workItem.id, results[1].workItem.id);
+  assert.equal(h.list('workItems').length, 2);
+  assert.equal(
+    h.list('workItems').find((x) => x.id === parent.id).openChildCount,
+    1,
+  );
+  assert.equal(
+    h.list('historyEntries').filter((x) => x.id === body.operationId).length,
+    1,
+  );
+  await assert.rejects(
+    h.api.post({ ...body, workItem: { ...body.workItem, title: '다른 제목' } }),
+    /이미 저장/,
+  );
+});
+test('자식 생성 저장 실패는 자식·상위 카운터·이미지를 함께 되돌린다', async () => {
+  const h = harness();
+  const parent = (await h.api.post(projectWork(h))).workItem;
+  h.sync();
+  const body = {
+    ...projectWork(h, parent.id, 'child-operation-fail1'),
+    images: [screenshot()],
+  };
+  h.fail();
+  await assert.rejects(h.api.post(body), /Simulated/);
+  assert.equal(h.list('workItems').length, 1);
+  assert.equal(h.list('imageAttachments').length, 0);
+  assert.equal(h.list('workItems')[0].openChildCount, 0);
+  await h.api.post(body);
+  assert.equal(h.list('workItems').length, 2);
+});
+test('빠른 상태 변경은 전후 상태 이력을 추가하며 재시도와 오래된 초안을 방어한다', async () => {
+  const h = harness();
+  const item = (await h.api.post(projectWork(h))).workItem;
+  h.sync();
+  const command = {
+    kind: 'history',
+    history: {
+      ...h.history(0),
+      actionContent: '',
+      receivedContent: '',
+      workItemId: item.id,
+      newStatus: 'in_progress',
+      expectedUpdatedAt: item.updatedAt,
+      operationId: 'quick-operation-0001',
+    },
+  };
+  await h.api.post(command);
+  await h.api.post(command);
+  const saved = h
+    .list('historyEntries')
+    .find((x) => x.id === command.history.operationId);
+  assert.equal(saved.previousWorkStatus, 'open');
+  assert.equal(saved.newWorkStatus, 'in_progress');
+  assert.match(saved.actionContent, /→/);
+  h.sync();
+  await assert.rejects(
+    h.api.post({
+      ...command,
+      history: {
+        ...command.history,
+        operationId: 'quick-operation-0002',
+        newStatus: 'completed',
+      },
+    }),
+    /먼저 저장/,
+  );
+  assert.equal(h.list('workItems')[0].status, 'in_progress');
+});
+test('집계는 부모 중복 없이 실행 업무를 세며 누락된 자식은 100%로 표시하지 않는다', () => {
+  const { buildWorkHierarchy, summarizeWorkHierarchy } = load(
+    'lib/work-hierarchy.ts',
+  );
+  const items = [
+    { id: 'a', status: 'open', childWorkItemIds: ['b', 'c'] },
+    { id: 'b', parentWorkItemId: 'a', status: 'completed' },
+    {
+      id: 'c',
+      parentWorkItemId: 'a',
+      status: 'waiting',
+      childWorkItemIds: ['d'],
+    },
+    { id: 'd', parentWorkItemId: 'c', status: 'open' },
+  ];
+  const stats = summarizeWorkHierarchy(items);
+  assert.equal(stats.rootCount, 1);
+  assert.equal(stats.subtaskCount, 3);
+  assert.equal(stats.leafCount, 2);
+  assert.equal(stats.completionRate, 50);
+  assert.equal(buildWorkHierarchy(items).progress('a').blocked, 1);
+  assert.equal(summarizeWorkHierarchy(items.slice(0, 2)).completionRate, null);
+  assert.equal(
+    buildWorkHierarchy([
+      { id: 'x', parentWorkItemId: 'y' },
+      { id: 'y', parentWorkItemId: 'x' },
+    ]).descendants('x').length,
+    1,
+  );
+});
 import { readFileSync } from 'node:fs';
 import { webcrypto } from 'node:crypto';
 import vm from 'node:vm';
@@ -22,6 +203,7 @@ const scripts = new Map(
     'lib/subscription-payment.ts',
     'lib/subscription-renewal-report.ts',
     'lib/project-work.ts',
+    'lib/work-hierarchy.ts',
     'lib/received-images.ts',
     'lib/firebase/received-images-store.ts',
     'lib/firebase/farm-ledger-store.ts',

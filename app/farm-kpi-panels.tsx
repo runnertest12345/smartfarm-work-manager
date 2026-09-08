@@ -155,12 +155,12 @@ export function ProjectKpiPanel({
     {
       label: '프로젝트 하위 업무',
       value: `${summary.tasks}건`,
-      note: `완료 ${summary.completedTasks} · 미완료 ${summary.incompleteTasks}`,
+      note: `상위 ${summary.rootTasks} · 세부 ${summary.subtasks}건`,
     },
     {
       label: '하위 업무 완료율',
       value: rateLabel(summary.taskCompletionRate),
-      note: `완료 ${summary.completedTasks}/${summary.tasks}건`,
+      note: `최하위 실행 업무 완료 ${summary.completedTasks}/${summary.executableTasks}건`,
     },
     {
       label: '처리 필요 업무',

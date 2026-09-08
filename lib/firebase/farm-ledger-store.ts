@@ -32,6 +32,7 @@ import {
   FARM_VISIT_STATUSES,
   FARM_WORK_PRIORITIES,
   FARM_WORK_STATUSES,
+  FARM_WORK_STATUS_LABELS,
   FARM_WORK_TYPES,
   SUBSCRIPTION_STATUSES,
   type AddFarmHistoryEntryInput,
@@ -571,6 +572,18 @@ function parseWorkItemInput(value: unknown): FarmWorkItemInput {
     FARM_WORK_PRIORITIES,
     '업무 우선순위를 확인해 주세요.',
   );
+  input.parentWorkItemId = source.parentWorkItemId
+    ? requiredId(source.parentWorkItemId, '상위 업무')
+    : '';
+  if (
+    input.parentWorkItemId &&
+    (input.farmRecordId ||
+      !source.projectId ||
+      ['payment', 'subscription'].includes(input.workType))
+  )
+    throw new Error(
+      '세부 업무는 같은 프로젝트의 실행 업무 아래에 등록해 주세요.',
+    );
   input.projectId = source.projectId
     ? requiredId(source.projectId, '프로젝트')
     : '';
@@ -640,6 +653,8 @@ function parseHistoryInput(value: unknown): AddFarmHistoryEntryInput {
   );
   assertEnum(base.channel, FARM_HISTORY_CHANNELS, '기록 경로를 확인해 주세요.');
   const optionalShape: Shape = {
+    expectedUpdatedAt: 'number',
+    operationId: 'string',
     newStatus: 'string',
     nextAction: 'string',
     reviewDate: 'string',
@@ -674,6 +689,14 @@ function parseHistoryInput(value: unknown): AddFarmHistoryEntryInput {
     );
   if (!base.workItemId || !base.recorder)
     throw new Error('업무와 기록 담당자를 확인해 주세요.');
+  if (
+    base.expectedUpdatedAt !== undefined &&
+    (!Number.isSafeInteger(base.expectedUpdatedAt) ||
+      base.expectedUpdatedAt <= 0)
+  )
+    throw new Error('업무의 최신 버전을 다시 확인해 주세요.');
+  if (base.operationId && !/^[a-zA-Z0-9-]{16,80}$/.test(base.operationId))
+    throw new Error('빠른 수정 창을 다시 열어 주세요.');
   return base;
 }
 
@@ -2434,6 +2457,108 @@ async function savePaymentMutation(options: {
   });
 }
 
+/** Reads all hierarchy dependencies before returning a write-only closure. */
+async function prepareParentMutation(
+  transaction: Transaction,
+  workItem: FarmWorkItem,
+  previous?: FarmWorkItem,
+) {
+  const parentId = workItem.parentWorkItemId;
+  if (!parentId) return () => {};
+  if (!isProjectTask(workItem))
+    throw new Error('입금·농가 업무는 세부 업무로 등록할 수 없습니다.');
+  const visited = new Set([workItem.id]);
+  let ancestorId: string | undefined = parentId;
+  let directParent: FarmWorkItem | undefined;
+  while (ancestorId) {
+    if (visited.has(ancestorId))
+      throw new Error(
+        '업무 연결에 순환이 있습니다. 상위 업무를 확인해 주세요.',
+      );
+    visited.add(ancestorId);
+    const snapshot = await transaction.get(
+      documentRef('workItems', ancestorId),
+    );
+    if (!snapshot.exists()) throw new Error('상위 업무를 찾을 수 없습니다.');
+    const ancestor = snapshot.data() as FarmWorkItem;
+    if (!isProjectTask(ancestor) || ancestor.projectId !== workItem.projectId)
+      throw new Error('같은 프로젝트의 업무 아래에만 등록할 수 있습니다.');
+    if (
+      ancestor.status === 'completed' &&
+      (!previous || workItem.status !== 'completed')
+    )
+      throw new Error('완료된 상위 업무를 먼저 다시 열어 주세요.');
+    directParent ??= ancestor;
+    ancestorId = ancestor.parentWorkItemId;
+  }
+  const parent = directParent!;
+  const ids = parent.childWorkItemIds || [];
+  if (previous && !ids.includes(workItem.id))
+    throw new Error('상위·세부 업무 연결을 확인해 주세요.');
+  if (!previous && ids.includes(workItem.id))
+    throw new Error('이미 연결된 세부 업무입니다.');
+  const delta =
+    Number(workItem.status !== 'completed') -
+    (previous ? Number(previous.status !== 'completed') : 0);
+  if (previous && delta === 0) return () => {};
+  const openChildCount = (parent.openChildCount || 0) + delta;
+  const nextIds = previous ? ids : [...ids, workItem.id];
+  if (
+    openChildCount < 0 ||
+    openChildCount > nextIds.length ||
+    nextIds.length > 500
+  )
+    throw new Error(
+      '세부 업무 연결 수를 확인해 주세요. 한 업무의 직접 세부 업무는 최대 500개입니다.',
+    );
+  const now = Date.now();
+  return () => {
+    setUpdated(transaction, 'workItems', {
+      ...parent,
+      childWorkItemIds: nextIds,
+      openChildCount,
+      lastChildMutationId: workItem.id,
+      updatedAt: Math.max(now, parent.updatedAt + 1),
+      lastActivityAt: Math.max(now, parent.lastActivityAt),
+    });
+    setCreated(transaction, 'historyEntries', {
+      id: crypto.randomUUID(),
+      workItemId: parent.id,
+      channel: 'system',
+      sender: '',
+      receivedContent: '',
+      amount: 0,
+      actionContent: previous
+        ? `세부 업무 ‘${workItem.title}’: ${FARM_WORK_STATUS_LABELS[previous.status]} → ${FARM_WORK_STATUS_LABELS[workItem.status]}`
+        : `세부 업무 ‘${workItem.title}’을(를) 추가했습니다.`,
+      recorder: requireSignedInUser().email || workItem.owner,
+      occurredAt: now,
+      referenceUrl: '',
+      createdAt: now,
+    });
+  };
+}
+
+async function assertChildrenCompleted(
+  transaction: Transaction,
+  workItem: FarmWorkItem,
+) {
+  for (const id of workItem.childWorkItemIds || []) {
+    const child = await transaction.get(documentRef('workItems', id));
+    if (
+      !child.exists() ||
+      child.data().parentWorkItemId !== workItem.id ||
+      child.data().projectId !== workItem.projectId
+    )
+      throw new Error('세부 업무 연결을 확인할 수 없어 완료할 수 없습니다.');
+    if (child.data().status !== 'completed')
+      throw new Error(
+        '미완료 세부 업무가 있습니다. 모두 완료한 뒤 상위 업무를 완료해 주세요.',
+      );
+  }
+  if (workItem.openChildCount) throw new Error('미완료 세부 업무가 있습니다.');
+}
+
 async function createWorkItem(
   input: FarmWorkItemInput,
   initialHistory: FarmInitialHistoryEntryInput,
@@ -2441,7 +2566,50 @@ async function createWorkItem(
   sourceInboxId: string,
   paymentRequest?: SubscriptionPaymentRequest,
   images: ReceivedImage[] = [],
+  operationId = '',
 ) {
+  if (
+    operationId &&
+    (!/^[a-zA-Z0-9-]{16,80}$/.test(operationId) || !input.parentWorkItemId)
+  )
+    throw new Error('세부 업무 생성 요청을 확인해 주세요.');
+  const createFingerprint = operationId
+    ? await paymentFingerprint({
+        input,
+        initialHistory,
+        checklistContents,
+        sourceInboxId,
+        images,
+      })
+    : '';
+  async function readCreateReplay(transaction: Transaction) {
+    if (!operationId) return null;
+    const history = await transaction.get(
+      documentRef('historyEntries', operationId),
+    );
+    if (!history.exists()) return null;
+    if (
+      history.data().workRequestFingerprint !== createFingerprint ||
+      history.data().workItemId !== `${operationId}-work`
+    )
+      throw new Error(
+        '이미 저장된 요청과 내용이 다릅니다. 등록 창을 다시 열어 주세요.',
+      );
+    const work = await transaction.get(
+      documentRef('workItems', `${operationId}-work`),
+    );
+    return {
+      workItem: work.data() as FarmWorkItem,
+      historyEntry: history.data() as FarmHistoryEntry,
+    };
+  }
+  if (operationId) {
+    const replay = await runTransaction(
+      getFirebaseServices().db,
+      readCreateReplay,
+    );
+    if (replay) return replay;
+  }
   const isPayment = input.workType === 'payment' && initialHistory.amount !== 0;
   if (isPayment && !paymentRequest)
     throw new Error(
@@ -2492,8 +2660,12 @@ async function createWorkItem(
     id:
       isPayment && paymentRequest
         ? `${paymentRequest.operationId}-work`
-        : crypto.randomUUID(),
+        : operationId
+          ? `${operationId}-work`
+          : crypto.randomUUID(),
     ...input,
+    childWorkItemIds: [],
+    openChildCount: 0,
     nextAction: input.status === 'completed' ? '' : input.nextAction,
     reviewDate: input.status === 'completed' ? '' : input.reviewDate,
     respondedAt:
@@ -2515,7 +2687,8 @@ async function createWorkItem(
     id:
       isPayment && paymentRequest && !sourceInbox
         ? paymentRequest.operationId
-        : crypto.randomUUID(),
+        : operationId || crypto.randomUUID(),
+    ...(operationId ? { workRequestFingerprint: createFingerprint } : {}),
     workItemId: workItem.id,
     imageIds: images.map((image) => image.id),
     ...(sourceInbox
@@ -2617,9 +2790,11 @@ async function createWorkItem(
     });
   }
   await runTransaction(getFirebaseServices().db, async (transaction) => {
+    if (await readCreateReplay(transaction)) return;
     const project = await transaction.get(documentRef('projects', projectId));
     if (!project.exists()) throw new Error('프로젝트를 찾을 수 없습니다.');
     assertProjectEditable(project.data() as FarmProject);
+    const writeParent = await prepareParentMutation(transaction, workItem);
     if (sourceInbox) {
       const latest = await transaction.get(
         documentRef('inboxItems', sourceInbox.id),
@@ -2628,6 +2803,7 @@ async function createWorkItem(
         throw new Error('이미 정리된 수신함 항목입니다.');
     }
     write(transaction);
+    writeParent();
   });
   return { workItem, historyEntry };
 }
@@ -2637,6 +2813,35 @@ async function addHistoryEntry(
   paymentRequest?: SubscriptionPaymentRequest,
   images: ReceivedImage[] = [],
 ) {
+  const workFingerprint = input.operationId
+    ? await paymentFingerprint({ input, images })
+    : '';
+  if (input.operationId) {
+    const replay = await runTransaction(
+      getFirebaseServices().db,
+      async (transaction) => {
+        const saved = await transaction.get(
+          documentRef('historyEntries', input.operationId!),
+        );
+        if (!saved.exists()) return null;
+        if (
+          saved.data().workRequestFingerprint !== workFingerprint ||
+          saved.data().workItemId !== input.workItemId
+        )
+          throw new Error(
+            '이미 처리된 요청입니다. 빠른 수정 창을 다시 열어 주세요.',
+          );
+        const work = await transaction.get(
+          documentRef('workItems', input.workItemId),
+        );
+        return {
+          workItem: work.data() as FarmWorkItem,
+          historyEntry: saved.data() as FarmHistoryEntry,
+        };
+      },
+    );
+    if (replay) return replay;
+  }
   const fingerprint = paymentRequest ? await paymentFingerprint(input) : '';
   if (paymentRequest) {
     const replay = await runTransaction(
@@ -2651,6 +2856,13 @@ async function addHistoryEntry(
     (item) => item.id === input.workItemId,
   );
   if (!existing) throw new Error('업무를 찾을 수 없습니다.');
+  if (
+    input.expectedUpdatedAt !== undefined &&
+    input.expectedUpdatedAt !== existing.updatedAt
+  )
+    throw new Error(
+      '다른 변경이 먼저 저장되었습니다. 입력 내용은 유지되며, 최신 업무를 확인한 뒤 다시 열어 주세요.',
+    );
   const isPayment = existing.workType === 'payment' && input.amount !== 0;
   if (isPayment && !paymentRequest)
     throw new Error(
@@ -2702,6 +2914,8 @@ async function addHistoryEntry(
     blockedReason,
     blockedBy,
     expectedUnblockDate,
+    expectedUpdatedAt: _expectedUpdatedAt,
+    operationId,
     ...historyInput
   } = input;
   const resolvedStatus = newStatus ?? existing.status;
@@ -2758,7 +2972,7 @@ async function addHistoryEntry(
         ? existing.completedAt || input.occurredAt
         : 0,
     lastActivityAt: Math.max(existing.lastActivityAt, input.occurredAt),
-    updatedAt: now,
+    updatedAt: Math.max(now, existing.updatedAt + 1),
   };
   if (
     resolvedStatus === 'waiting' &&
@@ -2776,6 +2990,8 @@ async function addHistoryEntry(
     workItem.priority !== existing.priority ? '우선순위' : '',
     workItem.responseDueAt !== existing.responseDueAt ? '최초 대응 목표' : '',
     workItem.respondedAt !== existing.respondedAt ? '최초 대응 완료' : '',
+    workItem.blockedReason !== existing.blockedReason ? '막힘 사유' : '',
+    workItem.blockedBy !== existing.blockedBy ? '확인 주체' : '',
   ].filter(Boolean);
   const isPlanningOnly =
     !historyInput.receivedContent.trim() &&
@@ -2785,14 +3001,17 @@ async function addHistoryEntry(
     id:
       isPayment && paymentRequest
         ? paymentRequest.operationId
-        : crypto.randomUUID(),
+        : operationId || crypto.randomUUID(),
     ...historyInput,
     imageIds: images.map((image) => image.id),
+    ...(operationId ? { workRequestFingerprint: workFingerprint } : {}),
+    previousWorkStatus: existing.status,
+    newWorkStatus: resolvedStatus,
     channel: isPlanningOnly ? 'system' : historyInput.channel,
     sender: isPlanningOnly ? '' : historyInput.sender,
     actionContent: isPlanningOnly
       ? planningChanges.length
-        ? `${planningChanges.join(', ')}을(를) 변경했습니다.`
+        ? `${existing.status !== resolvedStatus ? `상태: ${FARM_WORK_STATUS_LABELS[existing.status]} → ${FARM_WORK_STATUS_LABELS[resolvedStatus]}. ` : ''}${planningChanges.filter((field) => field !== '상태').join(', ')}${planningChanges.some((field) => field !== '상태') ? ' 변경' : ''}`.trim()
         : '업무 계획을 검토했습니다.'
       : historyInput.actionContent,
     createdAt: now,
@@ -2865,9 +3084,78 @@ async function addHistoryEntry(
       write,
     });
   }
-  const batch = writeBatch(getFirebaseServices().db);
-  write(batch);
-  await batch.commit();
+  const completionChecks =
+    resolvedStatus === 'completed'
+      ? await Promise.all(
+          (['checklistItems', 'visits'] as const).map(async (key) => {
+            const result = await getDocsFromServer(
+              query(
+                collectionRef(key),
+                where('workItemId', '==', existing.id),
+                limit(5000),
+              ),
+            );
+            if (result.size >= 5000)
+              throw new Error(
+                '완료 근거가 조회 한도를 초과했습니다. 관리자 확인이 필요합니다.',
+              );
+            return result.docs.map((item) => ({ key, id: item.id }));
+          }),
+        )
+      : [];
+  await runTransaction(getFirebaseServices().db, async (transaction) => {
+    if (operationId) {
+      const replay = await transaction.get(
+        documentRef('historyEntries', operationId),
+      );
+      if (replay.exists()) {
+        if (replay.data().workRequestFingerprint !== workFingerprint)
+          throw new Error('이미 처리된 요청입니다.');
+        return;
+      }
+    }
+    const latest = await transaction.get(documentRef('workItems', existing.id));
+    if (
+      !latest.exists() ||
+      latest.data().updatedAt !== existing.updatedAt ||
+      latest.data().status !== existing.status
+    )
+      throw new Error(
+        '다른 변경이 먼저 저장되었습니다. 최신 업무를 확인한 뒤 다시 적용해 주세요.',
+      );
+    const projectSnapshot = await transaction.get(
+      documentRef('projects', projectId),
+    );
+    if (!projectSnapshot.exists())
+      throw new Error('프로젝트를 찾을 수 없습니다.');
+    if (
+      projectSnapshot.data().status === 'completed' &&
+      resolvedStatus !== 'completed'
+    )
+      throw new Error('완료된 사업의 업무는 다시 열 수 없습니다.');
+    if (resolvedStatus === 'completed') {
+      await assertChildrenCompleted(transaction, latest.data() as FarmWorkItem);
+      for (const check of completionChecks.flat()) {
+        const item = await transaction.get(documentRef(check.key, check.id));
+        if (
+          item.exists() &&
+          (check.key === 'checklistItems'
+            ? !item.data().isCompleted
+            : item.data().status === 'scheduled')
+        )
+          throw new Error(
+            '미완료 체크리스트 또는 예정된 현장 방문을 먼저 처리해 주세요.',
+          );
+      }
+    }
+    const writeParent = await prepareParentMutation(
+      transaction,
+      workItem,
+      existing,
+    );
+    write(transaction);
+    writeParent();
+  });
   return { workItem, historyEntry };
 }
 
@@ -2968,16 +3256,46 @@ async function saveVisit(input: FarmWorkVisitInput) {
     referenceUrl: '',
     createdAt: now,
   };
-  const batch = writeBatch(getFirebaseServices().db);
-  if (existing) setUpdated(batch, 'visits', visit);
-  else setCreated(batch, 'visits', visit);
-  if (followUpVisit) setCreated(batch, 'visits', followUpVisit);
-  setCreated(batch, 'historyEntries', historyEntry);
-  touchActivity(batch, 'workItems', workItem.id, now, now);
-  touchActivity(batch, 'records', record.id, now, now);
-  touch(batch, 'farms', record.farmId, now);
-  touch(batch, 'projects', record.projectId, now);
-  await batch.commit();
+  await runTransaction(getFirebaseServices().db, async (batch) => {
+    const latestWork = await batch.get(documentRef('workItems', workItem.id));
+    if (!latestWork.exists() || latestWork.data().status === 'completed')
+      throw new Error(
+        '완료된 업무는 수정할 수 없습니다. 업무를 다시 열어 주세요.',
+      );
+    const latestProject = await batch.get(
+      documentRef('projects', record?.projectId || workItem.projectId || ''),
+    );
+    assertProjectEditable(
+      latestProject.exists()
+        ? (latestProject.data() as FarmProject)
+        : undefined,
+    );
+    if (existing) {
+      const latestVisit = await batch.get(documentRef('visits', existing.id));
+      if (
+        !latestVisit.exists() ||
+        latestVisit.data().updatedAt !== existing.updatedAt ||
+        latestVisit.data().status !== 'scheduled'
+      )
+        throw new Error(
+          '방문 기록이 변경되었습니다. 최신 내용을 확인해 주세요.',
+        );
+    }
+    if (existing) setUpdated(batch, 'visits', visit);
+    else setCreated(batch, 'visits', visit);
+    if (followUpVisit) setCreated(batch, 'visits', followUpVisit);
+    setCreated(batch, 'historyEntries', historyEntry);
+    touchActivity(
+      batch,
+      'workItems',
+      workItem.id,
+      now,
+      Math.max(now, latestWork.data().updatedAt + 1),
+    );
+    touchActivity(batch, 'records', record.id, now, now);
+    touch(batch, 'farms', record.farmId, now);
+    touch(batch, 'projects', record.projectId, now);
+  });
   return { visit, historyEntry, followUpVisit };
 }
 
@@ -3023,16 +3341,50 @@ async function toggleChecklist(
     referenceUrl: '',
     createdAt: now,
   };
-  const batch = writeBatch(getFirebaseServices().db);
-  setUpdated(batch, 'checklistItems', checklistItem);
-  setCreated(batch, 'historyEntries', historyEntry);
-  touchActivity(batch, 'workItems', workItem.id, now, now);
-  if (record) {
-    touchActivity(batch, 'records', record.id, now, now);
-    touch(batch, 'farms', record.farmId, now);
-  }
-  touch(batch, 'projects', record?.projectId || workItem.projectId || '', now);
-  await batch.commit();
+  await runTransaction(getFirebaseServices().db, async (batch) => {
+    const latestWork = await batch.get(documentRef('workItems', workItem.id));
+    if (!latestWork.exists() || latestWork.data().status === 'completed')
+      throw new Error(
+        '완료된 업무는 수정할 수 없습니다. 업무를 다시 열어 주세요.',
+      );
+    const latestProject = await batch.get(
+      documentRef('projects', record?.projectId || workItem.projectId || ''),
+    );
+    assertProjectEditable(
+      latestProject.exists()
+        ? (latestProject.data() as FarmProject)
+        : undefined,
+    );
+    const latestCheck = await batch.get(
+      documentRef('checklistItems', existing.id),
+    );
+    if (
+      !latestCheck.exists() ||
+      latestCheck.data().updatedAt !== existing.updatedAt
+    )
+      throw new Error(
+        '체크리스트가 변경되었습니다. 최신 내용을 확인해 주세요.',
+      );
+    setUpdated(batch, 'checklistItems', checklistItem);
+    setCreated(batch, 'historyEntries', historyEntry);
+    touchActivity(
+      batch,
+      'workItems',
+      workItem.id,
+      now,
+      Math.max(now, latestWork.data().updatedAt + 1),
+    );
+    if (record) {
+      touchActivity(batch, 'records', record.id, now, now);
+      touch(batch, 'farms', record.farmId, now);
+    }
+    touch(
+      batch,
+      'projects',
+      record?.projectId || workItem.projectId || '',
+      now,
+    );
+  });
   return { checklistItem };
 }
 
@@ -3146,6 +3498,7 @@ async function mutateFarmLedger(method: string, body: JsonObject) {
       sourceInboxId,
       parsePaymentRequest(body.paymentRequest),
       parseReceivedImages(body.images),
+      typeof body.operationId === 'string' ? body.operationId : '',
     );
   }
 

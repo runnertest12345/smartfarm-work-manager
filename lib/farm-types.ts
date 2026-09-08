@@ -500,6 +500,10 @@ export interface FarmSubscriptionExpiryCorrectionInput {
 
 export interface FarmWorkItem {
   id: string;
+  parentWorkItemId?: string;
+  childWorkItemIds?: string[];
+  openChildCount?: number;
+  lastChildMutationId?: string;
   /** Direct project task; legacy farm work continues to resolve via farmRecordId. */
   projectId?: string;
   farmRecordId: string;
@@ -529,6 +533,7 @@ export interface FarmWorkItem {
 
 export interface FarmWorkItemInput {
   projectId?: string;
+  parentWorkItemId?: string;
   farmRecordId: string;
   workType: FarmWorkType;
   title: string;
@@ -631,6 +636,9 @@ export interface FarmInboxItemInput {
 
 export interface FarmHistoryEntry {
   id: string;
+  workRequestFingerprint?: string;
+  previousWorkStatus?: FarmWorkStatus;
+  newWorkStatus?: FarmWorkStatus;
   imageIds?: string[];
   workItemId: string;
   channel: FarmHistoryChannel;
@@ -663,6 +671,8 @@ export interface FarmHistoryEntryInput {
 }
 
 export interface AddFarmHistoryEntryInput extends FarmHistoryEntryInput {
+  expectedUpdatedAt?: number;
+  operationId?: string;
   /** Command-only field; it updates the work item and is not persisted in history. */
   newStatus?: FarmWorkStatus;
   /** Command-only GTD planning fields; they update the current work item. */
