@@ -500,6 +500,8 @@ export interface FarmSubscriptionExpiryCorrectionInput {
 
 export interface FarmWorkItem {
   id: string;
+  /** Direct project task; legacy farm work continues to resolve via farmRecordId. */
+  projectId?: string;
   farmRecordId: string;
   /** Resolved from farm_records at read time; it is not duplicated in farm_work_items. */
   farmId: string;
@@ -526,6 +528,7 @@ export interface FarmWorkItem {
 }
 
 export interface FarmWorkItemInput {
+  projectId?: string;
   farmRecordId: string;
   workType: FarmWorkType;
   title: string;
@@ -600,6 +603,8 @@ export interface FarmWorkChecklistItem {
 
 export interface FarmInboxItem {
   id: string;
+  projectId?: string;
+  imageIds?: string[];
   channel: FarmHistoryChannel;
   sender: string;
   content: string;
@@ -613,6 +618,9 @@ export interface FarmInboxItem {
 }
 
 export interface FarmInboxItemInput {
+  projectId?: string;
+  taskTitle?: string;
+  operationId?: string;
   channel: FarmHistoryChannel;
   sender: string;
   content: string;
@@ -623,6 +631,7 @@ export interface FarmInboxItemInput {
 
 export interface FarmHistoryEntry {
   id: string;
+  imageIds?: string[];
   workItemId: string;
   channel: FarmHistoryChannel;
   sender: string;

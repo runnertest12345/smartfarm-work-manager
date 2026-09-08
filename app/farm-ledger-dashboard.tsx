@@ -140,6 +140,14 @@ import {
 } from '@/lib/firebase/farm-ledger-store';
 import { registerFarmLedgerTools } from '@/lib/webmcp/farm-ledger-tools';
 import {
+  isProjectTask,
+  isOperationalWork,
+  workProjectId,
+} from '@/lib/project-work';
+import type { ReceivedImage } from '@/lib/received-images';
+import { ReceivedContentInput, ReceivedImages } from './received-images';
+import { ProjectTaskDetail } from './project-task-detail';
+import {
   farmRecordsInContext,
   hasProjectParticipation,
   workMatchesScope,
@@ -376,6 +384,9 @@ interface SubscriptionExpiryForm {
 }
 
 interface InboxForm {
+  projectId: string;
+  taskTitle: string;
+  operationId: string;
   channel: HistoryChannel;
   sender: string;
   content: string;
@@ -879,6 +890,9 @@ function emptyVisitForm(owner = '', scheduledAt = ''): VisitForm {
 
 function emptyInboxForm(): InboxForm {
   return {
+    projectId: '',
+    taskTitle: '',
+    operationId: crypto.randomUUID(),
     channel: 'kakao',
     sender: '',
     content: '',
@@ -1158,6 +1172,9 @@ export function FarmLedgerDashboard({
   );
   const [visitForm, setVisitForm] = useState<VisitForm>(() => emptyVisitForm());
   const [inboxForm, setInboxForm] = useState<InboxForm>(() => emptyInboxForm());
+  const [draftImages, setDraftImages] = useState<ReceivedImage[]>([]);
+  const [imagesBusy, setImagesBusy] = useState(false);
+  const [inboxRouteProjectId, setInboxRouteProjectId] = useState('');
   const [subscriptionEventForm, setSubscriptionEventForm] =
     useState<SubscriptionEventForm>(() => emptySubscriptionEventForm());
   const [subscriptionExpiryForm, setSubscriptionExpiryForm] =
@@ -1363,6 +1380,13 @@ export function FarmLedgerDashboard({
       new Map(workspace.workItems.map((workItem) => [workItem.id, workItem])),
     [workspace.workItems],
   );
+  const operationalWorkItems = useMemo(
+    () =>
+      workspace.workItems.filter((item) =>
+        isOperationalWork(item, historiesByWorkItem.get(item.id)),
+      ),
+    [workspace.workItems, historiesByWorkItem],
+  );
   const documentsByProject = useMemo(() => {
     const map = new Map<string, FarmProjectDocument[]>();
     for (const document of workspace.projectDocuments) {
@@ -1425,8 +1449,7 @@ export function FarmLedgerDashboard({
     : [];
 
   function projectForWorkItem(workItem: FarmWorkItem) {
-    const record = recordById.get(workItem.farmRecordId);
-    return record ? (projectById.get(record.projectId) ?? null) : null;
+    return projectById.get(workProjectId(workItem, recordById)) ?? null;
   }
 
   function projectSelectLabel(projectId: string, includeYear = false) {
@@ -1463,11 +1486,15 @@ export function FarmLedgerDashboard({
         uniqueRecordsByFarm.set(record.farmId, record);
     }
     const records = [...uniqueRecordsByFarm.values()];
-    const recordIds = new Set(allRecords.map((record) => record.id));
-    const workItems = workspace.workItems.filter((item) =>
-      recordIds.has(item.farmRecordId),
+    const workItems = workspace.workItems.filter(
+      (item) => isProjectTask(item) && item.projectId === project.id,
     );
-    const workItemIds = new Set(workItems.map((item) => item.id));
+    // Project activity includes farm records too; subtask progress uses workItems only.
+    const workItemIds = new Set(
+      workspace.workItems
+        .filter((item) => workProjectId(item, recordById) === project.id)
+        .map((item) => item.id),
+    );
     const documents = documentsByProject.get(project.id) ?? [];
     const projectUpdates = updatesByProject.get(project.id) ?? [];
     const openProjectBlockers = projectUpdates.filter(
@@ -1744,8 +1771,10 @@ export function FarmLedgerDashboard({
     field: 'receivedContent' | 'actionContent',
   ) {
     return (
-      (historiesByWorkItem.get(workItem.id) ?? []).find((entry) =>
-        entry[field].trim(),
+      (historiesByWorkItem.get(workItem.id) ?? []).find(
+        (entry) =>
+          entry[field].trim() ||
+          (field === 'receivedContent' && entry.imageIds?.length),
       ) ?? null
     );
   }
@@ -1870,11 +1899,11 @@ export function FarmLedgerDashboard({
 
   const filteredWorkItems = useMemo(() => {
     const query = workSearch.trim().toLocaleLowerCase('ko-KR');
-    return workspace.workItems
+    return operationalWorkItems
       .filter((workItem) => {
+        if (workScope && !isProjectTask(workItem)) return false;
         const farm = farmById.get(workItem.farmId);
-        const record = recordById.get(workItem.farmRecordId);
-        const project = record ? projectById.get(record.projectId) : null;
+        const project = projectById.get(workProjectId(workItem, recordById));
         const entries = historiesByWorkItem.get(workItem.id) ?? [];
         const text = [
           workItem.title,
@@ -1927,7 +1956,7 @@ export function FarmLedgerDashboard({
     workTypeFilter,
     workScope,
     subscriptionToday,
-    workspace.workItems,
+    operationalWorkItems,
     projectById,
     recordById,
   ]);
@@ -1956,38 +1985,38 @@ export function FarmLedgerDashboard({
       .toLocaleLowerCase('ko-KR')
       .includes(inboxRouteFarmQuery);
   });
-  const totalInProgressCount = workspace.workItems.filter(
+  const totalInProgressCount = operationalWorkItems.filter(
     (item) => item.status === 'in_progress' || item.status === 'waiting',
   ).length;
   const today = localDateString();
   const sevenDaysAgo =
     new Date(`${today}T00:00:00`).getTime() - 7 * 24 * 60 * 60 * 1000;
-  const recentCompletedWorkItems = workspace.workItems.filter(
+  const recentCompletedWorkItems = operationalWorkItems.filter(
     (item) => item.status === 'completed' && item.completedAt >= sevenDaysAgo,
   );
-  const missingNextActionWorkItems = workspace.workItems.filter(
+  const missingNextActionWorkItems = operationalWorkItems.filter(
     (item) => item.status !== 'completed' && !item.nextAction.trim(),
   );
-  const reviewDueWorkItems = workspace.workItems.filter(
+  const reviewDueWorkItems = operationalWorkItems.filter(
     (item) =>
       item.status !== 'completed' &&
       item.reviewDate &&
       item.reviewDate <= today,
   );
-  const staleWaitingWorkItems = workspace.workItems.filter(
+  const staleWaitingWorkItems = operationalWorkItems.filter(
     (item) => item.status === 'waiting' && item.blockedAt < sevenDaysAgo,
   );
-  const overdueWorkItems = workspace.workItems.filter((workItem) => {
+  const overdueWorkItems = operationalWorkItems.filter((workItem) => {
     const days = daysUntil(workItem.dueDate);
     return workItem.status !== 'completed' && days !== null && days < 0;
   });
-  const dueSoonWorkItems = workspace.workItems.filter((workItem) => {
+  const dueSoonWorkItems = operationalWorkItems.filter((workItem) => {
     const days = daysUntil(workItem.dueDate);
     return (
       workItem.status !== 'completed' && days !== null && days >= 0 && days <= 7
     );
   });
-  const pendingResponseWorkItems = workspace.workItems
+  const pendingResponseWorkItems = operationalWorkItems
     .filter(
       (item) =>
         item.status !== 'completed' &&
@@ -1995,7 +2024,7 @@ export function FarmLedgerDashboard({
         item.respondedAt === 0,
     )
     .sort((a, b) => a.responseDueAt - b.responseDueAt);
-  const untargetedResponseWorkItems = workspace.workItems
+  const untargetedResponseWorkItems = operationalWorkItems
     .filter(
       (item) =>
         item.status !== 'completed' &&
@@ -2011,7 +2040,7 @@ export function FarmLedgerDashboard({
   const urgentResponseWorkItems = pendingResponseWorkItems.filter((item) =>
     ['urgent', 'warning'].includes(responseRisk(item, riskNow)),
   );
-  const blockedWorkItems = workspace.workItems
+  const blockedWorkItems = operationalWorkItems
     .filter((item) => item.status === 'waiting')
     .sort(
       (a, b) => (a.blockedAt || a.updatedAt) - (b.blockedAt || b.updatedAt),
@@ -2034,7 +2063,7 @@ export function FarmLedgerDashboard({
       visit.scheduledAt >= startOfToday && visit.scheduledAt < endOfToday,
   );
   const ownerLoadSummaries = [
-    ...workspace.workItems
+    ...operationalWorkItems
       .filter((item) => item.status !== 'completed')
       .reduce(
         (map, item) => {
@@ -2070,8 +2099,8 @@ export function FarmLedgerDashboard({
   const projectHealthSummaries = workspace.projects
     .filter((project) => project.status === 'active')
     .map((project) => {
-      const items = workspace.workItems.filter(
-        (item) => recordById.get(item.farmRecordId)?.projectId === project.id,
+      const items = operationalWorkItems.filter(
+        (item) => workProjectId(item, recordById) === project.id,
       );
       const activeItems = items.filter((item) => item.status !== 'completed');
       const hasOffTrack = activeItems.some(
@@ -2732,7 +2761,7 @@ export function FarmLedgerDashboard({
   const openServices = serviceWorkItems.filter(
     (workItem) => workItem.status !== 'completed',
   ).length;
-  const openWorkItems = workspace.workItems.filter(
+  const openWorkItems = operationalWorkItems.filter(
     (workItem) => workItem.status !== 'completed',
   ).length;
   const recentHistoryEntries = workspace.historyEntries
@@ -2797,7 +2826,7 @@ export function FarmLedgerDashboard({
   ];
 
   function currentDetailTarget(): DetailTarget | null {
-    if (selectedFarmId && selectedWorkItemId) {
+    if (selectedWorkItemId) {
       return {
         kind: 'work',
         farmId: selectedFarmId,
@@ -2962,6 +2991,16 @@ export function FarmLedgerDashboard({
   }
 
   function openFarm(farmId: string, workItemId = '', sourceProjectId?: string) {
+    const directTask = workItemById.get(workItemId);
+    if (directTask && isProjectTask(directTask)) {
+      openDetail({
+        kind: 'work',
+        farmId: '',
+        workItemId,
+        projectId: directTask.projectId,
+      });
+      return;
+    }
     const workRecord = workItemId
       ? recordById.get(workItemById.get(workItemId)?.farmRecordId ?? '')
       : null;
@@ -3156,6 +3195,7 @@ export function FarmLedgerDashboard({
   }
 
   function openWorkItemDialog(farmRecordId = '') {
+    setDraftImages([]);
     if (!selectedFarm || !selectedRecords.length) return;
     const safeRecordId = selectedRecords.some(
       (record) => record.id === farmRecordId,
@@ -3175,6 +3215,7 @@ export function FarmLedgerDashboard({
     workType: WorkType,
     title: string,
   ) {
+    setDraftImages([]);
     openFarm(record.farmId, '', record.projectId);
     setWorkItemForm({
       ...emptyWorkItemForm(record.id),
@@ -3301,6 +3342,7 @@ export function FarmLedgerDashboard({
   }
 
   function openHistoryDialog(workItem: FarmWorkItem) {
+    setDraftImages([]);
     setSelectedWorkItemId(workItem.id);
     setHistoryForm(
       emptyHistoryForm(
@@ -3367,13 +3409,19 @@ export function FarmLedgerDashboard({
     setDialog('visit');
   }
 
-  function openInboxDialog() {
-    setInboxForm(emptyInboxForm());
+  function openInboxDialog(projectId = '') {
+    setDraftImages([]);
+    setInboxForm({
+      ...emptyInboxForm(),
+      projectId,
+      capturedBy: accountName || accountEmail,
+    });
     setFormError('');
     setDialog('inbox');
   }
 
   function openInboxRoute(item: FarmInboxItem) {
+    setInboxRouteProjectId(item.projectId || '');
     const defaultFarmId = selectedFarm?.id ?? '';
     const records = defaultFarmId
       ? (recordsByFarm.get(defaultFarmId) ?? [])
@@ -3387,6 +3435,11 @@ export function FarmLedgerDashboard({
   }
 
   function continueInboxRoute() {
+    setDraftImages([]);
+    if (inboxRouteProjectId) {
+      void convertInboxToProjectTask();
+      return;
+    }
     const inboxItem = workspace.inboxItems.find(
       (item) => item.id === clarifyingInboxId,
     );
@@ -3415,6 +3468,68 @@ export function FarmLedgerDashboard({
     });
     setFormError('');
     setDialog('work_item');
+  }
+
+  async function convertInboxToProjectTask() {
+    if (submitting) return;
+    const source = workspace.inboxItems.find(
+      (item) => item.id === clarifyingInboxId,
+    );
+    if (!source || !inboxRouteProjectId) return;
+    setSubmitting(true);
+    setFormError('');
+    try {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
+        method: 'POST',
+        body: JSON.stringify({
+          kind: 'work_item',
+          sourceInboxId: source.id,
+          checklist: [],
+          workItem: {
+            ...emptyWorkItemForm(),
+            farmRecordId: '',
+            projectId: inboxRouteProjectId,
+            title:
+              source.content.replace(/\s+/g, ' ').slice(0, 100) ||
+              '첨부 이미지 확인 및 처리',
+            owner: accountName || accountEmail,
+            responseDueAt: 0,
+          },
+          history: {
+            channel: source.channel,
+            sender: source.sender,
+            receivedContent: source.content,
+            actionContent: '',
+            amount: 0,
+            recorder: accountName || accountEmail,
+            occurredAt: source.receivedAt,
+            referenceUrl: source.referenceUrl,
+          },
+        }),
+      });
+      const data = await readResponse(response);
+      if (!response.ok || !data.workItem)
+        throw new Error(data.error || '업무로 연결하지 못했습니다.');
+      await waitForFarmLedgerSync();
+      setDialog(null);
+      setWorkMode('board');
+      openDetail({
+        kind: 'work',
+        farmId: '',
+        workItemId: (data.workItem as FarmWorkItem).id,
+        projectId: inboxRouteProjectId,
+      });
+      toast.add({
+        title: '프로젝트 하위 업무로 연결했습니다',
+        type: 'success',
+      });
+    } catch (error) {
+      setFormError(
+        error instanceof Error ? error.message : '업무로 연결하지 못했습니다.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function submitSubscriptionEvent(event: FormSubmitEvent) {
@@ -3495,6 +3610,7 @@ export function FarmLedgerDashboard({
 
   async function submitInbox(event: FormSubmitEvent) {
     event.preventDefault();
+    if (imagesBusy || submitting) return;
     setSubmitting(true);
     setFormError('');
     try {
@@ -3505,6 +3621,7 @@ export function FarmLedgerDashboard({
           kind: 'inbox',
           inboxItem: {
             ...inboxForm,
+            images: draftImages,
             receivedAt: new Date(inboxForm.receivedAt).getTime(),
           },
         }),
@@ -3514,11 +3631,15 @@ export function FarmLedgerDashboard({
         throw new Error(data.error || '수신 내용을 저장하지 못했습니다.');
       }
       await waitForFarmLedgerSync();
-      setWorkMode('inbox');
+      setWorkMode(inboxForm.projectId ? 'board' : 'inbox');
       setDialog(null);
       toast.add({
-        title: '수신함에 담았습니다',
-        description: '업무로 정리할 때까지 원문을 그대로 보관합니다.',
+        title: inboxForm.projectId
+          ? '프로젝트 하위 업무로 등록했습니다'
+          : '수신함에 담았습니다',
+        description: inboxForm.projectId
+          ? '수신 원문과 첨부 이미지는 업무의 첫 기록에 연결했습니다.'
+          : '업무로 정리할 때까지 원문과 이미지를 보관합니다.',
         type: 'success',
       });
     } catch (error) {
@@ -3977,6 +4098,7 @@ export function FarmLedgerDashboard({
 
   async function submitWorkItem(event: FormSubmitEvent) {
     event.preventDefault();
+    if (imagesBusy || submitting) return;
     if (!selectedFarm) return;
     if (!workItemForm.farmRecordId) {
       setFormError('업무를 연결할 참여 사업을 선택해 주세요.');
@@ -3984,7 +4106,9 @@ export function FarmLedgerDashboard({
     }
     if (
       !workItemForm.receivedContent.trim() &&
-      !workItemForm.actionContent.trim()
+      !workItemForm.actionContent.trim() &&
+      !draftImages.length &&
+      !clarifyingInboxId
     ) {
       setFormError('최초 받은 내용 또는 처리 내용을 입력해 주세요.');
       return;
@@ -3997,6 +4121,7 @@ export function FarmLedgerDashboard({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           kind: 'work_item',
+          images: draftImages,
           paymentRequest: preparePaymentRequest(
             workItemForm.paymentOperationId,
             workItemForm.farmRecordId,
@@ -4081,6 +4206,7 @@ export function FarmLedgerDashboard({
 
   async function submitHistory(event: FormSubmitEvent) {
     event.preventDefault();
+    if (imagesBusy || submitting) return;
     if (!selectedWorkItem) return;
     setSubmitting(true);
     setFormError('');
@@ -4090,6 +4216,7 @@ export function FarmLedgerDashboard({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           kind: 'history',
+          images: draftImages,
           paymentRequest: preparePaymentRequest(
             historyForm.paymentOperationId,
             selectedWorkItem.farmRecordId,
@@ -4343,7 +4470,10 @@ export function FarmLedgerDashboard({
                 마지막 받은 내용
               </p>
               <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#4e5c53]">
-                {latestReceived?.receivedContent || '받은 내용이 없습니다.'}
+                {latestReceived?.receivedContent ||
+                  (latestReceived?.imageIds?.length
+                    ? `첨부 이미지 ${latestReceived.imageIds.length}장`
+                    : '받은 내용이 없습니다.')}
               </p>
             </div>
             <div className="rounded-xl bg-[#eef6f0] p-3">
@@ -4677,10 +4807,14 @@ export function FarmLedgerDashboard({
 
             <div
               data-active-content={
-                !selectedProject && !selectedFarm ? 'true' : 'false'
+                !selectedProject && !selectedFarm && !selectedWorkItem
+                  ? 'true'
+                  : 'false'
               }
               className={
-                selectedProject || selectedFarm ? 'hidden' : 'page-content'
+                selectedProject || selectedFarm || selectedWorkItem
+                  ? 'hidden'
+                  : 'page-content'
               }
             >
               {loading ? (
@@ -5116,8 +5250,8 @@ export function FarmLedgerDashboard({
                                                 {item.title}
                                               </p>
                                               <p className="mt-1 truncate text-xs text-[#7d8981]">
-                                                {farm?.name ?? '농가 없음'} ·
-                                                담당 {item.owner || '미지정'}
+                                                {farm?.name ?? '프로젝트 공통'}{' '}
+                                                · 담당 {item.owner || '미지정'}
                                               </p>
                                             </div>
                                             <div className="min-w-0 rounded-lg bg-white px-3 py-2">
@@ -5430,7 +5564,7 @@ export function FarmLedgerDashboard({
                           </p>
                         </div>
                         <Button
-                          onClick={openInboxDialog}
+                          onClick={() => openInboxDialog()}
                           className="bg-[#2f7b59] hover:bg-[#286b4d]"
                         >
                           <Inbox />
@@ -5593,13 +5727,17 @@ export function FarmLedgerDashboard({
                                 <SelectItem value="all">
                                   모든 업무 유형
                                 </SelectItem>
-                                {Object.entries(FARM_WORK_TYPE_LABELS).map(
-                                  ([value, label]) => (
+                                {Object.entries(FARM_WORK_TYPE_LABELS)
+                                  .filter(
+                                    ([type]) =>
+                                      type !== 'payment' &&
+                                      type !== 'subscription',
+                                  )
+                                  .map(([value, label]) => (
                                     <SelectItem key={value} value={value}>
                                       {label}
                                     </SelectItem>
-                                  ),
-                                )}
+                                  ))}
                               </SelectContent>
                             </Select>
                             {workMode === 'list' && (
@@ -5678,6 +5816,7 @@ export function FarmLedgerDashboard({
                                   <p className="mt-3 whitespace-pre-wrap text-sm leading-6">
                                     {item.content}
                                   </p>
+                                  <ReceivedImages imageIds={item.imageIds} />
                                   <p className="mt-2 text-xs text-[#7b877f]">
                                     {item.sender
                                       ? `전달 ${item.sender} · `
@@ -5755,6 +5894,7 @@ export function FarmLedgerDashboard({
                                     <p className="whitespace-pre-wrap text-sm leading-6">
                                       {item.content}
                                     </p>
+                                    <ReceivedImages imageIds={item.imageIds} />
                                     <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-[#7f8b83]">
                                       <span>
                                         {formatTimestamp(item.receivedAt)}
@@ -6002,7 +6142,7 @@ export function FarmLedgerDashboard({
                                                 '연결 업무 확인 필요'}
                                             </p>
                                             <p className="mt-1 text-xs text-[#718078]">
-                                              {farm?.name ?? '농가 미확인'} ·{' '}
+                                              {farm?.name ?? '프로젝트 공통'} ·{' '}
                                               {visit.assignedTo}
                                             </p>
                                           </div>
@@ -6308,7 +6448,7 @@ export function FarmLedgerDashboard({
                                           {workItem.title}
                                         </p>
                                         <p className="mt-1 truncate text-xs text-[#89938c]">
-                                          {farm?.name ?? '농가 없음'} ·{' '}
+                                          {farm?.name ?? '프로젝트 공통'} ·{' '}
                                           {
                                             FARM_WORK_TYPE_LABELS[
                                               workItem.workType
@@ -6328,7 +6468,9 @@ export function FarmLedgerDashboard({
                                     <TableCell className="max-w-[250px]">
                                       <p className="line-clamp-2 text-xs leading-5">
                                         {latestReceived?.receivedContent ||
-                                          '받은 내용 없음'}
+                                          (latestReceived?.imageIds?.length
+                                            ? `첨부 이미지 ${latestReceived.imageIds.length}장`
+                                            : '받은 내용 없음')}
                                       </p>
                                     </TableCell>
                                     <TableCell className="max-w-[250px]">
@@ -9071,12 +9213,25 @@ export function FarmLedgerDashboard({
 
             <div
               data-active-content={
-                selectedProject || selectedFarm ? 'true' : 'false'
+                selectedProject || selectedFarm || selectedWorkItem
+                  ? 'true'
+                  : 'false'
               }
               className={
-                selectedProject || selectedFarm ? 'page-content' : 'hidden'
+                selectedProject || selectedFarm || selectedWorkItem
+                  ? 'page-content'
+                  : 'hidden'
               }
             >
+              {selectedWorkItem && isProjectTask(selectedWorkItem) && (
+                <ProjectTaskDetail
+                  task={selectedWorkItem}
+                  project={projectForWorkItem(selectedWorkItem) || undefined}
+                  history={selectedWorkHistory}
+                  onBack={backDetail}
+                  onRecord={() => openHistoryDialog(selectedWorkItem)}
+                />
+              )}
               {selectedProject && selectedProjectSnapshot && (
                 <section aria-label="프로젝트 전체 상세" className="w-full">
                   <div className="mb-3 flex min-h-11 flex-wrap items-center gap-2 text-sm">
@@ -9652,13 +9807,26 @@ export function FarmLedgerDashboard({
                       value="work"
                       className="rounded-xl border border-[#d8e0e7] bg-white p-5"
                     >
-                      <h2 className="mb-4 font-bold">
-                        {selectedProject.name} · 하위 업무
-                      </h2>
+                      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                        <h2 className="font-bold">
+                          {selectedProject.name} · 하위 업무
+                        </h2>
+                        <Button
+                          disabled={selectedProject.status === 'completed'}
+                          onClick={() => openInboxDialog(selectedProject.id)}
+                        >
+                          <Plus />
+                          하위 업무 추가
+                        </Button>
+                      </div>
+                      <p className="mb-3 text-sm text-slate-600">
+                        견적서 제출·문의 피드백 등 프로젝트 실행 업무입니다.
+                        농가 구독료 입금은 구독·입금에서 관리합니다.
+                      </p>
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead>업무·농가</TableHead>
+                            <TableHead>프로젝트 업무</TableHead>
                             <TableHead>상태</TableHead>
                             <TableHead>담당자</TableHead>
                             <TableHead>기한</TableHead>
@@ -9677,8 +9845,9 @@ export function FarmLedgerDashboard({
                                   {item.title}
                                 </button>
                                 <p className="text-sm text-[#586777]">
-                                  {farmById.get(item.farmId)?.name ??
-                                    '농가 없음'}
+                                  {isProjectTask(item)
+                                    ? '프로젝트 공통 업무'
+                                    : farmById.get(item.farmId)?.name}
                                 </p>
                               </TableCell>
                               <TableCell>
@@ -9702,8 +9871,9 @@ export function FarmLedgerDashboard({
                                 colSpan={5}
                                 className="py-10 text-center"
                               >
-                                등록된 하위 업무가 없습니다. 농가·구독 탭에서
-                                농가를 선택해 업무를 등록하세요.
+                                등록된 하위 업무가 없습니다. ‘하위 업무
+                                추가’에서 견적서 제출, 문의사항 피드백 등 할
+                                일을 등록하세요.
                               </TableCell>
                             </TableRow>
                           )}
@@ -10900,7 +11070,10 @@ export function FarmLedgerDashboard({
                                             {formatTimestamp(entry.occurredAt)}
                                           </time>
                                         </div>
-                                        {entry.receivedContent && (
+                                        {Boolean(
+                                          entry.receivedContent ||
+                                          entry.imageIds?.length,
+                                        ) && (
                                           <div className="mt-3 rounded-xl bg-[#f6f8f6] p-3">
                                             <p className="text-[11px] font-semibold text-[#78847c]">
                                               받은 내용
@@ -10908,6 +11081,9 @@ export function FarmLedgerDashboard({
                                             <p className="mt-1 whitespace-pre-wrap text-sm leading-6">
                                               {entry.receivedContent}
                                             </p>
+                                            <ReceivedImages
+                                              imageIds={entry.imageIds}
+                                            />
                                           </div>
                                         )}
                                         {entry.actionContent && (
@@ -13017,18 +13193,70 @@ export function FarmLedgerDashboard({
         <Dialog
           open={dialog === 'inbox'}
           onOpenChange={(open) =>
-            !submitting && setDialog(open ? 'inbox' : null)
+            !submitting && !imagesBusy && setDialog(open ? 'inbox' : null)
           }
         >
           <DialogContent className="max-h-[92vh] overflow-y-auto p-5 sm:max-w-[660px] sm:p-6">
             <DialogHeader>
               <DialogTitle className="text-lg">빠른 수신</DialogTitle>
               <DialogDescription>
-                농가와 사업을 아직 몰라도 괜찮습니다. 받은 내용을 먼저 원문
-                그대로 담아두세요.
+                프로젝트를 선택하면 수신함에 보관하면서 하위 업무로 바로
+                등록합니다. 아직 프로젝트를 모르면 미지정으로 담아두세요.
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={submitInbox} className="mt-1 space-y-4">
+              <Field>
+                <FieldLabel>프로젝트</FieldLabel>
+                <Select
+                  value={inboxForm.projectId || 'unassigned'}
+                  onValueChange={(value) =>
+                    setInboxForm((current) => ({
+                      ...current,
+                      projectId: value === 'unassigned' ? '' : value || '',
+                    }))
+                  }
+                >
+                  <SelectTrigger className="h-10 w-full">
+                    <SelectValue>
+                      {inboxForm.projectId
+                        ? projectSelectLabel(inboxForm.projectId, true)
+                        : '미지정 · 수신함에만 보관'}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="unassigned">
+                      미지정 · 수신함에만 보관
+                    </SelectItem>
+                    {workspace.projects
+                      .filter((project) => project.status !== 'completed')
+                      .map((project) => (
+                        <SelectItem key={project.id} value={project.id}>
+                          {project.year} · {project.name}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              {inboxForm.projectId && (
+                <Field>
+                  <FieldLabel>하위 업무명</FieldLabel>
+                  <Input
+                    value={inboxForm.taskTitle}
+                    maxLength={160}
+                    onChange={(event) =>
+                      setInboxForm((current) => ({
+                        ...current,
+                        taskTitle: event.target.value,
+                      }))
+                    }
+                    placeholder="예: 견적서 제출 / 문의사항 피드백 후 제출"
+                  />
+                  <p className="text-xs text-slate-500">
+                    미입력 시 받은 내용의 첫 부분을 업무명으로 사용합니다. 최초
+                    담당자는 기록자이며 이후 변경할 수 있습니다.
+                  </p>
+                </Field>
+              )}
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field>
                   <FieldLabel>수신 경로</FieldLabel>
@@ -13097,7 +13325,11 @@ export function FarmLedgerDashboard({
                 </Field>
                 <Field className="sm:col-span-2">
                   <FieldLabel>받은 내용</FieldLabel>
-                  <Textarea
+                  <ReceivedContentInput
+                    images={draftImages}
+                    onImagesChange={setDraftImages}
+                    onBusyChange={setImagesBusy}
+                    disabled={submitting || imagesBusy}
                     value={inboxForm.content}
                     onChange={(event) =>
                       setInboxForm((current) => ({
@@ -13130,13 +13362,13 @@ export function FarmLedgerDashboard({
                   type="button"
                   variant="outline"
                   onClick={() => setDialog(null)}
-                  disabled={submitting}
+                  disabled={submitting || imagesBusy}
                 >
                   취소
                 </Button>
                 <Button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || imagesBusy}
                   className="bg-[#2f7b59] hover:bg-[#286b4d]"
                 >
                   {submitting && <Loader2 className="animate-spin" />}수신함에
@@ -13159,85 +13391,130 @@ export function FarmLedgerDashboard({
                 수신 내용을 업무로 정리
               </DialogTitle>
               <DialogDescription>
-                어느 농가의 어떤 사업에서 처리할 내용인지 먼저 연결합니다.
+                프로젝트를 선택하면 농가 없이 하위 업무로 등록합니다. 농가별
+                업무는 아래 농가·참여 사업을 선택해 정리할 수 있습니다.
               </DialogDescription>
             </DialogHeader>
             <div className="mt-1 space-y-4">
+              <Field>
+                <FieldLabel>프로젝트 하위 업무로 연결</FieldLabel>
+                <Select
+                  value={inboxRouteProjectId || 'none'}
+                  onValueChange={(value) =>
+                    setInboxRouteProjectId(value === 'none' ? '' : value || '')
+                  }
+                >
+                  <SelectTrigger className="h-10 w-full">
+                    <SelectValue>
+                      {inboxRouteProjectId
+                        ? projectSelectLabel(inboxRouteProjectId, true)
+                        : '프로젝트 선택'}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">
+                      선택 안 함 · 농가별 업무로 정리
+                    </SelectItem>
+                    {workspace.projects
+                      .filter((project) => project.status !== 'completed')
+                      .map((project) => (
+                        <SelectItem key={project.id} value={project.id}>
+                          {project.year} · {project.name}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </Field>
               <div className="rounded-xl bg-[#f5f8f4] p-3 text-sm leading-6">
                 {
                   workspace.inboxItems.find(
                     (item) => item.id === clarifyingInboxId,
                   )?.content
                 }
-              </div>
-              <Field>
-                <FieldLabel>농가 검색</FieldLabel>
-                <Input
-                  value={inboxFarmSearch}
-                  onChange={(event) => setInboxFarmSearch(event.target.value)}
-                  placeholder="농가명·농장번호·지역 검색"
+                <ReceivedImages
+                  imageIds={
+                    workspace.inboxItems.find(
+                      (item) => item.id === clarifyingInboxId,
+                    )?.imageIds
+                  }
                 />
-              </Field>
-              <Field>
-                <FieldLabel>농가</FieldLabel>
-                <Select
-                  value={inboxRouteFarmId}
-                  onValueChange={(value) => {
-                    const farmId = value ?? '';
-                    const records = recordsByFarm.get(farmId) ?? [];
-                    setInboxRouteFarmId(farmId);
-                    setInboxRouteRecordId(
-                      records.length === 1 ? records[0].id : '',
-                    );
-                  }}
-                >
-                  <SelectTrigger className="h-10 w-full">
-                    <SelectValue placeholder="농가를 선택하세요">
-                      {inboxRouteFarmId
-                        ? farmSelectLabel(inboxRouteFarmId)
-                        : undefined}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {inboxRouteFarmOptions.map((farm) => (
-                      <SelectItem key={farm.id} value={farm.id}>
-                        {farm.name} · {farm.farmCode}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {inboxRouteFarmOptions.length === 0 && (
-                  <p className="text-xs text-[#8a938e]">
-                    검색 조건에 맞는 참여 농가가 없습니다.
-                  </p>
-                )}
-              </Field>
-              <Field>
-                <FieldLabel>참여 사업</FieldLabel>
-                <Select
-                  value={inboxRouteRecordId}
-                  onValueChange={(value) => setInboxRouteRecordId(value ?? '')}
-                >
-                  <SelectTrigger className="h-10 w-full">
-                    <SelectValue placeholder="사업을 선택하세요">
-                      {inboxRouteRecordId
-                        ? recordSelectLabel(inboxRouteRecordId)
-                        : undefined}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(recordsByFarm.get(inboxRouteFarmId) ?? []).map(
-                      (record) => (
-                        <SelectItem key={record.id} value={record.id}>
-                          {projectById.get(record.projectId)?.name ??
-                            '사업 없음'}{' '}
-                          · {record.deviceType || '장비 미입력'}
-                        </SelectItem>
-                      ),
+              </div>
+              {!inboxRouteProjectId && (
+                <div className="space-y-4">
+                  <Field>
+                    <FieldLabel>농가 검색</FieldLabel>
+                    <Input
+                      value={inboxFarmSearch}
+                      onChange={(event) =>
+                        setInboxFarmSearch(event.target.value)
+                      }
+                      placeholder="농가명·농장번호·지역 검색"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel>농가</FieldLabel>
+                    <Select
+                      value={inboxRouteFarmId}
+                      onValueChange={(value) => {
+                        const farmId = value ?? '';
+                        const records = recordsByFarm.get(farmId) ?? [];
+                        setInboxRouteFarmId(farmId);
+                        setInboxRouteRecordId(
+                          records.length === 1 ? records[0].id : '',
+                        );
+                      }}
+                    >
+                      <SelectTrigger className="h-10 w-full">
+                        <SelectValue placeholder="농가를 선택하세요">
+                          {inboxRouteFarmId
+                            ? farmSelectLabel(inboxRouteFarmId)
+                            : undefined}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {inboxRouteFarmOptions.map((farm) => (
+                          <SelectItem key={farm.id} value={farm.id}>
+                            {farm.name} · {farm.farmCode}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {inboxRouteFarmOptions.length === 0 && (
+                      <p className="text-xs text-[#8a938e]">
+                        검색 조건에 맞는 참여 농가가 없습니다.
+                      </p>
                     )}
-                  </SelectContent>
-                </Select>
-              </Field>
+                  </Field>
+                  <Field>
+                    <FieldLabel>참여 사업</FieldLabel>
+                    <Select
+                      value={inboxRouteRecordId}
+                      onValueChange={(value) =>
+                        setInboxRouteRecordId(value ?? '')
+                      }
+                    >
+                      <SelectTrigger className="h-10 w-full">
+                        <SelectValue placeholder="사업을 선택하세요">
+                          {inboxRouteRecordId
+                            ? recordSelectLabel(inboxRouteRecordId)
+                            : undefined}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(recordsByFarm.get(inboxRouteFarmId) ?? []).map(
+                          (record) => (
+                            <SelectItem key={record.id} value={record.id}>
+                              {projectById.get(record.projectId)?.name ??
+                                '사업 없음'}{' '}
+                              · {record.deviceType || '장비 미입력'}
+                            </SelectItem>
+                          ),
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+              )}
               {formError && <FieldError>{formError}</FieldError>}
               <DialogFooter className="mx-0 mb-0 px-0 pb-0 pt-4">
                 <Button
@@ -13250,9 +13527,13 @@ export function FarmLedgerDashboard({
                 <Button
                   type="button"
                   onClick={continueInboxRoute}
+                  disabled={submitting}
                   className="bg-[#2f7b59] hover:bg-[#286b4d]"
                 >
-                  다음: 업무 계획 작성 <ArrowRight />
+                  {inboxRouteProjectId
+                    ? '프로젝트 하위 업무로 등록'
+                    : '다음: 농가 업무 계획 작성'}{' '}
+                  <ArrowRight />
                 </Button>
               </DialogFooter>
             </div>
@@ -13262,7 +13543,7 @@ export function FarmLedgerDashboard({
         <Dialog
           open={dialog === 'work_item'}
           onOpenChange={(open) =>
-            !submitting && setDialog(open ? 'work_item' : null)
+            !submitting && !imagesBusy && setDialog(open ? 'work_item' : null)
           }
         >
           <DialogContent className="max-h-[94vh] overflow-y-auto p-5 sm:max-w-[760px] sm:p-6">
@@ -13681,7 +13962,10 @@ export function FarmLedgerDashboard({
                   </Field>
                   <Field className="sm:col-span-2">
                     <FieldLabel>받은 내용</FieldLabel>
-                    <Textarea
+                    <ReceivedContentInput
+                      images={draftImages}
+                      onImagesChange={setDraftImages}
+                      onBusyChange={setImagesBusy}
                       value={workItemForm.receivedContent}
                       disabled={Boolean(clarifyingInboxId)}
                       onChange={(event) =>
@@ -13748,13 +14032,13 @@ export function FarmLedgerDashboard({
                   type="button"
                   variant="outline"
                   onClick={() => setDialog(null)}
-                  disabled={submitting}
+                  disabled={submitting || imagesBusy}
                 >
                   취소
                 </Button>
                 <Button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || imagesBusy}
                   className="bg-[#2f7b59] hover:bg-[#286b4d]"
                 >
                   {submitting && <Loader2 className="animate-spin" />}업무 등록
@@ -13767,7 +14051,7 @@ export function FarmLedgerDashboard({
         <Dialog
           open={dialog === 'history'}
           onOpenChange={(open) =>
-            !submitting && setDialog(open ? 'history' : null)
+            !submitting && !imagesBusy && setDialog(open ? 'history' : null)
           }
         >
           <DialogContent className="max-h-[92vh] overflow-y-auto p-5 sm:max-w-[700px] sm:p-6">
@@ -14090,7 +14374,11 @@ export function FarmLedgerDashboard({
                 </Field>
                 <Field className="sm:col-span-2">
                   <FieldLabel>받은 내용</FieldLabel>
-                  <Textarea
+                  <ReceivedContentInput
+                    images={draftImages}
+                    onImagesChange={setDraftImages}
+                    onBusyChange={setImagesBusy}
+                    disabled={submitting || imagesBusy}
                     value={historyForm.receivedContent}
                     onChange={(event) =>
                       setHistoryForm((current) => ({
@@ -14132,7 +14420,13 @@ export function FarmLedgerDashboard({
                       </p>
                     )}
                 </Field>
-                <Field>
+                <Field
+                  className={
+                    selectedWorkItem && isProjectTask(selectedWorkItem)
+                      ? 'hidden'
+                      : undefined
+                  }
+                >
                   <FieldLabel>금액(원)</FieldLabel>
                   <Input
                     type="number"
@@ -14215,13 +14509,13 @@ export function FarmLedgerDashboard({
                   type="button"
                   variant="outline"
                   onClick={() => setDialog(null)}
-                  disabled={submitting}
+                  disabled={submitting || imagesBusy}
                 >
                   취소
                 </Button>
                 <Button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || imagesBusy}
                   className="bg-[#2f7b59] hover:bg-[#286b4d]"
                 >
                   {submitting && <Loader2 className="animate-spin" />}진행 기록

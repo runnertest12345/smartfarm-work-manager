@@ -4,6 +4,7 @@ import { webcrypto } from 'node:crypto';
 import vm from 'node:vm';
 import test from 'node:test';
 import ts from 'typescript';
+import { posix } from 'node:path';
 
 const compile = (path) =>
   ts.transpileModule(
@@ -20,6 +21,9 @@ const scripts = new Map(
     'lib/farm-types.ts',
     'lib/subscription-payment.ts',
     'lib/subscription-renewal-report.ts',
+    'lib/project-work.ts',
+    'lib/received-images.ts',
+    'lib/firebase/received-images-store.ts',
     'lib/firebase/farm-ledger-store.ts',
   ].map((path) => [path, compile(path)]),
 );
@@ -40,6 +44,7 @@ function load(
       module: { exports: result },
       crypto: webcrypto,
       TextEncoder,
+      atob,
       Response,
       Date,
       console,
@@ -47,6 +52,14 @@ function load(
         if (name in overrides) return overrides[name];
         if (name.startsWith('@/'))
           return load(name.slice(2) + '.ts', overrides, '', globals, cache);
+        if (name.startsWith('.'))
+          return load(
+            posix.normalize(posix.join(posix.dirname(path), name + '.ts')),
+            overrides,
+            '',
+            globals,
+            cache,
+          );
         throw new Error('Unexpected dependency ' + name);
       },
       ...globals,
@@ -320,6 +333,241 @@ function harness() {
     },
   };
 }
+const capture = (patch = {}) => ({
+  kind: 'inbox',
+  inboxItem: {
+    operationId: 'capture-0000000001',
+    projectId: 'p1',
+    taskTitle: '견적서 제출',
+    channel: 'email',
+    sender: '태백 사업단',
+    content: '문의사항 피드백 후 견적서를 제출해 주세요.',
+    capturedBy: '담당자',
+    receivedAt: paidAt,
+    referenceUrl: '',
+    ...patch,
+  },
+});
+const png =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl2sAAAAASUVORK5CYII=';
+const screenshot = () => ({
+  id: 'screenshot-00000001',
+  name: '캡처.png',
+  mimeType: 'image/png',
+  dataUrl: 'data:image/png;base64,' + png,
+  size: Buffer.from(png, 'base64').length,
+  width: 1,
+  height: 1,
+});
+
+test('농가가 없는 프로젝트도 빠른 수신으로 하위 업무와 원문을 함께 생성한다', async () => {
+  const h = harness();
+  h.put('projects', {
+    id: 'no-farms',
+    status: 'active',
+    createdAt: fixedNow - 100,
+    updatedAt: fixedNow - 100,
+  });
+  h.sync();
+  const result = await h.api.post(capture({ projectId: 'no-farms' }));
+  assert.equal(result.inboxItem.status, 'converted');
+  const task = h.list('workItems')[0];
+  assert.equal(task.projectId, 'no-farms');
+  assert.equal(task.farmRecordId, '');
+  assert.equal(task.title, '견적서 제출');
+  assert.equal(task.status, 'open');
+  assert.equal(
+    h.list('historyEntries')[0].receivedContent,
+    capture().inboxItem.content,
+  );
+  assert.equal(h.list('subscriptionEvents').length, 0);
+});
+
+test('프로젝트 미지정 수신은 업무를 만들지 않고 나중에 원문·이미지를 이어받는다', async () => {
+  const h = harness();
+  await h.api.post(
+    capture({ projectId: '', content: '', images: [screenshot()] }),
+  );
+  assert.equal(h.list('workItems').length, 0);
+  assert.equal(h.list('imageAttachments').length, 1);
+  h.sync();
+  const base = h.body();
+  const result = await h.api.post({
+    ...base,
+    paymentRequest: undefined,
+    sourceInboxId: 'capture-0000000001',
+    workItem: {
+      ...base.workItem,
+      farmRecordId: '',
+      projectId: 'p1',
+      workType: 'communication',
+      status: 'open',
+    },
+    history: h.history(0),
+  });
+  assert.equal(result.historyEntry.imageIds[0], screenshot().id);
+  assert.equal(h.list('imageAttachments').length, 1);
+  assert.equal(h.list('inboxItems')[0].status, 'converted');
+  await assert.rejects(
+    h.api.post({
+      ...base,
+      paymentRequest: undefined,
+      sourceInboxId: 'capture-0000000001',
+      workItem: {
+        ...base.workItem,
+        farmRecordId: '',
+        projectId: 'p1',
+        workType: 'communication',
+      },
+      history: h.history(0),
+    }),
+    /이미 정리/,
+  );
+});
+
+test('빠른 수신 재시도·동시 전송은 한 업무만 생성하고 이미지 저장 실패는 원자적으로 되돌린다', async () => {
+  const h = harness();
+  const body = capture({ images: [screenshot()] });
+  h.fail();
+  await assert.rejects(h.api.post(body), /Simulated/);
+  for (const collection of [
+    'inboxItems',
+    'workItems',
+    'historyEntries',
+    'imageAttachments',
+  ])
+    assert.equal(h.list(collection).length, 0);
+  await Promise.all([h.api.post(body), h.api.post(body)]);
+  for (const collection of [
+    'inboxItems',
+    'workItems',
+    'historyEntries',
+    'imageAttachments',
+  ])
+    assert.equal(h.list(collection).length, 1);
+  assert.ok(!('dataUrl' in h.list('inboxItems')[0]));
+  assert.equal(h.list('historyEntries')[0].imageIds[0], screenshot().id);
+});
+
+test('프로젝트 업무는 처리 기록·막힘·완료 상태를 갱신하며 구독에는 영향을 주지 않는다', async () => {
+  const h = harness();
+  await h.api.post(capture());
+  h.sync();
+  const id = h.list('workItems')[0].id;
+  await h.api.post({
+    kind: 'history',
+    history: {
+      ...h.history(0),
+      workItemId: id,
+      newStatus: 'waiting',
+      blockedReason: '사업단 회신 대기',
+      blockedBy: '사업단',
+    },
+  });
+  assert.equal(h.list('workItems')[0].status, 'waiting');
+  h.sync();
+  await h.api.post({
+    kind: 'history',
+    images: [{ ...screenshot(), id: 'screenshot-00000002' }],
+    history: {
+      ...h.history(0),
+      workItemId: id,
+      newStatus: 'completed',
+      actionContent: '회신 확인 후 견적서 제출 완료',
+    },
+  });
+  assert.equal(h.list('workItems')[0].status, 'completed');
+  assert.ok(h.list('blockerEpisodes')[0].closedAt > 0);
+  assert.equal(h.list('imageAttachments').length, 1);
+  assert.equal(h.list('subscriptionEvents').length, 0);
+  assert.equal(
+    h.list('farmRecords')[0].currentSubscriptionExpiresAt,
+    '2026-08-31',
+  );
+});
+
+test('잘못된 프로젝트·완료 프로젝트·농가 없는 입금 업무는 저장하지 않는다', async () => {
+  const h = harness();
+  await assert.rejects(
+    h.api.post(capture({ projectId: 'missing' })),
+    /찾을 수 없습니다/,
+  );
+  h.put('projects', { id: 'closed', status: 'completed' });
+  h.sync();
+  await assert.rejects(h.api.post(capture({ projectId: 'closed' })), /완료/);
+  const body = h.body();
+  await assert.rejects(
+    h.api.post({
+      ...body,
+      workItem: { ...body.workItem, farmRecordId: '', projectId: 'p1' },
+    }),
+    /구독·입금/,
+  );
+  assert.equal(h.list('inboxItems').length, 0);
+});
+
+test('이미지 형식·개수·크기와 위장 파일을 검증한다', () => {
+  const { parseReceivedImages } = load('lib/received-images.ts');
+  assert.equal(parseReceivedImages([screenshot()]).length, 1);
+  assert.throws(
+    () => parseReceivedImages(Array.from({ length: 4 }, screenshot)),
+    /최대 3장/,
+  );
+  assert.throws(
+    () =>
+      parseReceivedImages([
+        { ...screenshot(), dataUrl: 'data:text/html;base64,PHNjcmlwdD4=' },
+      ]),
+    /형식/,
+  );
+  assert.throws(
+    () =>
+      parseReceivedImages([
+        {
+          ...screenshot(),
+          dataUrl: 'data:image/png;base64,PHNjcmlwdD4=',
+          size: 8,
+        },
+      ]),
+    /일치하지 않습니다/,
+  );
+  assert.throws(
+    () =>
+      parseReceivedImages([
+        {
+          ...screenshot(),
+          dataUrl: 'data:image/png;base64,' + 'a'.repeat(600000),
+        },
+      ]),
+    /크기/,
+  );
+});
+
+test('프로젝트 하위 업무 판정에서 농가 입금·구독·자동 관리 메모를 제외한다', () => {
+  const { isProjectTask } = load('lib/project-work.ts');
+  assert.equal(
+    isProjectTask({
+      projectId: 'p1',
+      farmRecordId: '',
+      workType: 'communication',
+    }),
+    true,
+  );
+  assert.equal(
+    isProjectTask({ projectId: 'p1', farmRecordId: '', workType: 'payment' }),
+    false,
+  );
+  assert.equal(
+    isProjectTask({ farmRecordId: 'r1', workType: 'payment' }),
+    false,
+  );
+  assert.equal(
+    isProjectTask({ farmRecordId: 'r1', workType: 'subscription' }),
+    false,
+  );
+  assert.equal(isProjectTask({ farmRecordId: 'r1', workType: 'note' }), false);
+});
+
 test('입금·업무·갱신 이력·만료일을 한 번에 저장하고 첫 입금1회', async () => {
   const h = harness();
   await h.api.post(h.body());

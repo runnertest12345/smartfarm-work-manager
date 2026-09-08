@@ -68,6 +68,9 @@ import {
   requireSignedInUser,
 } from './client';
 import { renewalCountBeforeEvent } from '@/lib/subscription-renewal-report';
+import { parseReceivedImages, type ReceivedImage } from '@/lib/received-images';
+import { writeReceivedImages } from './received-images-store';
+import { isProjectTask } from '@/lib/project-work';
 import {
   calculateSubscriptionPayment,
   type SubscriptionPaymentRequest,
@@ -491,6 +494,7 @@ function parseSubscriptionExpiryCorrectionInput(
 }
 
 function parseInboxInput(value: unknown): FarmInboxItemInput {
+  const source = asObject(value, '수신 내용을 확인해 주세요.');
   const input = parseShape<FarmInboxItemInput>(
     value,
     {
@@ -508,12 +512,37 @@ function parseInboxInput(value: unknown): FarmInboxItemInput {
     FARM_HISTORY_CHANNELS,
     '수신 경로를 확인해 주세요.',
   );
-  if (!input.content || !input.capturedBy)
+  if (
+    !Number.isSafeInteger(input.receivedAt) ||
+    input.receivedAt <= 0 ||
+    input.receivedAt > Date.now()
+  )
+    throw new Error('받은 일시는 현재 또는 이전 시각으로 입력해 주세요.');
+  input.projectId = source.projectId
+    ? requiredId(source.projectId, '프로젝트')
+    : '';
+  input.taskTitle =
+    typeof source.taskTitle === 'string'
+      ? source.taskTitle.trim().slice(0, 160)
+      : '';
+  if (source.operationId) {
+    if (
+      typeof source.operationId !== 'string' ||
+      !/^[a-zA-Z0-9-]{16,80}$/.test(source.operationId)
+    )
+      throw new Error('수신 등록 정보를 다시 열어 주세요.');
+    input.operationId = source.operationId;
+  }
+  if (
+    (!input.content && !parseReceivedImages(source.images).length) ||
+    !input.capturedBy
+  )
     throw new Error('받은 내용과 기록 담당자를 입력해 주세요.');
   return input;
 }
 
 function parseWorkItemInput(value: unknown): FarmWorkItemInput {
+  const source = asObject(value, '업무 입력값을 확인해 주세요.');
   const input = parseShape<FarmWorkItemInput>(
     value,
     {
@@ -542,9 +571,23 @@ function parseWorkItemInput(value: unknown): FarmWorkItemInput {
     FARM_WORK_PRIORITIES,
     '업무 우선순위를 확인해 주세요.',
   );
-  if (!input.farmRecordId || !input.title || !input.owner) {
-    throw new Error('대상 농가, 업무명과 담당자를 입력해 주세요.');
+  input.projectId = source.projectId
+    ? requiredId(source.projectId, '프로젝트')
+    : '';
+  if (
+    (!input.farmRecordId && !input.projectId) ||
+    !input.title ||
+    !input.owner
+  ) {
+    throw new Error(
+      '대상 프로젝트 또는 농가, 업무명과 담당자를 입력해 주세요.',
+    );
   }
+  if (
+    !input.farmRecordId &&
+    ['payment', 'subscription'].includes(input.workType)
+  )
+    throw new Error('구독·입금은 농가를 선택해 등록해 주세요.');
   if (
     input.status === 'waiting' &&
     (!input.blockedReason || !input.blockedBy)
@@ -1087,7 +1130,10 @@ async function updateProject(projectId: string, input: FarmProjectInput) {
         .map((record) => record.farmId),
     ).size;
     const openWork = workspace.workItems.some(
-      (item) => recordIds.has(item.farmRecordId) && item.status !== 'completed',
+      (item) =>
+        (recordIds.has(item.farmRecordId) ||
+          (isProjectTask(item) && item.projectId === projectId)) &&
+        item.status !== 'completed',
     );
     if (
       requiredDocuments.length === 0 ||
@@ -1982,20 +2028,101 @@ async function correctSubscriptionExpiry(
   });
 }
 
-async function createInboxItem(input: FarmInboxItemInput) {
+async function createInboxItem(
+  input: FarmInboxItemInput,
+  images: ReceivedImage[] = [],
+) {
   const now = Date.now();
+  const { operationId, taskTitle, ...captured } = input;
+  const id = operationId || crypto.randomUUID();
   const inboxItem: FarmInboxItem = {
-    id: crypto.randomUUID(),
-    ...input,
-    status: 'unprocessed',
-    convertedWorkItemId: '',
+    id,
+    ...captured,
+    imageIds: images.map((image) => image.id),
+    status: input.projectId ? 'converted' : 'unprocessed',
+    convertedWorkItemId: input.projectId ? `${id}-work` : '',
     createdAt: now,
     updatedAt: now,
   };
-  const batch = writeBatch(getFirebaseServices().db);
-  setCreated(batch, 'inboxItems', inboxItem);
-  await batch.commit();
-  return { inboxItem };
+  return runTransaction(getFirebaseServices().db, async (transaction) => {
+    const existing = await transaction.get(documentRef('inboxItems', id));
+    if (existing.exists()) {
+      const saved = existing.data() as FarmInboxItem;
+      if (
+        saved.content !== inboxItem.content ||
+        saved.projectId !== inboxItem.projectId ||
+        saved.receivedAt !== inboxItem.receivedAt ||
+        saved.capturedBy !== inboxItem.capturedBy ||
+        saved.channel !== inboxItem.channel ||
+        saved.sender !== inboxItem.sender ||
+        saved.referenceUrl !== inboxItem.referenceUrl ||
+        JSON.stringify(saved.imageIds || []) !==
+          JSON.stringify(inboxItem.imageIds)
+      )
+        throw new Error(
+          '이미 저장된 수신입니다. 새 수신 창에서 등록해 주세요.',
+        );
+      return { inboxItem: saved };
+    }
+    if (input.projectId) {
+      const projectDoc = await transaction.get(
+        documentRef('projects', input.projectId),
+      );
+      if (!projectDoc.exists()) throw new Error('프로젝트를 찾을 수 없습니다.');
+      assertProjectEditable(projectDoc.data() as FarmProject);
+    }
+    setCreated(transaction, 'inboxItems', inboxItem);
+    writeReceivedImages(transaction, images, 'inboxItems', id);
+    if (input.projectId) {
+      const workItem: FarmWorkItem = {
+        id: inboxItem.convertedWorkItemId,
+        projectId: input.projectId,
+        farmRecordId: '',
+        farmId: '',
+        workType: 'communication',
+        title:
+          taskTitle ||
+          input.content.replace(/\s+/g, ' ').slice(0, 100) ||
+          '첨부 이미지 확인 및 처리',
+        status: 'open',
+        owner: input.capturedBy,
+        dueDate: '',
+        description: '',
+        expectedOutcome: '',
+        nextAction: '',
+        priority: 'medium',
+        reviewDate: '',
+        responseDueAt: 0,
+        respondedAt: 0,
+        blockedAt: 0,
+        blockedReason: '',
+        blockedBy: '',
+        expectedUnblockDate: '',
+        completedAt: 0,
+        lastActivityAt: input.receivedAt,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const historyEntry: FarmHistoryEntry = {
+        id: `${id}-history`,
+        workItemId: workItem.id,
+        channel: input.channel,
+        sender: input.sender,
+        receivedContent: input.content,
+        actionContent: '',
+        amount: 0,
+        recorder: input.capturedBy,
+        occurredAt: input.receivedAt,
+        referenceUrl: input.referenceUrl,
+        imageIds: inboxItem.imageIds,
+        createdAt: now,
+      };
+      setCreated(transaction, 'workItems', workItem);
+      setCreated(transaction, 'historyEntries', historyEntry);
+      touch(transaction, 'projects', input.projectId, now);
+    }
+    return { inboxItem };
+  });
 }
 
 async function updateInboxStatus(
@@ -2313,6 +2440,7 @@ async function createWorkItem(
   checklistContents: string[],
   sourceInboxId: string,
   paymentRequest?: SubscriptionPaymentRequest,
+  images: ReceivedImage[] = [],
 ) {
   const isPayment = input.workType === 'payment' && initialHistory.amount !== 0;
   if (isPayment && !paymentRequest)
@@ -2339,9 +2467,13 @@ async function createWorkItem(
   const record = workspace.records.find(
     (item) => item.id === input.farmRecordId,
   );
-  if (!record) throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
+  if (!record && (input.farmRecordId || !input.projectId))
+    throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
+  const projectId = record?.projectId || input.projectId || '';
+  if (!record && initialHistory.amount !== 0)
+    throw new Error('프로젝트 업무에는 구독 입금을 기록할 수 없습니다.');
   assertProjectEditable(
-    workspace.projects.find((item) => item.id === record.projectId),
+    workspace.projects.find((item) => item.id === projectId),
   );
   const sourceInbox = sourceInboxId
     ? workspace.inboxItems.find((item) => item.id === sourceInboxId)
@@ -2374,7 +2506,7 @@ async function createWorkItem(
     expectedUnblockDate:
       input.status === 'waiting' ? input.expectedUnblockDate : '',
     completedAt: input.status === 'completed' ? initialActionAt : 0,
-    farmId: record.farmId,
+    farmId: record?.farmId || '',
     lastActivityAt: sourceInbox ? now : initialHistory.occurredAt,
     createdAt: now,
     updatedAt: now,
@@ -2385,6 +2517,7 @@ async function createWorkItem(
         ? paymentRequest.operationId
         : crypto.randomUUID(),
     workItemId: workItem.id,
+    imageIds: images.map((image) => image.id),
     ...(sourceInbox
       ? {
           channel: sourceInbox.channel,
@@ -2395,6 +2528,7 @@ async function createWorkItem(
           recorder: sourceInbox.capturedBy || initialHistory.recorder,
           occurredAt: sourceInbox.receivedAt,
           referenceUrl: sourceInbox.referenceUrl,
+          imageIds: sourceInbox.imageIds || [],
         }
       : initialHistory),
     createdAt: now,
@@ -2450,6 +2584,8 @@ async function createWorkItem(
   const write = (batch: LedgerWriter) => {
     setCreated(batch, 'workItems', workItem);
     setCreated(batch, 'historyEntries', historyEntry);
+    if (!sourceInbox)
+      writeReceivedImages(batch, images, 'historyEntries', historyEntry.id);
     if (transitionHistory)
       setCreated(batch, 'historyEntries', transitionHistory);
     if (blockerEpisode) setCreated(batch, 'blockerEpisodes', blockerEpisode);
@@ -2462,13 +2598,13 @@ async function createWorkItem(
         updatedAt: now,
       });
     }
-    if (!isPayment) {
+    if (!isPayment && record) {
       touchActivity(batch, 'records', record.id, now, now);
     }
-    touch(batch, 'farms', record.farmId, now);
-    touch(batch, 'projects', record.projectId, now);
+    if (record) touch(batch, 'farms', record.farmId, now);
+    touch(batch, 'projects', projectId, now);
   };
-  if (isPayment && paymentRequest) {
+  if (isPayment && paymentRequest && record) {
     return savePaymentMutation({
       request: paymentRequest,
       fingerprint,
@@ -2480,15 +2616,26 @@ async function createWorkItem(
       write,
     });
   }
-  const batch = writeBatch(getFirebaseServices().db);
-  write(batch);
-  await batch.commit();
+  await runTransaction(getFirebaseServices().db, async (transaction) => {
+    const project = await transaction.get(documentRef('projects', projectId));
+    if (!project.exists()) throw new Error('프로젝트를 찾을 수 없습니다.');
+    assertProjectEditable(project.data() as FarmProject);
+    if (sourceInbox) {
+      const latest = await transaction.get(
+        documentRef('inboxItems', sourceInbox.id),
+      );
+      if (!latest.exists() || latest.data().status !== 'unprocessed')
+        throw new Error('이미 정리된 수신함 항목입니다.');
+    }
+    write(transaction);
+  });
   return { workItem, historyEntry };
 }
 
 async function addHistoryEntry(
   input: AddFarmHistoryEntryInput,
   paymentRequest?: SubscriptionPaymentRequest,
+  images: ReceivedImage[] = [],
 ) {
   const fingerprint = paymentRequest ? await paymentFingerprint(input) : '';
   if (paymentRequest) {
@@ -2512,10 +2659,12 @@ async function addHistoryEntry(
   const record = workspace.records.find(
     (item) => item.id === existing.farmRecordId,
   );
-  if (!record) throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
-  const project = workspace.projects.find(
-    (item) => item.id === record.projectId,
-  );
+  if (!record && !isProjectTask(existing))
+    throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
+  if (!record && input.amount !== 0)
+    throw new Error('프로젝트 업무에는 구독 입금을 기록할 수 없습니다.');
+  const projectId = record?.projectId || existing.projectId || '';
+  const project = workspace.projects.find((item) => item.id === projectId);
   if (
     project?.status === 'completed' &&
     input.newStatus !== undefined &&
@@ -2629,13 +2778,16 @@ async function addHistoryEntry(
     workItem.respondedAt !== existing.respondedAt ? '최초 대응 완료' : '',
   ].filter(Boolean);
   const isPlanningOnly =
-    !historyInput.receivedContent.trim() && !historyInput.actionContent.trim();
+    !historyInput.receivedContent.trim() &&
+    !historyInput.actionContent.trim() &&
+    !images.length;
   const historyEntry: FarmHistoryEntry = {
     id:
       isPayment && paymentRequest
         ? paymentRequest.operationId
         : crypto.randomUUID(),
     ...historyInput,
+    imageIds: images.map((image) => image.id),
     channel: isPlanningOnly ? 'system' : historyInput.channel,
     sender: isPlanningOnly ? '' : historyInput.sender,
     actionContent: isPlanningOnly
@@ -2682,13 +2834,14 @@ async function addHistoryEntry(
   }
   const write = (batch: LedgerWriter) => {
     setCreated(batch, 'historyEntries', historyEntry);
+    writeReceivedImages(batch, images, 'historyEntries', historyEntry.id);
     setUpdated(batch, 'workItems', workItem);
     if (nextEpisode) {
       if (nextEpisode.createdAt === now)
         setCreated(batch, 'blockerEpisodes', nextEpisode);
       else setUpdated(batch, 'blockerEpisodes', nextEpisode);
     }
-    if (!isPayment) {
+    if (!isPayment && record) {
       touchActivity(
         batch,
         'records',
@@ -2697,10 +2850,10 @@ async function addHistoryEntry(
         now,
       );
     }
-    touch(batch, 'farms', record.farmId, now);
-    touch(batch, 'projects', record.projectId, now);
+    if (record) touch(batch, 'farms', record.farmId, now);
+    touch(batch, 'projects', projectId, now);
   };
-  if (isPayment && paymentRequest) {
+  if (isPayment && paymentRequest && record) {
     return savePaymentMutation({
       request: paymentRequest,
       fingerprint,
@@ -2847,7 +3000,8 @@ async function toggleChecklist(
   const record = workspace.records.find(
     (item) => item.id === workItem.farmRecordId,
   );
-  if (!record) throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
+  if (!record && !isProjectTask(workItem))
+    throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
   const now = Date.now();
   const checklistItem: FarmWorkChecklistItem = {
     ...existing,
@@ -2873,9 +3027,11 @@ async function toggleChecklist(
   setUpdated(batch, 'checklistItems', checklistItem);
   setCreated(batch, 'historyEntries', historyEntry);
   touchActivity(batch, 'workItems', workItem.id, now, now);
-  touchActivity(batch, 'records', record.id, now, now);
-  touch(batch, 'farms', record.farmId, now);
-  touch(batch, 'projects', record.projectId, now);
+  if (record) {
+    touchActivity(batch, 'records', record.id, now, now);
+    touch(batch, 'farms', record.farmId, now);
+  }
+  touch(batch, 'projects', record?.projectId || workItem.projectId || '', now);
   await batch.commit();
   return { checklistItem };
 }
@@ -2960,7 +3116,11 @@ async function mutateFarmLedger(method: string, body: JsonObject) {
   }
 
   if (kind === 'inbox' && method === 'POST') {
-    return createInboxItem(parseInboxInput(body.inboxItem));
+    const source = asObject(body.inboxItem, '수신 내용을 확인해 주세요.');
+    return createInboxItem(
+      parseInboxInput(source),
+      parseReceivedImages(source.images),
+    );
   }
 
   if (kind === 'inbox_status' && method === 'PATCH') {
@@ -2985,6 +3145,7 @@ async function mutateFarmLedger(method: string, body: JsonObject) {
       parseChecklist(body.checklist),
       sourceInboxId,
       parsePaymentRequest(body.paymentRequest),
+      parseReceivedImages(body.images),
     );
   }
 
@@ -2992,6 +3153,7 @@ async function mutateFarmLedger(method: string, body: JsonObject) {
     return addHistoryEntry(
       parseHistoryInput(body.history),
       parsePaymentRequest(body.paymentRequest),
+      parseReceivedImages(body.images),
     );
   }
 

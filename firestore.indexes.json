@@ -1,6 +1,7 @@
 {
   "indexes": [],
   "fieldOverrides": [
+    { "collectionGroup": "imageAttachments", "fieldPath": "*", "indexes": [] },
     {
       "collectionGroup": "projects",
       "fieldPath": "description",

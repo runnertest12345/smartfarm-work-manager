@@ -84,7 +84,14 @@ service cloud.firestore {
           && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/farmRecords/$(request.resource.data.farmRecordId)).data.id == request.resource.data.farmRecordId)
         || (name == 'workItems'
           && request.resource.data.farmRecordId is string
-          && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/farmRecords/$(request.resource.data.farmRecordId)).data.id == request.resource.data.farmRecordId)
+          && ((request.resource.data.farmRecordId != ''
+            && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/farmRecords/$(request.resource.data.farmRecordId)).data.id == request.resource.data.farmRecordId)
+          || (request.resource.data.farmRecordId == ''
+            && request.resource.data.farmId == ''
+            && request.resource.data.projectId is string
+            && request.resource.data.projectId != ''
+            && request.resource.data.workType in ['communication', 'installation', 'service', 'note']
+            && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.id == request.resource.data.projectId)))
         || (name in ['blockerEpisodes', 'visits', 'checklistItems', 'historyEntries']
           && request.resource.data.workItemId is string
           && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workItems/$(request.resource.data.workItemId)).data.id == request.resource.data.workItemId);
@@ -114,6 +121,31 @@ service cloud.firestore {
         && validRelations(workspaceId, collectionName);
 
       allow delete: if false;
+    }
+
+    // Images are immutable, lazy-loaded, and deliberately not in knownCollection().
+    match /workspaces/{workspaceId}/imageAttachments/{imageId} {
+      function validImage() {
+        let image = request.resource.data;
+        let parent = getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/$(image.parentCollection)/$(image.parentId));
+        return image.keys().hasOnly(['id', 'name', 'dataUrl', 'mimeType', 'size', 'width', 'height', 'parentCollection', 'parentId', 'createdAt', 'createdByUid'])
+          && image.id == imageId && imageId.matches('^[a-zA-Z0-9-]{16,80}$')
+          && image.name is string && image.name.size() > 0 && image.name.size() <= 160
+          && image.mimeType in ['image/png', 'image/jpeg', 'image/webp']
+          && image.dataUrl is string && image.dataUrl.size() <= 524400
+          && image.dataUrl.matches('^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$')
+          && image.size is int && image.size > 0 && image.size <= 393216
+          && image.width is int && image.width > 0 && image.width <= 12000
+          && image.height is int && image.height > 0 && image.height <= 12000
+          && image.parentCollection in ['inboxItems', 'historyEntries']
+          && image.parentId is string && image.parentId.size() > 0 && image.parentId.size() <= 160
+          && parent.data.imageIds is list && parent.data.imageIds.size() <= 3
+          && imageId in parent.data.imageIds
+          && image.createdByUid == request.auth.uid && image.createdAt is int && image.createdAt > 0;
+      }
+      allow get: if activeMember();
+      allow create: if activeMember() && validImage();
+      allow list, update, delete: if false;
     }
 
     match /{document=**} {
