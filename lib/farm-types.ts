@@ -500,6 +500,9 @@ export interface FarmSubscriptionExpiryCorrectionInput {
 
 export interface FarmWorkItem {
   id: string;
+  /** Provenance for records imported from the original management ledger. */
+  migrationRunId?: string;
+  sourceFingerprint?: string;
   parentWorkItemId?: string;
   childWorkItemIds?: string[];
   openChildCount?: number;

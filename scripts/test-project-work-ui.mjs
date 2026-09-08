@@ -146,6 +146,101 @@ test('프로젝트 하위 업무와 실제 농가 업무를 구분하고 입금�
   );
 });
 
+test('이관된 파모스박스 교체 완료 이력만 업무 현황에서 제외하고 원본은 보존한다', () => {
+  const id = `work_service_${'a'.repeat(32)}`;
+  const archived = {
+    ...task,
+    id,
+    farmId: 'farm',
+    farmRecordId: 'record',
+    projectId: undefined,
+    workType: 'service',
+    title: 'A/S 기록 이관',
+    status: 'completed',
+    migrationRunId: 'test-import',
+    sourceFingerprint: 'b'.repeat(64),
+  };
+  const history = [
+    {
+      id: id.replace('work_', 'history_'),
+      workItemId: id,
+      channel: 'system',
+      actionContent: '파모스박스 교체',
+      occurredAt: archived.createdAt,
+    },
+  ];
+  const original = JSON.stringify({ archived, history });
+  assert.equal(work.isFarmBoxReplacementHistory(archived, history), true);
+  assert.equal(work.isOperationalWork(archived, history), false);
+  assert.equal(work.isProjectTask(archived), false);
+  assert.equal(JSON.stringify({ archived, history }), original);
+  assert.equal(
+    work.isOperationalWork(archived, [
+      { ...history[0], actionContent: '파모스 박스 교체 완료' },
+    ]),
+    false,
+  );
+});
+
+test('신규 교체 요청·재개·추가 처리·다른 A/S 기록은 업무 현황에 유지한다', () => {
+  const id = `work_service_${'c'.repeat(32)}`;
+  const archived = {
+    ...task,
+    id,
+    farmRecordId: 'record',
+    farmId: 'farm',
+    workType: 'service',
+    title: 'A/S 기록 이관',
+    status: 'completed',
+    migrationRunId: 'test-import',
+    sourceFingerprint: 'd'.repeat(64),
+  };
+  const entry = {
+    id: id.replace('work_', 'history_'),
+    workItemId: id,
+    channel: 'system',
+    actionContent: '파모스박스 교체',
+    occurredAt: archived.createdAt,
+  };
+  for (const patch of [
+    { id: 'new-task', title: '파모스박스 교체 요청', status: 'open' },
+    { status: 'open' },
+    { status: 'in_progress' },
+    { status: 'waiting' },
+    { migrationRunId: undefined },
+    { sourceFingerprint: undefined },
+    { title: '파모스박스 교체 완료 확인' },
+  ])
+    assert.equal(
+      work.isOperationalWork({ ...archived, ...patch }, [entry]),
+      true,
+    );
+  assert.equal(work.isOperationalWork(archived, []), true);
+  for (const patch of [
+    { actionContent: '센서 점검 완료' },
+    { actionContent: '파모스박스 교체 요청 전달' },
+    { channel: 'phone' },
+    { workItemId: 'other-task' },
+    { occurredAt: 2 },
+  ])
+    assert.equal(
+      work.isOperationalWork(archived, [{ ...entry, ...patch }]),
+      true,
+    );
+  assert.equal(
+    work.isOperationalWork(archived, [
+      entry,
+      {
+        ...entry,
+        id: 'follow-up',
+        channel: 'phone',
+        actionContent: '교체 후 통신 점검',
+      },
+    ]),
+    true,
+  );
+});
+
 test('농가가 없어도 프로젝트 업무 상세와 수신·처리 기록이 표시되고 이동 버튼이 연결된다', () => {
   reset();
   let back = 0,
