@@ -94,3 +94,52 @@ export function summarizeWorkHierarchy(items: FarmWorkItem[]) {
     leaves: tree.leaves,
   };
 }
+
+export type WorkDisplayGroup = {
+  item: FarmWorkItem;
+  children: WorkDisplayGroup[];
+  matched: boolean;
+  missingChildren: number;
+  rank: number;
+};
+
+/** Keep matching tasks with their ancestors, and paginate whole families only.
+ * Input order is the caller's urgency order; the most urgent member ranks a family.
+ */
+export function buildWorkDisplayGroups(
+  allItems: FarmWorkItem[],
+  matchedItems: FarmWorkItem[] = allItems,
+) {
+  const tree = buildWorkHierarchy(allItems);
+  const matched = new Set(matchedItems.map((item) => item.id));
+  const included = new Set(matched);
+  for (const item of matchedItems)
+    tree.ancestors(item.id).forEach((ancestor) => included.add(ancestor.id));
+  const ranks = new Map(allItems.map((item, index) => [item.id, index]));
+  const visited = new Set<string>();
+  function visit(item: FarmWorkItem): WorkDisplayGroup | null {
+    if (!included.has(item.id) || visited.has(item.id)) return null;
+    visited.add(item.id);
+    const children = (tree.children.get(item.id) || [])
+      .map(visit)
+      .filter((node): node is WorkDisplayGroup => node !== null)
+      .sort((left, right) => left.rank - right.rank);
+    return {
+      item,
+      children,
+      matched: matched.has(item.id),
+      missingChildren: (item.childWorkItemIds || []).filter(
+        (id) => !tree.byId.has(id),
+      ).length,
+      rank: Math.min(
+        ranks.get(item.id) ?? Infinity,
+        ...children.map((node) => node.rank),
+      ),
+    };
+  }
+  // Defensive fallback also keeps legacy orphan/cyclic records visible once.
+  return [...tree.roots, ...allItems]
+    .map(visit)
+    .filter((node): node is WorkDisplayGroup => node !== null)
+    .sort((left, right) => left.rank - right.rank);
+}

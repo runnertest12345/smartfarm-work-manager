@@ -1,5 +1,7 @@
 'use client';
 
+import { ProjectWorkTree } from './project-work-tree';
+
 import {
   useCallback,
   useEffect,
@@ -5101,9 +5103,6 @@ export function FarmLedgerDashboard({
                               overviewExpandedTaskProjects.includes(
                                 row.project.id,
                               );
-                            const visibleWorkItems = showAllTasks
-                              ? matchedWorkItems
-                              : matchedWorkItems.slice(0, 8);
 
                             return (
                               <details
@@ -5172,8 +5171,9 @@ export function FarmLedgerDashboard({
                                     <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
                                       {[
                                         {
-                                          label: '전체',
-                                          value: row.workItems.length,
+                                          label: '실행 업무',
+                                          value:
+                                            row.snapshot.hierarchy.leafCount,
                                           tone: 'bg-[#f2f5f1] text-[#4f5e54]',
                                         },
                                         {
@@ -5224,11 +5224,13 @@ export function FarmLedgerDashboard({
                                     <div>
                                       <div className="flex items-center justify-between gap-3 text-xs">
                                         <span className="font-semibold text-[#536158]">
-                                          하위 업무 완료율
+                                          실행 업무 완료율
                                         </span>
                                         <strong className="text-[#316e4c]">
                                           {row.completionRate === null
-                                            ? '업무 없음'
+                                            ? row.snapshot.hierarchy.missing
+                                              ? '세부 업무 조회 확인 필요'
+                                              : '업무 없음'
                                             : `${row.completionRate}% · ${row.counts.completed}/${row.snapshot.hierarchy.leafCount}건`}
                                         </strong>
                                       </div>
@@ -5281,11 +5283,18 @@ export function FarmLedgerDashboard({
                                   <div className="mt-5 flex flex-wrap items-end justify-between gap-3">
                                     <div>
                                       <h3 className="text-sm font-bold">
-                                        하위 업무
+                                        하위 업무{' '}
+                                        {row.snapshot.hierarchy.rootCount}건
+                                        <span className="ml-2 text-xs font-medium text-[#52735e]">
+                                          세부 업무{' '}
+                                          {row.snapshot.hierarchy.subtaskCount}
+                                          건
+                                        </span>
                                       </h3>
                                       <p className="mt-1 text-xs text-[#7d8981]">
-                                        업무를 선택하면 농가의 처리 이력과 상세
-                                        내용을 바로 확인합니다.
+                                        세부 업무는 해당 하위 업무 안에 묶어
+                                        표시합니다. 실행 업무 수와 완료율은 가장
+                                        마지막 단계 업무 기준입니다.
                                       </p>
                                     </div>
                                     <Button
@@ -5300,9 +5309,25 @@ export function FarmLedgerDashboard({
                                     </Button>
                                   </div>
 
-                                  {visibleWorkItems.length ? (
-                                    <div className="mt-3 space-y-2">
-                                      {visibleWorkItems.map((item) => {
+                                  {matchedWorkItems.length ? (
+                                    <ProjectWorkTree
+                                      items={row.workItems}
+                                      matchedItems={matchedWorkItems}
+                                      searching={Boolean(overviewQuery)}
+                                      expanded={showAllTasks}
+                                      onToggleExpanded={() =>
+                                        setOverviewExpandedTaskProjects(
+                                          (current) =>
+                                            current.includes(row.project.id)
+                                              ? current.filter(
+                                                  (projectId) =>
+                                                    projectId !==
+                                                    row.project.id,
+                                                )
+                                              : [...current, row.project.id],
+                                        )
+                                      }
+                                      renderItem={(item) => {
                                         const farm = farmById.get(item.farmId);
                                         const latestAction = latestEntryWith(
                                           item,
@@ -5316,7 +5341,7 @@ export function FarmLedgerDashboard({
                                             onClick={() =>
                                               openFarm(item.farmId, item.id)
                                             }
-                                            className="grid w-full gap-3 rounded-xl border border-[#e3e8e2] bg-[#fbfcfa] p-3 text-left transition-colors hover:border-[#b9d5c1] hover:bg-[#f5faf6] sm:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)_auto] sm:items-center"
+                                            className="grid w-full gap-3 rounded-xl p-3 text-left transition-colors hover:bg-[#eaf4ed] focus-visible:outline-2 focus-visible:outline-emerald-700 sm:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)_auto] sm:items-center"
                                           >
                                             <div className="min-w-0">
                                               <div className="flex flex-wrap items-center gap-2">
@@ -5340,7 +5365,7 @@ export function FarmLedgerDashboard({
                                                   }
                                                 </span>
                                               </div>
-                                              <p className="mt-2 truncate text-sm font-semibold text-[#29382f]">
+                                              <p className="mt-2 break-words text-sm font-semibold text-[#29382f]">
                                                 {item.title}
                                               </p>
                                               <p className="mt-1 truncate text-xs text-[#7d8981]">
@@ -5377,33 +5402,8 @@ export function FarmLedgerDashboard({
                                             </div>
                                           </button>
                                         );
-                                      })}
-                                      {matchedWorkItems.length > 8 && (
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            setOverviewExpandedTaskProjects(
-                                              (current) =>
-                                                current.includes(row.project.id)
-                                                  ? current.filter(
-                                                      (projectId) =>
-                                                        projectId !==
-                                                        row.project.id,
-                                                    )
-                                                  : [
-                                                      ...current,
-                                                      row.project.id,
-                                                    ],
-                                            )
-                                          }
-                                          className="w-full rounded-xl border border-dashed border-[#cfd9ce] py-2.5 text-xs font-semibold text-[#39795b] hover:bg-[#f2f8f2]"
-                                        >
-                                          {showAllTasks
-                                            ? '하위 업무 접기'
-                                            : `나머지 ${matchedWorkItems.length - 8}건 더 보기`}
-                                        </button>
-                                      )}
-                                    </div>
+                                      }}
+                                    />
                                   ) : (
                                     <div className="mt-3 rounded-xl border border-dashed border-[#d7dfd5] bg-[#fafbf9] px-4 py-8 text-center">
                                       <ClipboardList className="mx-auto size-6 text-[#97a29a]" />

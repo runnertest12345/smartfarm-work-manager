@@ -804,6 +804,9 @@ export function WorkTaskSurface({
                   onToggle={() => toggle(item.id)}
                   onOpen={() => openItem(item)}
                   projectLabel={projectLabel(item)}
+                  parentTitle={
+                    tree.byId.get(item.parentWorkItemId || '')?.title
+                  }
                   status={status(item)}
                   progress={
                     <>
@@ -841,6 +844,7 @@ function TaskTableRows({
   onToggle,
   onOpen,
   projectLabel,
+  parentTitle,
   status,
   progress,
   actions,
@@ -853,6 +857,7 @@ function TaskTableRows({
   onToggle: () => void;
   onOpen: () => void;
   projectLabel: string;
+  parentTitle?: string;
   status: ReactNode;
   progress: ReactNode;
   actions: ReactNode;
@@ -860,9 +865,24 @@ function TaskTableRows({
 }) {
   return (
     <>
-      <TableRow>
-        <TableCell>
-          <div style={{ paddingLeft: `${Math.min(depth, 6) * 16}px` }}>
+      <TableRow
+        data-work-id={item.id}
+        data-work-depth={depth}
+        className={
+          depth
+            ? 'bg-[#f7faf8] hover:bg-[#edf5ef]'
+            : 'border-t-8 border-t-white bg-[#eaf3ed] hover:bg-[#e1efe6]'
+        }
+      >
+        <TableCell className="align-top">
+          <div
+            style={{ marginLeft: `${Math.min(depth, 6) * 24}px` }}
+            className={
+              depth
+                ? 'relative border-l-2 border-[#91b8a0] pl-4 before:absolute before:left-0 before:top-5 before:h-px before:w-4 before:bg-[#91b8a0]'
+                : ''
+            }
+          >
             <div className="flex items-start gap-1">
               {hasChildren ? (
                 <Button
@@ -883,6 +903,20 @@ function TaskTableRows({
                 <span className="w-4 shrink-0" />
               )}
               <div>
+                <p
+                  className={`mb-1 text-xs font-semibold ${depth ? 'text-[#52735e]' : 'text-[#285c3d]'}`}
+                >
+                  {depth
+                    ? `↳ 세부 업무${depth > 1 ? ` · ${depth}단계` : ''}`
+                    : item.parentWorkItemId
+                      ? '세부 업무 · 상위 업무 연결 확인 필요'
+                      : '하위 업무'}
+                </p>
+                {parentTitle && (
+                  <p className="mb-1 max-w-sm whitespace-normal text-xs text-[#52735e]">
+                    상위: {parentTitle}
+                  </p>
+                )}
                 <button
                   type="button"
                   onClick={onOpen}
@@ -890,10 +924,7 @@ function TaskTableRows({
                 >
                   {item.title}
                 </button>
-                <p className="text-xs text-slate-500">
-                  {projectLabel}
-                  {depth ? ` · 세부 ${depth}단계` : ' · 상위 업무'}
-                </p>
+                <p className="text-xs text-slate-500">{projectLabel}</p>
                 {progress}
                 {item.nextAction && (
                   <p className="mt-1 max-w-sm whitespace-normal text-sm text-slate-600">
