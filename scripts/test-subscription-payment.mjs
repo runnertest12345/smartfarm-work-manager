@@ -203,6 +203,9 @@ const scripts = new Map(
     'lib/subscription-payment.ts',
     'lib/subscription-renewal-report.ts',
     'lib/project-work.ts',
+    'lib/organization.ts',
+    'lib/login-identity.ts',
+    'lib/firebase/organization-store.ts',
     'lib/work-hierarchy.ts',
     'lib/received-images.ts',
     'lib/firebase/received-images-store.ts',
@@ -226,6 +229,7 @@ function load(
       module: { exports: result },
       crypto: webcrypto,
       TextEncoder,
+      TextDecoder,
       atob,
       Response,
       Date,
@@ -325,7 +329,9 @@ const persistedCollections = {
   projectDocuments: 'projectDocuments',
   projectUpdates: 'projectUpdates',
 };
-function harness() {
+function harness(
+  actor = { uid: 'tester', email: 'tester@example.test', emailVerified: true },
+) {
   let state = new Map();
   let queue = Promise.resolve();
   let failCommit = false;
@@ -417,10 +423,11 @@ function harness() {
     'lib/firebase/farm-ledger-store.ts',
     {
       'firebase/firestore': firestore,
+      react: { useEffect() {}, useState() {} },
       './client': {
         firebaseWorkspaceId: 'test',
         getFirebaseServices: () => ({ db: {} }),
-        requireSignedInUser: () => ({ uid: 'tester' }),
+        requireSignedInUser: () => actor,
       },
     },
     '\nexports.seedWorkspace = value => { latestWorkspace = value; }; exports.post = body => mutateFarmLedger("POST", body);',
@@ -504,6 +511,22 @@ function harness() {
   });
   return {
     api,
+    organization: load(
+      'lib/firebase/organization-store.ts',
+      {
+        react: { useEffect() {}, useState() {} },
+        'firebase/firestore': firestore,
+        './client': {
+          firebaseWorkspaceId: 'test',
+          getFirebaseServices: () => ({ db: {} }),
+          requireSignedInUser: () => actor,
+        },
+      },
+      '',
+      { Date: FixedDate },
+    ),
+    getMember: (id) => clone(state.get('appMembers/' + id)),
+    putMember: (value) => state.set('appMembers/' + value.id, clone(value)),
     put,
     list,
     sync,
@@ -928,5 +951,188 @@ test('0원 업무계획이나 다른 업무 금액은 구독 자동연장 대상
   assert.equal(
     h.list('farmRecords')[0].currentSubscriptionExpiresAt,
     '2026-08-31',
+  );
+});
+
+function organizationHarness(actor = 'head') {
+  const h = harness({
+    uid: actor,
+    email: `${actor}@example.test`,
+    emailVerified: true,
+  });
+  const person = (id, extra = {}) => ({
+    id,
+    email: `${id}@example.test`,
+    displayName: id,
+    active: true,
+    admin: false,
+    workspaceId: 'test',
+    departmentId: 'sales',
+    requestedDepartment: '',
+    createdAt: fixedNow,
+    updatedAt: fixedNow,
+    ...extra,
+  });
+  for (const id of ['head', 'staff', 'peer', 'admin'])
+    h.putMember(person(id, { admin: id === 'admin' }));
+  h.putMember(person('other', { departmentId: 'research' }));
+  h.put('departments', {
+    id: 'sales',
+    name: '영업',
+    headUid: 'head',
+    createdAt: fixedNow,
+    updatedAt: fixedNow,
+  });
+  h.put('departments', {
+    id: 'research',
+    name: '연구',
+    headUid: 'other',
+    createdAt: fixedNow,
+    updatedAt: fixedNow,
+  });
+  h.sync();
+  return h;
+}
+function internalWork(
+  h,
+  id = 'internal-operation-0001',
+  parent = '',
+  target = 'staff',
+) {
+  const body = projectWork(h, parent, id);
+  body.workItem = {
+    ...body.workItem,
+    scope: 'internal',
+    projectId: '',
+    assigneeUid: target,
+  };
+  return body;
+}
+test('내부 업무는 실제 계정 배정 근거를 저장하고 사업·농가·구독 데이터는 변경하지 않는다', async () => {
+  const h = organizationHarness();
+  const before = JSON.stringify(
+    ['projects', 'farms', 'farmRecords', 'subscriptionEvents'].map(h.list),
+  );
+  const { workItem } = await h.api.post(internalWork(h));
+  assert.equal(workItem.scope, 'internal');
+  assert.equal(workItem.assigneeUid, 'staff');
+  assert.equal(workItem.assignedByUid, 'head');
+  assert.equal(workItem.owner, 'staff');
+  assert.equal(workItem.headAssigned, true);
+  assert.equal(workItem.departmentId, 'sales');
+  assert.equal(
+    JSON.stringify(
+      ['projects', 'farms', 'farmRecords', 'subscriptionEvents'].map(h.list),
+    ),
+    before,
+  );
+  const helpers = load('lib/project-work.ts');
+  assert.equal(helpers.isProjectTask(workItem), false);
+  assert.equal(helpers.isHeadPriority(workItem), true);
+  await changeTask(h, workItem.id, 'completed', { owner: workItem.owner });
+  assert.equal(helpers.isHeadPriority(h.list('workItems')[0]), false);
+  assert.equal(h.list('workItems')[0].headAssigned, true);
+});
+test('부서장 본인·동료·다른 부서 배정은 최우선 지시로 오인하지 않는다', async () => {
+  for (const [actor, target] of [
+    ['head', 'head'],
+    ['peer', 'staff'],
+    ['other', 'staff'],
+  ]) {
+    const h = organizationHarness(actor);
+    const { workItem } = await h.api.post(
+      internalWork(h, 'internal-self-operation', '', target),
+    );
+    assert.equal(workItem.headAssigned, false);
+  }
+});
+test('내부 업무도 3단계 완료 순서를 지키며 다른 부서 세부 연결은 거부한다', async () => {
+  const h = organizationHarness();
+  const parent = (await h.api.post(internalWork(h))).workItem;
+  h.sync();
+  const child = (
+    await h.api.post(internalWork(h, 'internal-child-operation', parent.id))
+  ).workItem;
+  h.sync();
+  const grandchild = (
+    await h.api.post(internalWork(h, 'internal-grandchild-operation', child.id))
+  ).workItem;
+  h.sync();
+  await assert.rejects(
+    h.api.post(internalWork(h, 'internal-other-operation', parent.id, 'other')),
+    /같은|부서|프로젝트/,
+  );
+  await assert.rejects(changeTask(h, parent.id, 'completed'), /세부|하위/);
+  await changeTask(h, grandchild.id, 'completed');
+  await changeTask(h, child.id, 'completed');
+  await changeTask(h, parent.id, 'completed');
+  assert.equal(
+    h.list('workItems').every((item) => item.status === 'completed'),
+    true,
+  );
+});
+test('내부 업무 동시 재전송은 동일 저장 문서를 반환하고 기록도 1건이다', async () => {
+  const h = organizationHarness();
+  const body = internalWork(h);
+  const [a, b] = await Promise.all([h.api.post(body), h.api.post(body)]);
+  assert.equal(a.workItem.id, b.workItem.id);
+  assert.equal(a.workItem.createdAt, b.workItem.createdAt);
+  assert.equal(a.workItem.assignedByUid, b.workItem.assignedByUid);
+  assert.equal(h.list('workItems').length, 1);
+  assert.equal(h.list('historyEntries').length, 1);
+});
+test('담당자 이름 수정으로 계정 배정을 변경하지 못하며 미승인 계정은 등록하지 못한다', async () => {
+  const h = organizationHarness();
+  const { workItem } = await h.api.post(internalWork(h));
+  await assert.rejects(
+    changeTask(h, workItem.id, 'in_progress', { owner: '조작된 담당자' }),
+    /계정|담당/,
+  );
+  h.putMember({ ...h.getMember('staff'), active: false });
+  await assert.rejects(
+    h.api.post(internalWork(h, 'internal-denied-operation')),
+    /승인|부서/,
+  );
+  assert.equal(h.list('workItems').length, 1);
+});
+test('공개 자체 가입 경로가 없으며 본인의 암호 변경 안내만 확인할 수 있다', async () => {
+  const h = harness({
+    uid: 'new-person',
+    email: 'new@example.test',
+    emailVerified: true,
+  });
+  assert.equal(h.organization.requestMembership, undefined);
+  h.putMember({ id: 'new-person', active: true, passwordChangeRequired: true, updatedAt: 1 });
+  await h.organization.acknowledgePasswordChange();
+  const saved = h.getMember('new-person');
+  assert.equal(saved.active, true);
+  assert.equal(saved.passwordChangeRequired, false);
+  await h.organization.acknowledgePasswordChange();
+});
+test('관리자 승인·부서장 지정·부서장 중지 시 부서 연결 해제를 한 번에 저장한다', async () => {
+  const h = organizationHarness('admin');
+  const pending = { ...h.getMember('staff'), active: false, departmentId: '' };
+  h.putMember(pending);
+  await h.organization.saveMemberAccess(pending, true, 'sales');
+  assert.equal(h.getMember('staff').active, true);
+  const dept = h.list('departments').find((item) => item.id === 'sales');
+  await h.organization.saveDepartment('영업', 'staff', dept);
+  const approved = h.getMember('staff');
+  await h.organization.saveMemberAccess(approved, false, 'sales');
+  assert.equal(
+    h.list('departments').find((item) => item.id === 'sales').headUid,
+    '',
+  );
+  await assert.rejects(
+    h.organization.saveMemberAccess(h.getMember('admin'), false, 'sales'),
+    /본인/,
+  );
+});
+test('일반 직원은 직원 승인이나 부서장 지정을 수행할 수 없다', async () => {
+  const h = organizationHarness('staff');
+  await assert.rejects(h.organization.saveDepartment('새 부서', ''), /권한/);
+  await assert.rejects(
+    h.organization.saveMemberAccess(h.getMember('peer'), false, 'sales'),
+    /권한/,
   );
 });

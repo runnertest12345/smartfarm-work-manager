@@ -59,7 +59,7 @@ import {
   type AddFarmHistoryEntryInput,
   type FarmHistoryChannel,
 } from '@/lib/farm-types';
-import { isProjectTask } from '@/lib/project-work';
+import { isStandaloneWork, isHeadPriority } from '@/lib/project-work';
 import { buildWorkHierarchy } from '@/lib/work-hierarchy';
 import { ReceivedContentInput } from './received-images';
 import type { ReceivedImage } from '@/lib/received-images';
@@ -384,9 +384,15 @@ export function WorkQuickEditor({
                 id={`work-control-3-${task.id}`}
                 required
                 value={owner}
+                disabled={Boolean(task.assigneeUid)}
                 onChange={(event) => setOwner(event.target.value)}
                 className="mt-1 h-10"
               />
+              {task.assigneeUid && (
+                <span className="mt-1 block text-xs text-slate-500">
+                  배정된 직원 계정의 이름입니다.
+                </span>
+              )}
             </label>
             <label
               className="text-sm font-medium"
@@ -652,7 +658,7 @@ export function WorkTaskSurface({
         <Pencil className="size-4" />
         빠른 수정
       </Button>
-      {isProjectTask(item) && (
+      {isStandaloneWork(item) && (
         <Button
           type="button"
           size="sm"
@@ -815,7 +821,7 @@ export function WorkTaskSurface({
     <div ref={surfaceElement} tabIndex={-1} className="space-y-3">
       <p className="text-sm text-slate-600">
         {mode === 'board'
-          ? '상위 업무당 카드 한 장입니다. 세부 업무를 펼쳐 상태를 바꾸면 카드가 자동 배치됩니다. 업무명은 상세 열기, 빠른 수정은 상태·처리 내용 수정입니다. 손잡이로 개별 실행 업무를 이동할 수도 있습니다.'
+          ? '업무명만 간단히 표시합니다. 상세 보기를 펼치면 담당자·기한·세부 업무와 빠른 수정을 사용할 수 있습니다. 세부 상태에 따라 카드가 자동 배치되며, 펼친 카드의 손잡이로 실행 업무를 이동할 수 있습니다.'
           : '업무를 펼쳐 세부 업무를 확인하고, 현재 목록에서 바로 수정하세요.'}
       </p>
       {notice && (
@@ -980,6 +986,11 @@ function TaskTableRows({
                       ? '세부 업무 · 상위 업무 연결 확인 필요'
                       : '하위 업무'}
                 </p>
+                {isHeadPriority(item) && (
+                  <p className="mb-1 text-sm font-bold text-amber-900">
+                    부서장 지시 · 최우선
+                  </p>
+                )}
                 {parentTitle && (
                   <p className="mb-1 max-w-sm whitespace-normal text-xs text-[#52735e]">
                     상위: {parentTitle}

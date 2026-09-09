@@ -68,3 +68,37 @@ export function workProjectId(
 ) {
   return records.get(item.farmRecordId)?.projectId || item.projectId || '';
 }
+
+export function isInternalTask(
+  item: Pick<FarmWorkItem, 'scope' | 'projectId' | 'farmRecordId' | 'workType'>,
+) {
+  return (
+    item.scope === 'internal' &&
+    !item.projectId &&
+    !item.farmRecordId &&
+    !['payment', 'subscription'].includes(item.workType)
+  );
+}
+
+export function isStandaloneWork(
+  item: Pick<FarmWorkItem, 'scope' | 'projectId' | 'farmRecordId' | 'workType'>,
+) {
+  return isProjectTask(item) || isInternalTask(item);
+}
+
+export function sameWorkContext(a: FarmWorkItem, b: FarmWorkItem) {
+  return isInternalTask(a) || isInternalTask(b)
+    ? isInternalTask(a) &&
+        isInternalTask(b) &&
+        Boolean(a.departmentId) &&
+        a.departmentId === b.departmentId
+    : a.projectId === b.projectId;
+}
+
+export function isHeadPriority(item: FarmWorkItem) {
+  return (
+    item.status !== 'completed' &&
+    item.headAssigned === true &&
+    Boolean(item.assigneeUid && item.assignedByUid)
+  );
+}

@@ -4,12 +4,57 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() {
       return request.auth != null
-        && request.auth.token.email_verified == true;
+        && (request.auth.token.get('email_verified', false) == true
+          || (request.auth.token.get('email', '').matches('^u([0-9a-f]{2}){2,30}@staff[.]smartfarm-work-manager[.]invalid$')
+            && request.auth.token.firebase.sign_in_provider == 'password'));
     }
 
-    function activeMember() {
+    function activeMember(workspaceId) {
       return signedIn()
-        && get(/databases/$(database)/documents/appMembers/$(request.auth.uid)).data.active == true;
+        && get(/databases/$(database)/documents/appMembers/$(request.auth.uid)).data.active == true
+        && get(/databases/$(database)/documents/appMembers/$(request.auth.uid)).data.get('workspaceId', workspaceId) == workspaceId;
+    }
+
+    function personalMember(workspaceId, uid) {
+      let member = get(/databases/$(database)/documents/appMembers/$(uid)).data;
+      return member.active == true && member.get('workspaceId', '') == workspaceId
+        && member.get('email', '') != '' && member.email != 'team-access@smartfarm-work-manager.firebaseapp.com';
+    }
+
+    function organizationAdmin(workspaceId) {
+      return signedIn() && personalMember(workspaceId, request.auth.uid)
+        && get(/databases/$(database)/documents/appMembers/$(request.auth.uid)).data.get('admin', false) == true;
+    }
+
+    function sameTaskContext(a, b) {
+      return a.get('scope', '') == b.get('scope', '') && a.get('projectId', '') == b.get('projectId', '')
+        && (a.get('scope', '') != 'internal' || (a.get('departmentId', '') != '' && a.departmentId == b.get('departmentId', '')));
+    }
+
+    function validNewAssignment(workspaceId, after) {
+      let assignee = get(/databases/$(database)/documents/appMembers/$(after.assigneeUid)).data;
+      let actor = get(/databases/$(database)/documents/appMembers/$(request.auth.uid)).data;
+      let department = get(/databases/$(database)/documents/workspaces/$(workspaceId)/departments/$(after.departmentId)).data;
+      return personalMember(workspaceId, request.auth.uid) && personalMember(workspaceId, after.assigneeUid)
+        && after.assignedByUid == request.auth.uid && after.owner == assignee.displayName
+        && after.departmentId == assignee.departmentId && department.id == after.departmentId
+        && after.assignedAt is int && after.assignedAt == after.createdAt
+        && after.assignedAt <= request.time.toMillis() + 300000 && after.assignedAt >= request.time.toMillis() - 300000
+        && after.headAssigned == (department.headUid == request.auth.uid && actor.departmentId == after.departmentId && after.assigneeUid != request.auth.uid);
+    }
+
+    function validWorkAssignment(workspaceId, creating) {
+      let after = request.resource.data;
+      let before = creating ? {} : resource.data;
+      let assigned = after.get('assigneeUid', '') != '';
+      return after.get('scope', '') in ['', 'internal']
+        && (after.get('scope', '') != 'internal' || (after.get('projectId', '') == '' && after.farmRecordId == '' && after.farmId == ''
+          && after.workType in ['communication', 'installation', 'service', 'note']))
+        && (creating
+          ? (assigned ? validNewAssignment(workspaceId, after)
+            : after.get('scope', '') != 'internal' && !after.keys().hasAny(['assignedByUid', 'departmentId', 'headAssigned', 'assignedAt']))
+          : !after.diff(before).affectedKeys().hasAny(['scope', 'assigneeUid', 'assignedByUid', 'departmentId', 'headAssigned', 'assignedAt'])
+            && (!assigned || after.owner == before.owner));
     }
 
     function knownCollection(name) {
@@ -88,6 +133,10 @@ service cloud.firestore {
           && request.resource.data.farmRecordId is string
           && ((request.resource.data.farmRecordId != ''
             && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/farmRecords/$(request.resource.data.farmRecordId)).data.id == request.resource.data.farmRecordId)
+          || (request.resource.data.get('scope', '') == 'internal'
+            && request.resource.data.farmRecordId == '' && request.resource.data.farmId == ''
+            && request.resource.data.get('projectId', '') == ''
+            && request.resource.data.workType in ['communication', 'installation', 'service', 'note'])
           || (request.resource.data.farmRecordId == ''
             && request.resource.data.farmId == ''
             && request.resource.data.projectId is string
@@ -161,7 +210,7 @@ service cloud.firestore {
       let newIds = after.get('childWorkItemIds', []);
       return childId != '' && childId != documentId
         && child.get('parentWorkItemId', '') == documentId
-        && child.get('projectId', '') == after.get('projectId', '')
+        && sameTaskContext(child, after)
         && after.get('openChildCount', 0) == before.get('openChildCount', 0) + openTask(child) - openTask(oldChild)
         && (existed
           ? oldChild.get('parentWorkItemId', '') == documentId && newIds == oldIds && childId in newIds
@@ -179,7 +228,7 @@ service cloud.firestore {
         && parent.get('farmRecordId', '') == '' && after.farmRecordId == ''
         && after.workType in ['communication', 'installation', 'service', 'note']
         && parent.workType in ['communication', 'installation', 'service', 'note']
-        && parent.get('projectId', '') == after.get('projectId', '')
+        && sameTaskContext(parent, after)
         && documentId in nextParent.get('childWorkItemIds', [])
         && (openTask(after) == 0 || nextParent.get('status', 'open') != 'completed')
         && (!creating || parent.get('status', 'open') != 'completed')
@@ -208,32 +257,74 @@ service cloud.firestore {
     }
 
     match /appMembers/{userId} {
-      allow get: if signedIn() && request.auth.uid == userId;
-      allow list, create, update, delete: if false;
+      allow get: if signedIn() && (request.auth.uid == userId
+        || organizationAdmin(resource.data.get('workspaceId', ''))
+        || resource.data.active == true && personalMember(resource.data.get('workspaceId', ''), request.auth.uid));
+      allow list: if signedIn() && request.query.limit != null && request.query.limit <= 5000
+        && (organizationAdmin(resource.data.get('workspaceId', ''))
+          || personalMember(resource.data.get('workspaceId', ''), request.auth.uid) && resource.data.active == true);
+      // Accounts and memberships are created by the authenticated, restricted server only.
+      allow create: if false;
+      allow update: if organizationAdmin(resource.data.get('workspaceId', ''))
+        && resource.data.email != 'team-access@smartfarm-work-manager.firebaseapp.com'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active', 'departmentId', 'jobTitle', 'updatedAt'])
+        && request.resource.data.get('jobTitle', '직원') in ['팀장', '직원']
+        && request.resource.data.active is bool && request.resource.data.departmentId is string
+        && request.resource.data.updatedAt is int && request.resource.data.updatedAt > resource.data.updatedAt
+        && (request.auth.uid != userId || request.resource.data.active == true)
+        && (!request.resource.data.active || getAfter(/databases/$(database)/documents/workspaces/$(resource.data.workspaceId)/departments/$(request.resource.data.departmentId)).data.id == request.resource.data.departmentId)
+        && (resource.data.departmentId == '' || (request.resource.data.active && request.resource.data.departmentId == resource.data.departmentId)
+          || getAfter(/databases/$(database)/documents/workspaces/$(resource.data.workspaceId)/departments/$(resource.data.departmentId)).data.headUid != userId);
+      // An acknowledgement for the first-login UI, not proof of a password change.
+      allow update: if signedIn() && request.auth.uid == userId && resource.data.active == true
+        && resource.data.get('passwordChangeRequired', false) == true
+        && request.resource.data.passwordChangeRequired == false
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['passwordChangeRequired', 'updatedAt'])
+        && request.resource.data.updatedAt is int && request.resource.data.updatedAt > resource.data.updatedAt;
+      allow delete: if false;
+    }
+
+    match /workspaces/{workspaceId}/departments/{departmentId} {
+      function validDepartment(creating) {
+        let after = request.resource.data;
+        return after.keys().hasOnly(['id', 'name', 'headUid', 'createdAt', 'updatedAt'])
+          && after.id == departmentId && after.name is string && after.name.size() > 0 && after.name.size() <= 80
+          && after.headUid is string && after.createdAt is int && after.updatedAt is int && after.updatedAt >= after.createdAt
+          && (creating || after.createdAt == resource.data.createdAt && after.updatedAt > resource.data.updatedAt)
+          && (after.headUid == '' || (personalMember(workspaceId, after.headUid)
+            && getAfter(/databases/$(database)/documents/appMembers/$(after.headUid)).data.departmentId == departmentId));
+      }
+      allow get: if signedIn() && personalMember(workspaceId, request.auth.uid);
+      allow list: if signedIn() && personalMember(workspaceId, request.auth.uid) && request.query.limit != null && request.query.limit <= 5000;
+      allow create: if organizationAdmin(workspaceId) && validDepartment(true);
+      allow update: if organizationAdmin(workspaceId) && validDepartment(false);
+      allow delete: if false;
     }
 
     match /workspaces/{workspaceId}/{collectionName}/{documentId} {
-      allow get: if activeMember() && knownCollection(collectionName);
-      allow list: if activeMember()
+      allow get: if activeMember(workspaceId) && knownCollection(collectionName);
+      allow list: if activeMember(workspaceId)
         && knownCollection(collectionName)
         && request.query.limit != null
         && request.query.limit <= 5000;
 
-      allow create: if activeMember()
+      allow create: if activeMember(workspaceId)
         && knownCollection(collectionName)
         && validCreate(documentId)
         && (collectionName != 'farms' || validFarmImages(workspaceId, documentId, true))
         && (collectionName != 'projects' || validProjectLifecycle(workspaceId, documentId, true))
         && (collectionName != 'workItems' || validWorkTree(workspaceId, documentId, true))
+        && (collectionName != 'workItems' || validWorkAssignment(workspaceId, true))
         && validRelations(workspaceId, collectionName, true);
 
-      allow update: if activeMember()
+      allow update: if activeMember(workspaceId)
         && knownCollection(collectionName)
         && !(collectionName in ['subscriptionEvents', 'historyEntries'])
         && validUpdate(documentId)
         && (collectionName != 'farms' || validFarmImages(workspaceId, documentId, false))
         && (collectionName != 'projects' || validProjectLifecycle(workspaceId, documentId, false))
         && (collectionName != 'workItems' || validWorkTree(workspaceId, documentId, false))
+        && (collectionName != 'workItems' || validWorkAssignment(workspaceId, false))
         && validRelations(workspaceId, collectionName, false);
 
       allow delete: if false;
@@ -260,8 +351,8 @@ service cloud.firestore {
           && imageId in ids
           && image.createdByUid == request.auth.uid && image.createdAt is int && image.createdAt > 0;
       }
-      allow get: if activeMember();
-      allow create: if activeMember() && validImage();
+      allow get: if activeMember(workspaceId);
+      allow create: if activeMember(workspaceId) && validImage();
       allow list, update, delete: if false;
     }
 

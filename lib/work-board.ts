@@ -1,4 +1,5 @@
 import type { FarmWorkItem, FarmWorkStatus } from './farm-types';
+import { sameWorkContext } from './project-work';
 import {
   buildWorkDisplayGroups,
   type WorkDisplayGroup,
@@ -78,13 +79,14 @@ export function buildWorkBoardGroups(
       rows.some(
         ({ item: task }) =>
           (task.parentWorkItemId &&
-            byId.get(task.parentWorkItemId)?.projectId !== task.projectId) ||
+            (!byId.has(task.parentWorkItemId) ||
+              !sameWorkContext(byId.get(task.parentWorkItemId)!, task))) ||
           task.childWorkItemIds?.some((id) => {
             const child = byId.get(id);
             return (
               !child ||
               child.parentWorkItemId !== task.id ||
-              child.projectId !== task.projectId
+              !sameWorkContext(child, task)
             );
           }) ||
           ((task.openChildCount || 0) > 0 &&

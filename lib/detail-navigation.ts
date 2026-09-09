@@ -6,7 +6,8 @@ export type DashboardView =
   | 'business'
   | 'subscriptions'
   | 'service'
-  | 'quality';
+  | 'quality'
+  | 'organization';
 
 export type DetailTarget =
   | { kind: 'project'; projectId: string }
@@ -51,6 +52,7 @@ const views: DashboardView[] = [
   'subscriptions',
   'service',
   'quality',
+  'organization',
 ];
 const object = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === 'object' && !Array.isArray(value));

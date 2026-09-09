@@ -1,4 +1,5 @@
 'use client';
+import { accountIdentifier } from '@/lib/login-identity';
 
 import {
   collection,
@@ -76,7 +77,13 @@ import {
   resolveFarmLocationImages,
   type FarmLocationChange,
 } from '@/lib/farm-location-images';
-import { isProjectTask } from '@/lib/project-work';
+import {
+  isProjectTask,
+  isInternalTask,
+  isStandaloneWork,
+  sameWorkContext,
+} from '@/lib/project-work';
+import { resolveTaskAssignment } from './organization-store';
 import { projectLifecyclePatch } from '@/lib/project-lifecycle';
 import {
   calculateSubscriptionPayment,
@@ -581,10 +588,24 @@ function parseWorkItemInput(value: unknown): FarmWorkItemInput {
   input.parentWorkItemId = source.parentWorkItemId
     ? requiredId(source.parentWorkItemId, '상위 업무')
     : '';
+  if (source.scope !== undefined) {
+    if (source.scope !== 'internal')
+      throw new Error('업무 구분을 확인해 주세요.');
+    input.scope = 'internal';
+  }
+  if (source.assigneeUid)
+    input.assigneeUid = requiredId(source.assigneeUid, '담당 계정');
+  if (
+    input.scope === 'internal' &&
+    (input.farmRecordId || source.projectId || !input.assigneeUid)
+  )
+    throw new Error(
+      '내부 업무는 프로젝트 없이 승인된 담당 계정에 배정해 주세요.',
+    );
   if (
     input.parentWorkItemId &&
     (input.farmRecordId ||
-      !source.projectId ||
+      (!source.projectId && input.scope !== 'internal') ||
       ['payment', 'subscription'].includes(input.workType))
   )
     throw new Error(
@@ -594,7 +615,7 @@ function parseWorkItemInput(value: unknown): FarmWorkItemInput {
     ? requiredId(source.projectId, '프로젝트')
     : '';
   if (
-    (!input.farmRecordId && !input.projectId) ||
+    (!input.farmRecordId && !input.projectId && input.scope !== 'internal') ||
     !input.title ||
     !input.owner
   ) {
@@ -1237,7 +1258,7 @@ async function changeProjectDeletion(
         deleted
           ? '프로젝트를 목록·사업 집계에서 제외했습니다. 연결된 농가·입금·업무·서류 기록은 보존했습니다.'
           : '프로젝트를 목록·사업 집계에 복구했습니다.',
-        user.displayName || user.email || '담당자',
+        user.displayName || accountIdentifier(user.email) || '담당자',
         patch.updatedAt,
       ),
       id: updateId,
@@ -2577,7 +2598,7 @@ async function prepareParentMutation(
 ) {
   const parentId = workItem.parentWorkItemId;
   if (!parentId) return () => {};
-  if (!isProjectTask(workItem))
+  if (!isStandaloneWork(workItem))
     throw new Error('입금·농가 업무는 세부 업무로 등록할 수 없습니다.');
   const visited = new Set([workItem.id]);
   let ancestorId: string | undefined = parentId;
@@ -2593,8 +2614,10 @@ async function prepareParentMutation(
     );
     if (!snapshot.exists()) throw new Error('상위 업무를 찾을 수 없습니다.');
     const ancestor = snapshot.data() as FarmWorkItem;
-    if (!isProjectTask(ancestor) || ancestor.projectId !== workItem.projectId)
-      throw new Error('같은 프로젝트의 업무 아래에만 등록할 수 있습니다.');
+    if (!isStandaloneWork(ancestor) || !sameWorkContext(ancestor, workItem))
+      throw new Error(
+        '같은 프로젝트 또는 내부 부서의 업무 아래에만 등록할 수 있습니다.',
+      );
     if (
       ancestor.status === 'completed' &&
       (!previous || workItem.status !== 'completed')
@@ -2643,7 +2666,10 @@ async function prepareParentMutation(
       actionContent: previous
         ? `세부 업무 ‘${workItem.title}’: ${FARM_WORK_STATUS_LABELS[previous.status]} → ${FARM_WORK_STATUS_LABELS[workItem.status]}`
         : `세부 업무 ‘${workItem.title}’을(를) 추가했습니다.`,
-      recorder: requireSignedInUser().email || workItem.owner,
+      recorder:
+        requireSignedInUser().displayName ||
+        accountIdentifier(requireSignedInUser().email) ||
+        workItem.owner,
       occurredAt: now,
       referenceUrl: '',
       createdAt: now,
@@ -2660,7 +2686,7 @@ async function assertChildrenCompleted(
     if (
       !child.exists() ||
       child.data().parentWorkItemId !== workItem.id ||
-      child.data().projectId !== workItem.projectId
+      !sameWorkContext(child.data() as FarmWorkItem, workItem)
     )
       throw new Error('세부 업무 연결을 확인할 수 없어 완료할 수 없습니다.');
     if (child.data().status !== 'completed')
@@ -2682,7 +2708,8 @@ async function createWorkItem(
 ) {
   if (
     operationId &&
-    (!/^[a-zA-Z0-9-]{16,80}$/.test(operationId) || !input.parentWorkItemId)
+    (!/^[a-zA-Z0-9-]{16,80}$/.test(operationId) ||
+      (!input.parentWorkItemId && !input.assigneeUid))
   )
     throw new Error('세부 업무 생성 요청을 확인해 주세요.');
   const createFingerprint = operationId
@@ -2747,15 +2774,17 @@ async function createWorkItem(
   const record = workspace.records.find(
     (item) => item.id === input.farmRecordId,
   );
-  if (!record && (input.farmRecordId || !input.projectId))
+  const internal = isInternalTask(input);
+  if (!record && (input.farmRecordId || (!input.projectId && !internal)))
     throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
   const projectId = record?.projectId || input.projectId || '';
   if (!record && initialHistory.amount !== 0)
     throw new Error('프로젝트 업무에는 구독 입금을 기록할 수 없습니다.');
-  assertProjectEditable(
-    workspace.projects.find((item) => item.id === projectId),
-    Boolean(record),
-  );
+  if (!internal)
+    assertProjectEditable(
+      workspace.projects.find((item) => item.id === projectId),
+      Boolean(record),
+    );
   const sourceInbox = sourceInboxId
     ? workspace.inboxItems.find((item) => item.id === sourceInboxId)
     : undefined;
@@ -2888,7 +2917,7 @@ async function createWorkItem(
       touchActivity(batch, 'records', record.id, now, now);
     }
     if (record) touch(batch, 'farms', record.farmId, now);
-    touch(batch, 'projects', projectId, now);
+    if (projectId) touch(batch, 'projects', projectId, now);
   };
   if (isPayment && paymentRequest && record) {
     return savePaymentMutation({
@@ -2902,11 +2931,19 @@ async function createWorkItem(
       write,
     });
   }
-  await runTransaction(getFirebaseServices().db, async (transaction) => {
-    if (await readCreateReplay(transaction)) return;
-    const project = await transaction.get(documentRef('projects', projectId));
-    if (!project.exists()) throw new Error('프로젝트를 찾을 수 없습니다.');
-    assertProjectEditable(project.data() as FarmProject, Boolean(record));
+  return runTransaction(getFirebaseServices().db, async (transaction) => {
+    const replay = await readCreateReplay(transaction);
+    if (replay) return replay;
+    if (!internal) {
+      const project = await transaction.get(documentRef('projects', projectId));
+      if (!project.exists()) throw new Error('프로젝트를 찾을 수 없습니다.');
+      assertProjectEditable(project.data() as FarmProject, Boolean(record));
+    }
+    if (input.assigneeUid)
+      Object.assign(
+        workItem,
+        await resolveTaskAssignment(transaction, input.assigneeUid, now),
+      );
     const writeParent = await prepareParentMutation(transaction, workItem);
     if (sourceInbox) {
       const latest = await transaction.get(
@@ -2917,8 +2954,8 @@ async function createWorkItem(
     }
     write(transaction);
     writeParent();
+    return { workItem, historyEntry };
   });
-  return { workItem, historyEntry };
 }
 
 async function addHistoryEntry(
@@ -2984,7 +3021,7 @@ async function addHistoryEntry(
   const record = workspace.records.find(
     (item) => item.id === existing.farmRecordId,
   );
-  if (!record && !isProjectTask(existing))
+  if (!record && !isStandaloneWork(existing))
     throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
   if (!record && input.amount !== 0)
     throw new Error('프로젝트 업무에는 구독 입금을 기록할 수 없습니다.');
@@ -3087,6 +3124,8 @@ async function addHistoryEntry(
     lastActivityAt: Math.max(existing.lastActivityAt, input.occurredAt),
     updatedAt: Math.max(now, existing.updatedAt + 1),
   };
+  if (existing.assigneeUid && workItem.owner !== existing.owner)
+    throw new Error('계정으로 배정된 담당자는 이름 입력으로 바꿀 수 없습니다.');
   if (
     resolvedStatus === 'waiting' &&
     (!workItem.blockedReason || !workItem.blockedBy)
@@ -3183,7 +3222,7 @@ async function addHistoryEntry(
       );
     }
     if (record) touch(batch, 'farms', record.farmId, now);
-    touch(batch, 'projects', projectId, now);
+    if (projectId) touch(batch, 'projects', projectId, now);
   };
   if (isPayment && paymentRequest && record) {
     return savePaymentMutation({
@@ -3236,16 +3275,18 @@ async function addHistoryEntry(
       throw new Error(
         '다른 변경이 먼저 저장되었습니다. 최신 업무를 확인한 뒤 다시 적용해 주세요.',
       );
-    const projectSnapshot = await transaction.get(
-      documentRef('projects', projectId),
-    );
-    if (!projectSnapshot.exists())
-      throw new Error('프로젝트를 찾을 수 없습니다.');
-    if (
-      projectSnapshot.data().status === 'completed' &&
-      resolvedStatus !== 'completed'
-    )
-      throw new Error('완료된 사업의 업무는 다시 열 수 없습니다.');
+    if (!isInternalTask(existing)) {
+      const projectSnapshot = await transaction.get(
+        documentRef('projects', projectId),
+      );
+      if (!projectSnapshot.exists())
+        throw new Error('프로젝트를 찾을 수 없습니다.');
+      if (
+        projectSnapshot.data().status === 'completed' &&
+        resolvedStatus !== 'completed'
+      )
+        throw new Error('완료된 사업의 업무는 다시 열 수 없습니다.');
+    }
     if (resolvedStatus === 'completed') {
       await assertChildrenCompleted(transaction, latest.data() as FarmWorkItem);
       for (const check of completionChecks.flat()) {
@@ -3432,7 +3473,7 @@ async function toggleChecklist(
   const record = workspace.records.find(
     (item) => item.id === workItem.farmRecordId,
   );
-  if (!record && !isProjectTask(workItem))
+  if (!record && !isStandaloneWork(workItem))
     throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
   const now = Date.now();
   const checklistItem: FarmWorkChecklistItem = {
@@ -3461,15 +3502,17 @@ async function toggleChecklist(
       throw new Error(
         '완료된 업무는 수정할 수 없습니다. 업무를 다시 열어 주세요.',
       );
-    const latestProject = await batch.get(
-      documentRef('projects', record?.projectId || workItem.projectId || ''),
-    );
-    assertProjectEditable(
-      latestProject.exists()
-        ? (latestProject.data() as FarmProject)
-        : undefined,
-      true,
-    );
+    if (!isInternalTask(workItem)) {
+      const latestProject = await batch.get(
+        documentRef('projects', record?.projectId || workItem.projectId || ''),
+      );
+      assertProjectEditable(
+        latestProject.exists()
+          ? (latestProject.data() as FarmProject)
+          : undefined,
+        true,
+      );
+    }
     const latestCheck = await batch.get(
       documentRef('checklistItems', existing.id),
     );
@@ -3493,12 +3536,13 @@ async function toggleChecklist(
       touchActivity(batch, 'records', record.id, now, now);
       touch(batch, 'farms', record.farmId, now);
     }
-    touch(
-      batch,
-      'projects',
-      record?.projectId || workItem.projectId || '',
-      now,
-    );
+    if (!isInternalTask(workItem))
+      touch(
+        batch,
+        'projects',
+        record?.projectId || workItem.projectId || '',
+        now,
+      );
   });
   return { checklistItem };
 }

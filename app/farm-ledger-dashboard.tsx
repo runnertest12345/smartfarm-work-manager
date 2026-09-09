@@ -30,7 +30,6 @@ import {
   ArrowRight,
   BarChart3,
   BriefcaseBusiness,
-  Building2,
   CalendarCheck2,
   CalendarClock,
   CircleAlert,
@@ -67,6 +66,7 @@ import {
   TrendingUp,
   Trash2,
   Warehouse,
+  Users,
   Wrench,
 } from 'lucide-react';
 
@@ -164,6 +164,15 @@ import {
 import type { ReceivedImage } from '@/lib/received-images';
 import { ReceivedContentInput, ReceivedImages } from './received-images';
 import { ProjectTaskDetail } from './project-task-detail';
+import { OrganizationManagement } from './organization-management';
+import { TaskRegistrationDialog } from './task-registration-dialog';
+import { useOrganization } from '@/lib/firebase/organization-store';
+import type { AppMember } from '@/lib/organization';
+import {
+  isInternalTask,
+  isStandaloneWork,
+  isHeadPriority,
+} from '@/lib/project-work';
 import {
   WorkTaskSurface,
   WorkQuickEditor,
@@ -1072,6 +1081,7 @@ function localizedProjectActionContent(
 }
 
 interface FarmLedgerDashboardProps {
+  member?: AppMember | null;
   accountName: string;
   accountEmail: string;
   onSignOut: () => void;
@@ -1080,8 +1090,17 @@ interface FarmLedgerDashboardProps {
 export function FarmLedgerDashboard({
   accountName,
   accountEmail,
+  member = null,
   onSignOut,
 }: FarmLedgerDashboardProps) {
+  const organization = useOrganization(member);
+  const [taskRegistrationOpen, setTaskRegistrationOpen] = useState(false);
+  const [workSourceFilter, setWorkSourceFilter] = useState<
+    'all' | 'internal' | 'project'
+  >('all');
+  const [workAccountFilter, setWorkAccountFilter] = useState<
+    'all' | 'mine' | 'department' | 'head'
+  >('all');
   const [workspace, setWorkspace] =
     useState<FarmLedgerWorkspace>(emptyWorkspace);
   const [view, setView] = useState<View>('overview');
@@ -1965,6 +1984,23 @@ export function FarmLedgerDashboard({
     return operationalWorkItems
       .filter((workItem) => {
         if (workScope && !isProjectTask(workItem)) return false;
+        if (workSourceFilter === 'internal' && !isInternalTask(workItem))
+          return false;
+        if (workSourceFilter === 'project' && isInternalTask(workItem))
+          return false;
+        if (workAccountFilter === 'mine' && workItem.assigneeUid !== member?.id)
+          return false;
+        if (
+          workAccountFilter === 'department' &&
+          (!member?.departmentId ||
+            workItem.departmentId !== member.departmentId)
+        )
+          return false;
+        if (
+          workAccountFilter === 'head' &&
+          (!isHeadPriority(workItem) || workItem.assigneeUid !== member?.id)
+        )
+          return false;
         if (
           workScope &&
           workScope.status !== 'all' &&
@@ -2008,6 +2044,9 @@ export function FarmLedgerDashboard({
         );
       })
       .sort((a, b) => {
+        const directiveOrder =
+          Number(isHeadPriority(b)) - Number(isHeadPriority(a));
+        if (directiveOrder) return directiveOrder;
         const aDays =
           a.status === 'completed'
             ? Number.POSITIVE_INFINITY
@@ -2028,6 +2067,10 @@ export function FarmLedgerDashboard({
     workMode,
     workTypeFilter,
     workScope,
+    workSourceFilter,
+    workAccountFilter,
+    member?.id,
+    member?.departmentId,
     subscriptionToday,
     operationalWorkItems,
     workHierarchy,
@@ -2866,6 +2909,9 @@ export function FarmLedgerDashboard({
     icon: typeof Warehouse;
     count?: number;
   }> = [
+    ...(organization.admin
+      ? [{ id: 'organization' as View, label: '직원·부서 관리', icon: Users }]
+      : []),
     { id: 'overview', label: '통합 현황', icon: Leaf },
     {
       id: 'work',
@@ -3113,6 +3159,7 @@ export function FarmLedgerDashboard({
     if (
       dialog ||
       childTaskParent ||
+      taskRegistrationOpen ||
       quickDetailTaskId ||
       workQuickEditOpen ||
       projectDeletionTarget ||
@@ -3148,6 +3195,8 @@ export function FarmLedgerDashboard({
   function openScopedWork(status: 'all' | 'open' | 'overdue' = 'all') {
     if (!changeView('work')) return;
     setWorkMode('list');
+    setWorkSourceFilter('all');
+    setWorkAccountFilter('all');
     setWorkSearch('');
     setWorkTypeFilter('all');
     setWorkStatusFilter('all');
@@ -3178,9 +3227,26 @@ export function FarmLedgerDashboard({
     openDetail({ kind: 'project', projectId });
   }
 
+  function workContextLabel(item: FarmWorkItem) {
+    return isInternalTask(item)
+      ? `내부 업무 · ${organization.departments.find((dept) => dept.id === item.departmentId)?.name || '부서'}`
+      : projectForWorkItem(item)?.name || '사업 없음';
+  }
+
+  function addChildTask(parent: FarmWorkItem) {
+    if (isInternalTask(parent) && !organization.personal) {
+      toast.add({
+        title: '개인 계정이 필요합니다',
+        description: '내부 업무 배정은 승인된 개인 계정으로 로그인해 주세요.',
+      });
+      return;
+    }
+    setChildTaskParent(parent);
+  }
+
   function openFarm(farmId: string, workItemId = '', sourceProjectId?: string) {
     const directTask = workItemById.get(workItemId);
-    if (directTask && isProjectTask(directTask)) {
+    if (directTask && isStandaloneWork(directTask)) {
       openDetail({
         kind: 'work',
         farmId: '',
@@ -4976,7 +5042,10 @@ export function FarmLedgerDashboard({
                   label: '농가와 운영',
                   ids: ['farms', 'subscriptions', 'service'],
                 },
-                { label: '집계와 점검', ids: ['business', 'quality'] },
+                {
+                  label: '집계와 점검',
+                  ids: ['business', 'quality', 'organization'],
+                },
               ].map((group) => (
                 <div key={group.label}>
                   <p className="mb-2 px-3 text-xs font-semibold text-white/60">
@@ -5023,6 +5092,18 @@ export function FarmLedgerDashboard({
               <p className="mt-3 truncate text-xs font-semibold text-white/85">
                 {accountName}
               </p>
+              {organization.personal && member && (
+                <p className="mt-1 text-xs text-white/80">
+                  {organization.departments.some(
+                    (dept) =>
+                      dept.id === member.departmentId &&
+                      dept.headUid === member.id,
+                  )
+                    ? '부서장'
+                    : member.jobTitle}
+                  {member.admin ? ' · 관리자' : ''}
+                </p>
+              )}
               <p
                 className="mt-1 truncate text-xs text-white/70"
                 title={accountEmail}
@@ -5832,14 +5913,34 @@ export function FarmLedgerDashboard({
                             결과를 확인하세요.
                           </p>
                         </div>
-                        <Button
-                          onClick={() => openInboxDialog()}
-                          className="bg-[#2f7b59] hover:bg-[#286b4d]"
-                        >
-                          <Inbox />
-                          빠른 수신
-                        </Button>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            onClick={() => setTaskRegistrationOpen(true)}
+                            disabled={!organization.personal}
+                          >
+                            업무 등록
+                          </Button>
+                          <Button
+                            onClick={() => openInboxDialog()}
+                            className="bg-[#2f7b59] hover:bg-[#286b4d]"
+                          >
+                            <Inbox />
+                            빠른 수신
+                          </Button>
+                        </div>
                       </div>
+                      {organization.error && (
+                        <p role="alert" className="mb-3 text-sm text-red-700">
+                          {organization.error}
+                        </p>
+                      )}
+                      {!organization.personal && (
+                        <p className="mb-4 text-sm text-slate-600">
+                          내부 업무와 계정 배정은 부서가 승인된 개인 계정으로
+                          로그인한 뒤 사용할 수 있습니다. 기존 수신·업무 처리는
+                          그대로 이용할 수 있습니다.
+                        </p>
+                      )}
                       <div className="mb-4 flex flex-wrap gap-2 rounded-2xl border border-[#dfe6dd] bg-white p-2">
                         {(
                           [
@@ -5912,6 +6013,112 @@ export function FarmLedgerDashboard({
                       )}
                       {(workMode === 'board' || workMode === 'list') && (
                         <>
+                          <div className="mb-4 flex flex-wrap gap-3 rounded-xl border bg-white p-4">
+                            <div className="min-w-44">
+                              <label
+                                htmlFor="work-source"
+                                className="mb-1 block text-sm font-medium"
+                              >
+                                업무 구분
+                              </label>
+                              <Select
+                                value={workSourceFilter}
+                                onValueChange={(value) => {
+                                  setWorkSourceFilter(
+                                    value as 'all' | 'internal' | 'project',
+                                  );
+                                  setWorkScope(null);
+                                }}
+                              >
+                                <SelectTrigger id="work-source">
+                                  <SelectValue>
+                                    {
+                                      {
+                                        all: '전체 업무',
+                                        internal: '내부 업무',
+                                        project: '프로젝트·농가 업무',
+                                      }[workSourceFilter]
+                                    }
+                                  </SelectValue>
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="all">전체 업무</SelectItem>
+                                  <SelectItem value="internal">
+                                    내부 업무
+                                  </SelectItem>
+                                  <SelectItem value="project">
+                                    프로젝트·농가 업무
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="min-w-44">
+                              <label
+                                htmlFor="work-account"
+                                className="mb-1 block text-sm font-medium"
+                              >
+                                담당 범위
+                              </label>
+                              <Select
+                                value={workAccountFilter}
+                                onValueChange={(value) =>
+                                  setWorkAccountFilter(
+                                    value as typeof workAccountFilter,
+                                  )
+                                }
+                                disabled={!organization.personal}
+                              >
+                                <SelectTrigger id="work-account">
+                                  <SelectValue>
+                                    {
+                                      {
+                                        all: '전체 담당자',
+                                        mine: '내 업무',
+                                        department: '우리 부서',
+                                        head: '내 부서장 지시',
+                                      }[workAccountFilter]
+                                    }
+                                  </SelectValue>
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="all">
+                                    전체 담당자
+                                  </SelectItem>
+                                  <SelectItem value="mine">내 업무</SelectItem>
+                                  <SelectItem value="department">
+                                    우리 부서
+                                  </SelectItem>
+                                  <SelectItem value="head">
+                                    내 부서장 지시
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            {organization.personal && (
+                              <Button
+                                className="self-end border-red-200 text-red-800"
+                                variant="outline"
+                                onClick={() => {
+                                  setWorkAccountFilter('head');
+                                  setWorkSourceFilter('all');
+                                  setWorkScope(null);
+                                  setWorkSearch('');
+                                  setWorkTypeFilter('all');
+                                  setWorkStatusFilter('all');
+                                }}
+                              >
+                                내 최우선{' '}
+                                {
+                                  operationalWorkItems.filter(
+                                    (item) =>
+                                      isHeadPriority(item) &&
+                                      item.assigneeUid === member?.id,
+                                  ).length
+                                }
+                                건
+                              </Button>
+                            )}
+                          </div>
                           <div
                             className={
                               workScope
@@ -6557,11 +6764,9 @@ export function FarmLedgerDashboard({
                           items={filteredWorkItems}
                           allItems={operationalWorkItems}
                           recorder={accountName || accountEmail}
-                          projectLabel={(item) =>
-                            projectForWorkItem(item)?.name || '사업 없음'
-                          }
+                          projectLabel={workContextLabel}
                           onOpen={(item) => openFarm(item.farmId, item.id)}
-                          onAddChild={setChildTaskParent}
+                          onAddChild={addChildTask}
                           onSave={saveQuickWork}
                           isClosed={(item) =>
                             projectForWorkItem(item)?.status === 'completed'
@@ -6664,11 +6869,9 @@ export function FarmLedgerDashboard({
                           items={filteredWorkItems}
                           allItems={operationalWorkItems}
                           recorder={accountName || accountEmail}
-                          projectLabel={(item) =>
-                            projectForWorkItem(item)?.name || '사업 없음'
-                          }
+                          projectLabel={workContextLabel}
                           onOpen={(item) => openFarm(item.farmId, item.id)}
-                          onAddChild={setChildTaskParent}
+                          onAddChild={addChildTask}
                           onSave={saveQuickWork}
                           isClosed={(item) =>
                             projectForWorkItem(item)?.status === 'completed'
@@ -9212,6 +9415,14 @@ export function FarmLedgerDashboard({
                     </section>
                   )}
 
+                  {view === 'organization' && (
+                    <OrganizationManagement
+                      current={member}
+                      members={organization.members}
+                      departments={organization.departments}
+                      error={organization.error}
+                    />
+                  )}
                   {view === 'quality' && (
                     <section>
                       <div className="mb-6">
@@ -9390,10 +9601,15 @@ export function FarmLedgerDashboard({
                   : 'hidden'
               }
             >
-              {selectedWorkItem && isProjectTask(selectedWorkItem) && (
+              {selectedWorkItem && isStandaloneWork(selectedWorkItem) && (
                 <ProjectTaskDetail
                   task={selectedWorkItem}
                   project={projectForWorkItem(selectedWorkItem) || undefined}
+                  departmentName={
+                    organization.departments.find(
+                      (dept) => dept.id === selectedWorkItem.departmentId,
+                    )?.name
+                  }
                   history={selectedWorkHistory}
                   onBack={backDetail}
                   onRecord={() => openHistoryDialog(selectedWorkItem)}
@@ -9406,7 +9622,7 @@ export function FarmLedgerDashboard({
                     );
                     if (parent) openFarm(parent.farmId, parent.id);
                   }}
-                  onAddChild={() => setChildTaskParent(selectedWorkItem)}
+                  onAddChild={() => addChildTask(selectedWorkItem)}
                   childrenContent={
                     workHierarchy.children.get(selectedWorkItem.id)?.length ? (
                       <section className="space-y-3 rounded-xl border bg-white p-4">
@@ -9437,11 +9653,9 @@ export function FarmLedgerDashboard({
                             selectedWorkItem.id,
                           )}
                           recorder={accountName || accountEmail}
-                          projectLabel={(item) =>
-                            projectForWorkItem(item)?.name || ''
-                          }
+                          projectLabel={workContextLabel}
                           onOpen={(item) => openFarm(item.farmId, item.id)}
-                          onAddChild={setChildTaskParent}
+                          onAddChild={addChildTask}
                           onSave={saveQuickWork}
                           isClosed={(item) =>
                             projectForWorkItem(item)?.status === 'completed'
@@ -10093,7 +10307,7 @@ export function FarmLedgerDashboard({
                         recorder={accountName || accountEmail}
                         projectLabel={() => selectedProject.name}
                         onOpen={(item) => openFarm(item.farmId, item.id)}
-                        onAddChild={setChildTaskParent}
+                        onAddChild={addChildTask}
                         onSave={saveQuickWork}
                         isClosed={() => selectedProject.status === 'completed'}
                       />
@@ -10853,9 +11067,7 @@ export function FarmLedgerDashboard({
                             <FarmPaymentHistory
                               key={`${selectedFarm.id}-${farmContextProjectId}`}
                               payments={selectedFarmPayments}
-                              projectLabel={(item) =>
-                                projectForWorkItem(item)?.name || '사업 없음'
-                              }
+                              projectLabel={workContextLabel}
                               onOpen={(item) => openFarm(item.farmId, item.id)}
                               onAdd={() => openWorkItemDialog('', 'payment')}
                               disabled={!selectedRecords.length}
@@ -11517,8 +11729,27 @@ export function FarmLedgerDashboard({
             )}
           </DialogContent>
         </Dialog>
+        {organization.personal &&
+          member &&
+          (taskRegistrationOpen || childTaskParent) && (
+            <TaskRegistrationDialog
+              key={childTaskParent?.id || 'new-task'}
+              member={member}
+              members={organization.members}
+              departments={organization.departments}
+              projects={activeProjects}
+              parent={childTaskParent || undefined}
+              onClose={() => {
+                setTaskRegistrationOpen(false);
+                setChildTaskParent(null);
+              }}
+              onCreated={() =>
+                toast.add({ title: '업무를 등록했습니다', type: 'success' })
+              }
+            />
+          )}
         <Dialog
-          open={Boolean(childTaskParent)}
+          open={Boolean(childTaskParent) && !organization.personal}
           onOpenChange={(open) => {
             if (!open && !childTaskBusy) setChildTaskParent(null);
           }}
@@ -14525,6 +14756,7 @@ export function FarmLedgerDashboard({
                   <FieldLabel>담당자</FieldLabel>
                   <Input
                     value={historyForm.owner}
+                    disabled={Boolean(selectedWorkItem?.assigneeUid)}
                     onChange={(event) =>
                       setHistoryForm((current) => ({
                         ...current,
@@ -14819,7 +15051,7 @@ export function FarmLedgerDashboard({
                 </Field>
                 <Field
                   className={
-                    selectedWorkItem && isProjectTask(selectedWorkItem)
+                    selectedWorkItem && isStandaloneWork(selectedWorkItem)
                       ? 'hidden'
                       : undefined
                   }

@@ -62,12 +62,10 @@ export function ProjectWorkTree({
         data-work-id={item.id}
         data-work-depth={depth}
         data-parent-work-id={item.parentWorkItemId || undefined}
-        // Keep the family divider when the table primitive removes a final row's borders.
-        style={depth ? undefined : { borderTopWidth: 2 }}
         className={
           depth
-            ? 'border-[#e3e9e5] bg-white hover:bg-[#f2f7f4] has-aria-expanded:bg-white'
-            : 'border-t-2 border-t-[#d2dfd7] bg-[#edf5ef] hover:bg-[#e4f0e8] has-aria-expanded:bg-[#edf5ef]'
+            ? 'bg-white hover:bg-[#f2f7f4] [&>td]:border-y [&>td]:border-slate-300 [&>td:first-child]:rounded-l-lg [&>td:first-child]:border-l [&>td:last-child]:rounded-r-lg [&>td:last-child]:border-r'
+            : 'bg-[#edf5ef] hover:bg-[#e4f0e8] [&>td]:border-y [&>td]:border-emerald-300 [&>td:first-child]:rounded-l-lg [&>td:first-child]:border-l-4 [&>td:last-child]:rounded-r-lg [&>td:last-child]:border-r'
         }
       >
         <TableCell className="px-3 py-3 align-top whitespace-normal">
@@ -188,8 +186,8 @@ export function ProjectWorkTree({
       </p>
       <Table
         aria-label="프로젝트 하위 업무와 세부 업무"
-        className="min-w-[1000px] table-fixed"
-        containerClassName="rounded-xl border border-[#d8e2da] bg-white"
+        className="min-w-[1000px] table-fixed border-separate border-spacing-x-0 border-spacing-y-2"
+        containerClassName="rounded-xl bg-slate-50 px-2 pb-1"
       >
         <colgroup>
           <col className="w-[34%]" />

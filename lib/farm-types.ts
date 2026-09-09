@@ -505,6 +505,12 @@ export interface FarmSubscriptionExpiryCorrectionInput {
 
 export interface FarmWorkItem {
   id: string;
+  scope?: 'internal';
+  assigneeUid?: string;
+  assignedByUid?: string;
+  departmentId?: string;
+  headAssigned?: boolean;
+  assignedAt?: number;
   /** Provenance for records imported from the original management ledger. */
   migrationRunId?: string;
   sourceFingerprint?: string;
@@ -540,6 +546,8 @@ export interface FarmWorkItem {
 }
 
 export interface FarmWorkItemInput {
+  scope?: 'internal';
+  assigneeUid?: string;
   projectId?: string;
   parentWorkItemId?: string;
   farmRecordId: string;

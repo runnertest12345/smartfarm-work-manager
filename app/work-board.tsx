@@ -23,6 +23,7 @@ import {
   type FarmWorkStatus,
 } from '@/lib/farm-types';
 import { buildWorkBoardGroups } from '@/lib/work-board';
+import { isHeadPriority } from '@/lib/project-work';
 
 const statusColors: Record<FarmWorkStatus, string> = {
   open: 'bg-slate-100 text-slate-700',
@@ -143,76 +144,18 @@ export function WorkBoard({
                   <article
                     key={item.id}
                     data-board-root={item.id}
-                    className={`space-y-3 rounded-xl border border-slate-200 bg-white p-4 ${savingId && rows.some((row) => row.item.id === savingId) ? 'opacity-60' : ''}`}
+                    className={`space-y-1 rounded-xl border bg-white p-3 ${rows.some((row) => isHeadPriority(row.item)) ? 'border-l-4 border-amber-600' : 'border-slate-200'} ${savingId && rows.some((row) => row.item.id === savingId) ? 'opacity-60' : ''}`}
                   >
-                    <div className="flex items-start gap-2">
-                      {!hasChildren && handle(item)}
-                      <div className="min-w-0 flex-1">
-                        <p
-                          title={projectLabel(item)}
-                          className="line-clamp-1 break-words text-sm text-emerald-800"
-                        >
-                          {projectLabel(item)}
-                        </p>
-                        <button
-                          type="button"
-                          aria-label={`${item.title} 업무 상세 열기`}
-                          disabled={busy}
-                          onClick={() => onOpen(item)}
-                          title={item.title}
-                          className="mt-1 line-clamp-2 min-h-9 w-full break-words text-left text-base font-semibold hover:text-emerald-800 hover:underline"
-                        >
-                          {item.title}
-                        </button>
-                      </div>
-                    </div>
-                    {status(group.lane, completeLabel)}
-                    <p className="text-sm text-slate-600">
-                      총괄 {item.owner || '미지정'} · 마감{' '}
-                      {item.dueDate || '미지정'}
-                    </p>
-                    {hasChildren && (
-                      <p
-                        className="text-sm text-slate-600"
-                        aria-label="세부 업무 진행 요약"
-                      >
-                        완료 {group.counts.completed}/{group.total} · 처리 중{' '}
-                        {group.counts.in_progress} · 대기 {group.counts.waiting}
-                      </p>
-                    )}
-                    {group.waiting.length > 0 && (
-                      <p className="text-sm font-medium text-amber-900">
-                        대기 사유 {group.waiting.length}건
-                      </p>
-                    )}
-                    {matchedChildren > 0 && (
-                      <p className="text-sm text-blue-800">
-                        조건에 맞는 세부 업무 {matchedChildren}건 · 상세에서
-                        확인
-                      </p>
-                    )}
-                    {group.needsConfirmation && (
-                      <div className="space-y-2 text-sm text-emerald-950">
-                        <p>
-                          {group.readyToConfirm
-                            ? '세부 업무 완료 · 총괄 담당자의 최종 확인이 필요합니다.'
-                            : group.confirmations.length
-                              ? `중간 상위 업무 ${group.confirmations.length}건의 완료 확인이 남아 있습니다.`
-                              : '완료 연결 정보를 확인해 주세요.'}
-                        </p>
-                        {group.readyToConfirm && (
-                          <Button
-                            type="button"
-                            size="sm"
-                            disabled={busy || !canEdit(item)}
-                            onClick={() => onEdit(item, 'completed')}
-                          >
-                            상위 업무 완료 확인
-                          </Button>
-                        )}
-                      </div>
-                    )}
-                    {actions(item)}
+                    <button
+                      type="button"
+                      aria-label={`${item.title} 업무 상세 열기`}
+                      disabled={busy}
+                      onClick={() => onOpen(item)}
+                      title={item.title}
+                      className="min-h-9 w-full break-words text-left text-base font-semibold hover:text-emerald-800 hover:underline"
+                    >
+                      {item.title}
+                    </button>
                     <Collapsible
                       open={isExpanded}
                       onOpenChange={(open) => toggle(item.id, open)}
@@ -234,6 +177,66 @@ export function WorkBoard({
                             className="space-y-3 border-t border-slate-200 pt-3"
                             data-board-details={item.id}
                           >
+                            <div className="flex items-start gap-2">
+                              {!hasChildren && handle(item)}
+                              <p className="break-words text-sm text-emerald-800">
+                                {projectLabel(item)}
+                              </p>
+                            </div>
+                            {rows.some((row) => isHeadPriority(row.item)) && (
+                              <p className="rounded-md bg-amber-50 px-2 py-1 text-sm font-semibold text-amber-900">
+                                부서장 지시 · 최우선
+                              </p>
+                            )}
+                            {status(group.lane, completeLabel)}
+                            <p className="text-sm text-slate-600">
+                              총괄 {item.owner || '미지정'} · 마감{' '}
+                              {item.dueDate || '미지정'}
+                            </p>
+                            {hasChildren && (
+                              <p
+                                className="text-sm text-slate-600"
+                                aria-label="세부 업무 진행 요약"
+                              >
+                                완료 {group.counts.completed}/{group.total} ·
+                                처리 중 {group.counts.in_progress} · 대기{' '}
+                                {group.counts.waiting}
+                              </p>
+                            )}
+                            {group.waiting.length > 0 && (
+                              <p className="text-sm font-medium text-amber-900">
+                                대기 사유 {group.waiting.length}건
+                              </p>
+                            )}
+                            {matchedChildren > 0 && (
+                              <p className="text-sm text-blue-800">
+                                조건에 맞는 세부 업무 {matchedChildren}건 ·
+                                상세에서 확인
+                              </p>
+                            )}
+                            {group.needsConfirmation && (
+                              <div className="space-y-2 text-sm text-emerald-950">
+                                <p>
+                                  {group.readyToConfirm
+                                    ? '세부 업무 완료 · 총괄 담당자의 최종 확인이 필요합니다.'
+                                    : group.confirmations.length
+                                      ? `중간 상위 업무 ${group.confirmations.length}건의 완료 확인이 남아 있습니다.`
+                                      : '완료 연결 정보를 확인해 주세요.'}
+                                </p>
+                                {group.readyToConfirm && (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    disabled={busy || !canEdit(item)}
+                                    onClick={() => onEdit(item, 'completed')}
+                                  >
+                                    상위 업무 완료 확인
+                                  </Button>
+                                )}
+                              </div>
+                            )}
+                            {actions(item)}
+
                             {hasChildren && (
                               <>
                                 <div
@@ -266,13 +269,10 @@ export function WorkBoard({
                                   )}
                                 </div>
                                 {group.missing && (
-                                  <p
-                                    role="status"
-                                    className="text-sm text-amber-900"
-                                  >
+                                  <output className="block text-sm text-amber-900">
                                     일부 업무 연결이나 완료 상태를 확인해야
                                     합니다. 전체 완료로 집계하지 않습니다.
-                                  </p>
+                                  </output>
                                 )}
                               </>
                             )}

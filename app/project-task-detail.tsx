@@ -8,10 +8,12 @@ import {
   type FarmHistoryEntry,
 } from '@/lib/farm-types';
 import { ReceivedImages } from './received-images';
+import { isInternalTask } from '@/lib/project-work';
 
 export function ProjectTaskDetail({
   task,
   project,
+  departmentName,
   history,
   onBack,
   onRecord,
@@ -22,6 +24,7 @@ export function ProjectTaskDetail({
 }: {
   task: FarmWorkItem;
   project?: FarmProject;
+  departmentName?: string;
   history: FarmHistoryEntry[];
   onBack: () => void;
   onRecord: () => void;
@@ -33,7 +36,9 @@ export function ProjectTaskDetail({
   return (
     <section
       className="mx-auto w-full max-w-6xl space-y-5 p-4 sm:p-6"
-      aria-label="프로젝트 하위 업무 상세"
+      aria-label={
+        isInternalTask(task) ? '내부 업무 상세' : '프로젝트 하위 업무 상세'
+      }
     >
       <Button variant="outline" onClick={onBack}>
         ← 이전 화면
@@ -46,11 +51,19 @@ export function ProjectTaskDetail({
       <header className="flex flex-wrap items-start justify-between gap-4 rounded-xl border bg-white p-5">
         <div>
           <p className="text-sm text-emerald-800">
-            {project?.year} · {project?.name || '프로젝트'} · 하위 업무
+            {isInternalTask(task)
+              ? `${departmentName || '소속 부서'} · 내부 업무`
+              : `${project?.year || ''} · ${project?.name || '프로젝트'} · 하위 업무`}
           </p>
           <h1 className="mt-2 text-2xl font-bold" tabIndex={-1}>
             {task.title}
           </h1>
+          {task.headAssigned && (
+            <p className="mt-2 text-sm font-semibold text-red-800">
+              부서장 지시 ·{' '}
+              {task.status === 'completed' ? '처리 완료' : '최우선'}
+            </p>
+          )}
           <p className="mt-2 text-sm text-slate-600">
             {FARM_WORK_STATUS_LABELS[task.status]} · 담당{' '}
             {task.owner || '미지정'} · 기한 {task.dueDate || '미지정'}

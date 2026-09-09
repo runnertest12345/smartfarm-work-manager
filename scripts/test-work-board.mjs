@@ -29,8 +29,10 @@ function load(path, aliases = {}) {
 }
 const types = load('lib/farm-types.ts');
 const hierarchy = load('lib/work-hierarchy.ts');
+const projectWork = load('lib/project-work.ts');
 const { buildWorkBoardGroups } = load('lib/work-board.ts', {
   './work-hierarchy': hierarchy,
+  './project-work': projectWork,
 });
 let slots = [],
   cursor = 0;
@@ -60,6 +62,7 @@ const tag = (name) =>
 const aliases = {
   react: { ...React, useState },
   '@/lib/farm-types': types,
+  '@/lib/project-work': projectWork,
   '@/lib/work-board': { buildWorkBoardGroups },
   '@/components/ui/button': { Button: tag('button') },
   '@/components/ui/progress': { Progress: tag('div') },
@@ -421,7 +424,7 @@ test('전부 완료해도 확인 버튼을 눌러야 완료 편집이 열리고 
     openChildCount: 0,
   }));
   const edited = [];
-  const tree = render(
+  const tree = renderExpanded(
     setup({
       allItems: items,
       items,
@@ -437,7 +440,7 @@ test('전부 완료해도 확인 버튼을 눌러야 완료 편집이 열리고 
 });
 test('중간 부모 확인이 남으면 최상위 완료 버튼을 숨기고 안내한다', () => {
   const items = nested();
-  const tree = render(setup({ allItems: items, items }));
+  const tree = renderExpanded(setup({ allItems: items, items }));
   assert.equal(
     nodes(tree).some((node) => node.props?.children === '상위 업무 완료 확인'),
     false,
@@ -456,12 +459,13 @@ test('검색된 자식은 일치 건수로 알리고 상세는 사용자가 펼�
     find(tree, (node) => node.props?.onOpenChange).props.open,
     false,
   );
-  assert.match(renderToStaticMarkup(tree), /조건에 맞는 세부 업무 1건/);
+  assert.doesNotMatch(renderToStaticMarkup(tree), /조건에 맞는 세부 업무 1건/);
   assert.equal(
     nodes(tree).filter((node) => node.props?.['data-board-task']).length,
     0,
   );
   tree = renderExpanded(searchingProps);
+  assert.match(renderToStaticMarkup(tree), /조건에 맞는 세부 업무 1건/);
   assert.equal(
     nodes(tree).filter((node) => node.props?.['data-board-task']).length,
     4,
@@ -557,25 +561,23 @@ test('완료된 사업의 상위 업무 다시 열기는 비활성화된다', ()
   );
 });
 
-test('접힌 카드는 기본 정보·진행 요약·작업 버튼만 남기고 긴 내용은 숨긴다', () => {
+test('접힌 카드는 업무명·상세 보기만 남기고 메타 정보와 작업 버튼을 모두 숨긴다', () => {
   const props = setup();
   let tree = render(props);
   let html = renderToStaticMarkup(tree);
-  assert.match(html, /태백 노지 실증단지/);
   assert.match(html, /견적서 제출/);
-  assert.match(html, /총괄 영업팀 · 마감 2026-09-15/);
-  assert.match(html, /완료 1\/4 · 처리 중 1 · 대기 1/);
-  assert.match(html, /대기 사유 1건/);
+  assert.doesNotMatch(
+    html,
+    /태백 노지 실증단지|총괄 영업팀|2026-09-15|완료 1\/4|대기 사유|세부 업무 추가/,
+  );
   assert.match(html, /상세 보기/);
   assert.doesNotMatch(html, /농가 회신 대기|기록:|data-board-task|2026-09-10/);
-  assert.ok(
-    find(
-      tree,
-      (node) => node.props?.['aria-label'] === '견적서 제출 세부 업무 추가',
-    ),
-  );
   tree = renderExpanded(props);
   html = renderToStaticMarkup(tree);
+  assert.match(html, /태백 노지 실증단지/);
+  assert.match(html, /총괄 영업팀 · 마감 2026-09-15/);
+  assert.match(html, /완료 1\/4 · 처리 중 1 · 대기 1/);
+  assert.match(html, /견적서 제출 세부 업무 추가/);
   assert.match(html, /농가 회신 대기|기록:견적서 제출/);
   find(tree, (node) => node.props?.onOpenChange).props.onOpenChange(false);
   assert.doesNotMatch(

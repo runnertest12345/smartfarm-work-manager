@@ -585,11 +585,17 @@ test('계층형 표는 부모→자식→손자 순서로 한 번씩 표시하�
   assert.equal(child.props['data-parent-work-id'], 'root');
   assert.equal(grandchild.props['data-parent-work-id'], 'child');
   const rows = nodes(rootGroup).filter((x) => x.props?.['data-work-id']);
-  assert.equal(
-    rows[0].props.style.borderTopWidth,
-    2,
-    'collapsed families keep their divider',
+  assert.match(
+    rows[0].props.className,
+    /border-l-4/,
+    'parent has a distinct leading edge',
   );
+  for (const row of rows)
+    assert.match(
+      row.props.className,
+      /border-y/,
+      'each task has its own boundary',
+    );
   assert.equal(
     rows.map((x) => x.props['data-work-id']).join(','),
     'root,child,grandchild,sibling',

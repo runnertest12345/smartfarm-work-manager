@@ -90,6 +90,7 @@ const images = load('../app/received-images.tsx', {
 });
 const { ProjectTaskDetail } = load('../app/project-task-detail.tsx', {
   '@/lib/farm-types': types,
+  '@/lib/project-work': work,
   './received-images': images,
 });
 function render(component, props) {
@@ -360,7 +361,7 @@ test('KPI drilldown은 프로젝트 업무로 제한하고 일반 업무 목록�
     source,
     /if \(workScope && !isProjectTask\(workItem\)\) return false/,
   );
-  assert.match(source, /if \(directTask && isProjectTask\(directTask\)\)/);
+  assert.match(source, /if \(directTask && isStandaloneWork\(directTask\)\)/);
   assert.match(
     source,
     /!submitting && !imagesBusy && setDialog\(open \? 'inbox' : null\)/,
