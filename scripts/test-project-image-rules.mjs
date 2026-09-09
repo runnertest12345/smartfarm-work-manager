@@ -322,6 +322,191 @@ treeCase('root cannot seed fake completed descendants', 'DENY', null, {
   childWorkItemIds: ['invented-child'],
 });
 
+const lifecycleProject = {
+  ...audit,
+  id: 'project-lifecycle-test',
+  name: '보존할 사업',
+  status: 'active',
+};
+const deletedProject = {
+  ...lifecycleProject,
+  updatedAt: 2,
+  deletedAt: 2,
+  deletedByUid: 'test-user',
+  lifecycleUpdateId: 'delete-audit',
+};
+const restoredProject = {
+  ...deletedProject,
+  updatedAt: 3,
+  deletedAt: 0,
+  deletedByUid: '',
+  lifecycleUpdateId: 'restore-audit',
+};
+function lifecycleCase(name, expectation, before, after, overrides = {}) {
+  const updateId = after.lifecycleUpdateId || 'missing';
+  const auditData = {
+    id: updateId,
+    projectId: lifecycleProject.id,
+    kind: 'system',
+    channel: 'system',
+    projectLifecycleAction: after.deletedAt ? 'delete' : 'restore',
+    createdAt: after.updatedAt,
+    createdByUid: 'test-user',
+    ...overrides.audit,
+  };
+  cases.push({
+    name,
+    test: {
+      expectation,
+      request: {
+        path: `${workspace}/projects/${lifecycleProject.id}`,
+        method: overrides.method || (before ? 'update' : 'create'),
+        auth: overrides.user === undefined ? member : overrides.user,
+        resource: { data: after },
+      },
+      ...(before ? { resource: { data: before } } : {}),
+      functionMocks: [
+        mock('get', { active: overrides.active !== false }),
+        mock('getAfter', auditData),
+        {
+          function: 'exists',
+          args: [{ anyValue: {} }],
+          result: { value: overrides.auditExists || false },
+        },
+      ],
+    },
+  });
+}
+lifecycleCase(
+  'legacy project creation remains allowed',
+  'ALLOW',
+  null,
+  lifecycleProject,
+);
+lifecycleCase(
+  'normal project edit remains allowed',
+  'ALLOW',
+  lifecycleProject,
+  { ...lifecycleProject, updatedAt: 2, name: '수정 사업' },
+);
+lifecycleCase(
+  'recoverable project deletion requires atomic audit',
+  'ALLOW',
+  lifecycleProject,
+  deletedProject,
+);
+lifecycleCase(
+  'project restore requires atomic audit',
+  'ALLOW',
+  deletedProject,
+  restoredProject,
+);
+lifecycleCase(
+  'old full-document save cannot erase deletion marker',
+  'DENY',
+  deletedProject,
+  { ...lifecycleProject, updatedAt: 3 },
+);
+lifecycleCase(
+  'legacy metadata removal after restore is rejected',
+  'DENY',
+  restoredProject,
+  { ...lifecycleProject, updatedAt: 4 },
+);
+lifecycleCase(
+  'deletion cannot change business data',
+  'DENY',
+  lifecycleProject,
+  { ...deletedProject, name: '변경' },
+);
+lifecycleCase('deletion cannot forge another actor', 'DENY', lifecycleProject, {
+  ...deletedProject,
+  deletedByUid: 'another',
+});
+lifecycleCase(
+  'deletion cannot reuse an old audit',
+  'DENY',
+  lifecycleProject,
+  deletedProject,
+  { auditExists: true },
+);
+lifecycleCase(
+  'deletion audit must belong to project',
+  'DENY',
+  lifecycleProject,
+  deletedProject,
+  { audit: { projectId: 'other' } },
+);
+lifecycleCase(
+  'restore cannot reuse deletion audit',
+  'DENY',
+  deletedProject,
+  restoredProject,
+  { audit: { projectLifecycleAction: 'delete' } },
+);
+lifecycleCase(
+  'inactive member cannot delete project',
+  'DENY',
+  lifecycleProject,
+  deletedProject,
+  { active: false },
+);
+lifecycleCase(
+  'signed-out user cannot delete project',
+  'DENY',
+  lifecycleProject,
+  deletedProject,
+  { user: null },
+);
+lifecycleCase(
+  'physical project deletion stays forbidden',
+  'DENY',
+  deletedProject,
+  deletedProject,
+  { method: 'delete' },
+);
+lifecycleCase('create cannot start as deleted', 'DENY', null, deletedProject);
+lifecycleCase(
+  'preserved linked activity can touch deleted project',
+  'ALLOW',
+  deletedProject,
+  { ...deletedProject, updatedAt: 3 },
+);
+check('new farm participation cannot attach to deleted project', 'DENY', {
+  collection: 'farmRecords',
+  id: 'farm-link',
+  data: {
+    ...audit,
+    id: 'farm-link',
+    farmId: 'same-parent',
+    projectId: 'same-parent',
+  },
+  parent: { id: 'same-parent', deletedAt: 2 },
+});
+check('new project document cannot attach to deleted project', 'DENY', {
+  collection: 'projectDocuments',
+  id: 'new-document',
+  data: { ...audit, id: 'new-document', projectId: 'project-test' },
+  parent: { id: 'project-test', deletedAt: 2 },
+});
+check('new project-only task cannot attach to deleted project', 'DENY', {
+  collection: 'workItems',
+  id: root.id,
+  data: root,
+  parent: { id: 'project-test', deletedAt: 2 },
+});
+check('new payment for preserved farm participation remains allowed', 'ALLOW', {
+  collection: 'workItems',
+  id: 'payment-task',
+  data: {
+    ...audit,
+    id: 'payment-task',
+    farmRecordId: 'preserved-record',
+    workType: 'payment',
+  },
+  parent: { id: 'preserved-record', deletedAt: 2 },
+});
+
 try {
   const options = { project: 'smartfarm-work-manager', nonInteractive: true };
   const account = auth.getGlobalDefaultAccount();

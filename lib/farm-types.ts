@@ -254,6 +254,10 @@ export const FARM_HISTORY_CHANNEL_LABELS: Record<FarmHistoryChannel, string> = {
 
 export interface FarmProject {
   id: string;
+  /** Recoverable removal from project lists; linked records remain intact. */
+  deletedAt?: number;
+  deletedByUid?: string;
+  lifecycleUpdateId?: string;
   name: string;
   projectType: FarmProjectType;
   year: number;

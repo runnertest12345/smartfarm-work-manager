@@ -1,6 +1,12 @@
 'use client';
 
 import { ProjectWorkTree } from './project-work-tree';
+import {
+  ProjectFarmProgressCard,
+  ProjectStageFigures,
+} from './project-farm-progress';
+import { summarizeProjectFarms } from '@/lib/project-farm-progress';
+import { ProjectDeletionDialog } from './project-deletion-dialog';
 import { useDetailNavigation } from './use-detail-navigation';
 import type {
   DashboardView as View,
@@ -58,6 +64,7 @@ import {
   Search,
   ShieldCheck,
   TrendingUp,
+  Trash2,
   Warehouse,
   Wrench,
 } from 'lucide-react';
@@ -199,6 +206,7 @@ import {
   ProjectKpiPanel,
   ProjectTypeSelector,
   ProjectYearSummary,
+  ProjectYearSelector,
   SubscriptionCyclePanel,
 } from './farm-kpi-panels';
 
@@ -239,14 +247,14 @@ function DialogContent({
   children,
   className,
   ...props
-}: ComponentProps<typeof BaseDialogContent>) {
+}: Omit<ComponentProps<typeof BaseDialogContent>, 'className'> & {
+  className?: string;
+}) {
   return (
     <BaseDialogContent
       {...props}
       showCloseButton={false}
-      className={(state) =>
-        `farm-app farm-dialog ${typeof className === 'function' ? className(state) : (className ?? '')}`
-      }
+      className={`farm-app farm-dialog ${className ?? ''}`}
     >
       {children}
       <DialogClose
@@ -1164,6 +1172,14 @@ export function FarmLedgerDashboard({
   const [quickDetailTaskId, setQuickDetailTaskId] = useState('');
   const [quickDetailBusy, setQuickDetailBusy] = useState(false);
   const [workQuickEditOpen, setWorkQuickEditOpen] = useState(false);
+  const [projectDeletionTarget, setProjectDeletionTarget] =
+    useState<FarmProject | null>(null);
+  const [deletedProjectToClose, setDeletedProjectToClose] = useState('');
+  useEffect(() => {
+    if (projectDeletionTarget || !deletedProjectToClose) return;
+    setDeletedProjectToClose('');
+    if (selectedProjectId === deletedProjectToClose) closeDetails();
+  }, [projectDeletionTarget, deletedProjectToClose]);
   const [projectForm, setProjectForm] =
     useState<FarmProjectInput>(emptyProjectForm);
   const [projectDocumentForm, setProjectDocumentForm] =
@@ -1390,6 +1406,14 @@ export function FarmLedgerDashboard({
     return map;
   }, [workspace.visits]);
 
+  const activeProjects = useMemo(
+    () => workspace.projects.filter((project) => !project.deletedAt),
+    [workspace.projects],
+  );
+  const deletedProjects = useMemo(
+    () => workspace.projects.filter((project) => Boolean(project.deletedAt)),
+    [workspace.projects],
+  );
   const projectById = useMemo(
     () => new Map(workspace.projects.map((project) => [project.id, project])),
     [workspace.projects],
@@ -1508,16 +1532,8 @@ export function FarmLedgerDashboard({
   }
 
   function projectSnapshot(project: FarmProject) {
-    const allRecords = workspace.records.filter(
-      (record) => record.projectId === project.id,
-    );
-    const uniqueRecordsByFarm = new Map<string, FarmRecord>();
-    for (const record of allRecords) {
-      const current = uniqueRecordsByFarm.get(record.farmId);
-      if (!current || record.lastActivityAt > current.lastActivityAt)
-        uniqueRecordsByFarm.set(record.farmId, record);
-    }
-    const records = [...uniqueRecordsByFarm.values()];
+    const farmProgress = summarizeProjectFarms(workspace.records, project.id);
+    const records = farmProgress.records;
     const workItems = workspace.workItems.filter(
       (item) => isProjectTask(item) && item.projectId === project.id,
     );
@@ -1589,18 +1605,8 @@ export function FarmLedgerDashboard({
       records.filter((record) => record.productionSetupDate).length,
       records.length,
     );
-    const installationRate = rate(
-      records.filter((record) => record.installationDate).length,
-      records.length,
-    );
-    const commissioningRate = rate(
-      records.filter((record) => record.commissioningDate).length,
-      records.length,
-    );
-    const educationRate = rate(
-      records.filter((record) => record.educationDate).length,
-      records.length,
-    );
+    const [installationRate, commissioningRate, educationRate] =
+      farmProgress.stages.map((stage) => stage.rate);
     const subscriptionRate = rate(activeSubscriptions.length, records.length);
     const documentRate = rate(
       approvedDocuments.length,
@@ -1651,6 +1657,7 @@ export function FarmLedgerDashboard({
 
     return {
       records,
+      farmProgress,
       workItems,
       hierarchy,
       documents,
@@ -1686,7 +1693,7 @@ export function FarmLedgerDashboard({
     workspace.projects.map((project) => [project.id, projectSnapshot(project)]),
   );
   const yearProjects = filterProjectsByScope(
-    workspace.projects,
+    activeProjects,
     projectYearFilter,
     projectTypeFilter,
   );
@@ -2143,7 +2150,7 @@ export function FarmLedgerDashboard({
   ].sort(
     (a, b) => b.overdue - a.overdue || b.high - a.high || b.active - a.active,
   );
-  const projectHealthSummaries = workspace.projects
+  const projectHealthSummaries = activeProjects
     .filter((project) => project.status === 'active')
     .map((project) => {
       const items = operationalLeafItems.filter(
@@ -2185,9 +2192,9 @@ export function FarmLedgerDashboard({
   ].sort((a, b) => a.lastActivityAt - b.lastActivityAt);
 
   const businessYears = [
-    ...new Set(workspace.projects.map((project) => project.year)),
+    ...new Set(activeProjects.map((project) => project.year)),
   ].sort((a, b) => b - a);
-  const businessBaseProjects = workspace.projects.filter(
+  const businessBaseProjects = activeProjects.filter(
     (project) =>
       businessTypeFilter === 'all' ||
       project.projectType === businessTypeFilter,
@@ -2854,7 +2861,7 @@ export function FarmLedgerDashboard({
       id: 'projects',
       label: '프로젝트 관리',
       icon: BriefcaseBusiness,
-      count: workspace.projects.length,
+      count: activeProjects.length,
     },
     { id: 'business', label: '사업 집계', icon: BarChart3 },
     {
@@ -3086,6 +3093,7 @@ export function FarmLedgerDashboard({
       childTaskParent ||
       quickDetailTaskId ||
       workQuickEditOpen ||
+      projectDeletionTarget ||
       submitting
     ) {
       toast.add({
@@ -3181,8 +3189,8 @@ export function FarmLedgerDashboard({
   function openFarmDialog() {
     setFarmForm(
       emptyFarmForm(
-        workspace.projects.find((project) => project.status === 'active')?.id ??
-          workspace.projects[0]?.id ??
+        activeProjects.find((project) => project.status === 'active')?.id ??
+          activeProjects[0]?.id ??
           '',
       ),
     );
@@ -3193,7 +3201,7 @@ export function FarmLedgerDashboard({
   function openFarmEditDialog() {
     if (!selectedFarm) return;
     const form = emptyFarmForm(
-      selectedRecords[0]?.projectId ?? workspace.projects[0]?.id ?? '',
+      selectedRecords[0]?.projectId ?? activeProjects[0]?.id ?? '',
     );
     setFarmForm({
       ...form,
@@ -3217,7 +3225,7 @@ export function FarmLedgerDashboard({
     const existingProjectIds = new Set(
       allSelectedRecords.map((record) => record.projectId),
     );
-    const availableProject = workspace.projects.find(
+    const availableProject = activeProjects.find(
       (project) => !existingProjectIds.has(project.id),
     );
     if (!availableProject) {
@@ -4047,6 +4055,37 @@ export function FarmLedgerDashboard({
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function confirmProjectDeletion(
+    project: FarmProject,
+    deleted: boolean,
+  ) {
+    const response = await farmLedgerFetch('/api/farm-ledger', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'project_lifecycle',
+        projectId: project.id,
+        expectedUpdatedAt: project.updatedAt,
+        deleted,
+      }),
+    });
+    const data = await readResponse(response);
+    if (!response.ok || !data.project)
+      throw new Error(
+        data.error || '프로젝트 삭제·복구를 저장하지 못했습니다.',
+      );
+    await waitForFarmLedgerSync();
+    if (deleted && selectedProjectId === project.id)
+      setDeletedProjectToClose(project.id);
+    toast.add({
+      title: deleted ? '프로젝트를 삭제했습니다' : '프로젝트를 복구했습니다',
+      description: deleted
+        ? '연결된 기록은 보존되며 삭제한 프로젝트에서 복구할 수 있습니다.'
+        : project.name,
+      type: 'success',
+    });
   }
 
   async function submitProjectDocument(event: FormSubmitEvent) {
@@ -4985,7 +5024,7 @@ export function FarmLedgerDashboard({
                 <p className="text-xs text-[#586777]">
                   {refreshing
                     ? '최신 내용을 확인하고 있습니다'
-                    : `${workspace.projects.length}개 사업 · ${workspace.farms.length}개 농가`}
+                    : `${activeProjects.length}개 사업 · ${workspace.farms.length}개 농가`}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -5022,7 +5061,7 @@ export function FarmLedgerDashboard({
                 </Button>
                 <Button
                   onClick={openFarmDialog}
-                  disabled={!workspace.projects.length}
+                  disabled={!activeProjects.length}
                   className="rounded-xl bg-[#2f7b59] hover:bg-[#286b4d]"
                 >
                   <Plus />
@@ -5119,19 +5158,18 @@ export function FarmLedgerDashboard({
                           </div>
                         </div>
                       </div>
-                      <div className="mb-4 max-w-xs">
+                      <div className="mb-4 grid max-w-xl gap-3 sm:grid-cols-2">
+                        <ProjectYearSelector
+                          projects={activeProjects}
+                          value={projectYearFilter}
+                          onChange={setProjectYearFilter}
+                        />
                         <ProjectTypeSelector
                           id="project-type-scope"
                           value={projectTypeFilter}
                           onChange={setProjectTypeFilter}
                         />
                       </div>
-                      <ProjectYearSummary
-                        projects={workspace.projects}
-                        selectedYear={projectYearFilter}
-                        onYearChange={setProjectYearFilter}
-                        projectType={projectTypeFilter}
-                      />
                       <ProjectKpiPanel
                         summary={yearProjectKpis}
                         year={projectYearFilter}
@@ -7204,6 +7242,39 @@ export function FarmLedgerDashboard({
                           프로젝트 추가
                         </Button>
                       </div>
+                      {deletedProjects.length > 0 && (
+                        <Collapsible className="mb-4 rounded-xl border border-slate-200 bg-white p-3">
+                          <CollapsibleTrigger className="flex min-h-10 w-full items-center justify-between text-sm font-medium">
+                            삭제한 프로젝트 {deletedProjects.length}개
+                            <ChevronDown className="size-4" />
+                          </CollapsibleTrigger>
+                          <CollapsibleContent className="space-y-2 pt-3">
+                            <p className="text-sm text-slate-600">
+                              농가·구독·입금·업무·서류 기록은 보존되어 있습니다.
+                            </p>
+                            {deletedProjects.map((project) => (
+                              <div
+                                key={project.id}
+                                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"
+                              >
+                                <span className="text-sm">
+                                  {project.year}년 · {project.name}
+                                </span>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
+                                    setProjectDeletionTarget(project)
+                                  }
+                                >
+                                  복구
+                                </Button>
+                              </div>
+                            ))}
+                          </CollapsibleContent>
+                        </Collapsible>
+                      )}
                       <div className="mb-4 max-w-xs">
                         <ProjectTypeSelector
                           id="project-type-scope"
@@ -7212,7 +7283,7 @@ export function FarmLedgerDashboard({
                         />
                       </div>
                       <ProjectYearSummary
-                        projects={workspace.projects}
+                        projects={activeProjects}
                         selectedYear={projectYearFilter}
                         onYearChange={setProjectYearFilter}
                         projectType={projectTypeFilter}
@@ -7385,15 +7456,16 @@ export function FarmLedgerDashboard({
                                       </p>
                                     </TableCell>
                                     <TableCell>
-                                      {[
-                                        snapshot.installationRate,
-                                        snapshot.commissioningRate,
-                                        snapshot.educationRate,
-                                      ]
-                                        .map((rate) =>
-                                          rate === null ? '-' : `${rate}%`,
-                                        )
-                                        .join(' / ')}
+                                      <div className="grid min-w-[330px] grid-cols-3 gap-3">
+                                        {snapshot.farmProgress.stages.map(
+                                          (stage) => (
+                                            <ProjectStageFigures
+                                              key={stage.key}
+                                              stage={stage}
+                                            />
+                                          ),
+                                        )}
+                                      </div>
                                     </TableCell>
                                     <TableCell>
                                       <p>
@@ -7572,22 +7644,28 @@ export function FarmLedgerDashboard({
                                             className="rounded-xl bg-[#f6f8f5] px-3 py-2.5"
                                           >
                                             <div className="flex items-center justify-between gap-2">
-                                              <span className="text-[11px] font-medium text-[#7d8981]">
+                                              <span className="text-sm font-medium text-[#7d8981]">
                                                 {metric.label}
                                               </span>
-                                              <strong className="text-xs text-[#315f43]">
+                                              <strong className="text-base text-[#315f43]">
                                                 {metric.rate === null
                                                   ? '-'
                                                   : `${metric.rate}%`}
                                               </strong>
                                             </div>
-                                            <p className="mt-1 text-[11px] text-[#89938c]">
-                                              {metric.complete}/
-                                              {
-                                                projectCardSnapshot.records
-                                                  .length
-                                              }
-                                              곳
+                                            <p className="mt-2 text-sm text-slate-600">
+                                              {metric.label === '유효 구독'
+                                                ? '구독'
+                                                : '완료'}{' '}
+                                              {metric.complete}개소
+                                            </p>
+                                            <p className="mt-1 text-sm font-semibold text-amber-800">
+                                              {metric.label === '유효 구독'
+                                                ? '유효 구독 아님'
+                                                : '미완료'}{' '}
+                                              {projectCardSnapshot.records
+                                                .length - metric.complete}
+                                              개소
                                             </p>
                                             <div className="mt-2 h-1 overflow-hidden rounded-full bg-[#e3e9e2]">
                                               <div
@@ -9385,6 +9463,7 @@ export function FarmLedgerDashboard({
                       <Button
                         size="sm"
                         variant="outline"
+                        disabled={Boolean(selectedProject.deletedAt)}
                         onClick={() => openProjectUpdateDialog(selectedProject)}
                       >
                         <MessageSquareText /> 프로젝트 기록 추가
@@ -9392,6 +9471,7 @@ export function FarmLedgerDashboard({
                       <Button
                         size="sm"
                         variant="outline"
+                        disabled={Boolean(selectedProject.deletedAt)}
                         onClick={() => openProjectEditDialog(selectedProject)}
                       >
                         <Pencil /> 사업·정산 수정
@@ -9401,12 +9481,34 @@ export function FarmLedgerDashboard({
                         onClick={() =>
                           openProjectDocumentDialog(selectedProject)
                         }
-                        disabled={selectedProject.status === 'completed'}
+                        disabled={
+                          selectedProject.status === 'completed' ||
+                          Boolean(selectedProject.deletedAt)
+                        }
                         className="bg-[#2f7b59] hover:bg-[#286b4d]"
                       >
                         <Plus /> 제출서류 추가
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-red-700"
+                        onClick={() =>
+                          setProjectDeletionTarget(selectedProject)
+                        }
+                      >
+                        <Trash2 />
+                        {selectedProject.deletedAt
+                          ? '프로젝트 복구'
+                          : '프로젝트 삭제'}
+                      </Button>
                     </div>
+                    {selectedProject.deletedAt && (
+                      <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+                        삭제된 프로젝트입니다. 목록·사업 집계에서는 제외되며,
+                        연결된 기록은 보존됩니다.
+                      </p>
+                    )}
                   </div>
 
                   <Tabs
@@ -9434,6 +9536,13 @@ export function FarmLedgerDashboard({
                       <TabsTrigger value="history">처리 이력</TabsTrigger>
                     </TabsList>
                     <TabsContent value="summary" className="space-y-4">
+                      <ProjectFarmProgressCard
+                        key={selectedProject.id}
+                        progress={selectedProjectSnapshot.farmProgress}
+                        farmName={(farmId) =>
+                          farmById.get(farmId)?.name || '농가 정보 없음'
+                        }
+                      />
                       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                         {[
                           {
@@ -11288,6 +11397,14 @@ export function FarmLedgerDashboard({
           </section>
         </div>
 
+        {projectDeletionTarget && (
+          <ProjectDeletionDialog
+            key={projectDeletionTarget.id}
+            project={projectDeletionTarget}
+            onConfirm={confirmProjectDeletion}
+            onClose={() => setProjectDeletionTarget(null)}
+          />
+        )}
         <Dialog
           open={Boolean(quickDetailTaskId)}
           onOpenChange={(open) => {
@@ -11710,7 +11827,7 @@ export function FarmLedgerDashboard({
             !submitting && setDialog(open ? 'project' : null)
           }
         >
-          <DialogContent className="max-h-[92vh] overflow-y-auto p-5 sm:max-w-[760px] sm:p-6">
+          <DialogContent className="max-h-[92dvh] overflow-y-auto p-5 sm:max-w-[1100px] sm:p-6">
             <DialogHeader>
               <DialogTitle className="text-lg">
                 {editingProjectId
@@ -12953,7 +13070,7 @@ export function FarmLedgerDashboard({
                             </SelectValue>
                           </SelectTrigger>
                           <SelectContent>
-                            {workspace.projects
+                            {activeProjects
                               .filter(
                                 (project) =>
                                   dialog === 'farm' ||
@@ -13347,7 +13464,7 @@ export function FarmLedgerDashboard({
                     <SelectItem value="unassigned">
                       미지정 · 수신함에만 보관
                     </SelectItem>
-                    {workspace.projects
+                    {activeProjects
                       .filter((project) => project.status !== 'completed')
                       .map((project) => (
                         <SelectItem key={project.id} value={project.id}>
@@ -13535,7 +13652,7 @@ export function FarmLedgerDashboard({
                     <SelectItem value="none">
                       선택 안 함 · 농가별 업무로 정리
                     </SelectItem>
-                    {workspace.projects
+                    {activeProjects
                       .filter((project) => project.status !== 'completed')
                       .map((project) => (
                         <SelectItem key={project.id} value={project.id}>

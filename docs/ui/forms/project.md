@@ -1,5 +1,7 @@
 # 사업 등록·수정
 
+2026-09-09: PC 팝업을 최대 1,100px로 넓히고 기존 너비·높이 스타일 누락을 수정했다. [프로젝트 관리 개선](../projects/management-update.md).
+
 기준 커밋: `141faaa` · 작성일: 2026-09-07
 
 DialogKind: `project`

@@ -62,7 +62,7 @@ service cloud.firestore {
         && request.resource.data.updatedAt >= resource.data.updatedAt;
     }
 
-    function validRelations(workspaceId, name) {
+    function validRelations(workspaceId, name, creating) {
       return name == 'projects'
         || name == 'farms'
         || name == 'inboxItems'
@@ -70,6 +70,7 @@ service cloud.firestore {
         || name == 'farmRecordReservations'
         || (name == 'projectDocuments'
           && request.resource.data.projectId is string
+          && (!creating || getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.get('deletedAt', 0) == 0)
           && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.id == request.resource.data.projectId)
         || (name == 'projectUpdates'
           && request.resource.data.projectId is string
@@ -77,6 +78,7 @@ service cloud.firestore {
         || (name == 'farmRecords'
           && request.resource.data.farmId is string
           && request.resource.data.projectId is string
+          && (!creating || getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.get('deletedAt', 0) == 0)
           && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/farms/$(request.resource.data.farmId)).data.id == request.resource.data.farmId
           && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.id == request.resource.data.projectId)
         || (name == 'subscriptionEvents'
@@ -90,11 +92,41 @@ service cloud.firestore {
             && request.resource.data.farmId == ''
             && request.resource.data.projectId is string
             && request.resource.data.projectId != ''
+            && (!creating || getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.get('deletedAt', 0) == 0)
             && request.resource.data.workType in ['communication', 'installation', 'service', 'note']
             && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.id == request.resource.data.projectId)))
         || (name in ['blockerEpisodes', 'visits', 'checklistItems', 'historyEntries']
           && request.resource.data.workItemId is string
           && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workItems/$(request.resource.data.workItemId)).data.id == request.resource.data.workItemId);
+    }
+
+    // Old clients must not erase a deletion marker by saving an entire project.
+    function validProjectLifecycle(workspaceId, documentId, creating) {
+      let before = creating ? {} : resource.data;
+      let after = request.resource.data;
+      let previous = before.get('deletedAt', 0);
+      let next = after.get('deletedAt', 0);
+      return next is int && next >= 0
+        && (creating ? next == 0 : (
+          (next == previous
+            && after.get('deletedByUid', '') == before.get('deletedByUid', '')
+            && after.get('lifecycleUpdateId', '') == before.get('lifecycleUpdateId', ''))
+          || projectLifecycleChange(workspaceId, documentId, before, after)));
+    }
+
+    function projectLifecycleChange(workspaceId, documentId, before, after) {
+      let updateId = after.get('lifecycleUpdateId', '');
+      let path = /databases/$(database)/documents/workspaces/$(workspaceId)/projectUpdates/$(updateId);
+      let audit = getAfter(path).data;
+      let deleting = after.get('deletedAt', 0) > 0;
+      return updateId is string && updateId != '' && !exists(path)
+        && after.diff(before).affectedKeys().hasOnly(['deletedAt', 'deletedByUid', 'lifecycleUpdateId', 'updatedAt', 'updatedByUid'])
+        && ((deleting && before.get('deletedAt', 0) == 0 && after.deletedAt == after.updatedAt && after.deletedByUid == request.auth.uid)
+          || (!deleting && before.get('deletedAt', 0) > 0 && after.deletedByUid == ''))
+        && audit.id == updateId && audit.projectId == documentId
+        && audit.kind == 'system' && audit.channel == 'system'
+        && audit.projectLifecycleAction == (deleting ? 'delete' : 'restore')
+        && audit.createdAt == after.updatedAt && audit.createdByUid == request.auth.uid;
     }
 
     function openTask(data) {
@@ -172,15 +204,17 @@ service cloud.firestore {
       allow create: if activeMember()
         && knownCollection(collectionName)
         && validCreate(documentId)
+        && (collectionName != 'projects' || validProjectLifecycle(workspaceId, documentId, true))
         && (collectionName != 'workItems' || validWorkTree(workspaceId, documentId, true))
-        && validRelations(workspaceId, collectionName);
+        && validRelations(workspaceId, collectionName, true);
 
       allow update: if activeMember()
         && knownCollection(collectionName)
         && !(collectionName in ['subscriptionEvents', 'historyEntries'])
         && validUpdate(documentId)
+        && (collectionName != 'projects' || validProjectLifecycle(workspaceId, documentId, false))
         && (collectionName != 'workItems' || validWorkTree(workspaceId, documentId, false))
-        && validRelations(workspaceId, collectionName);
+        && validRelations(workspaceId, collectionName, false);
 
       allow delete: if false;
     }

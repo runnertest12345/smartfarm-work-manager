@@ -72,6 +72,7 @@ import { renewalCountBeforeEvent } from '@/lib/subscription-renewal-report';
 import { parseReceivedImages, type ReceivedImage } from '@/lib/received-images';
 import { writeReceivedImages } from './received-images-store';
 import { isProjectTask } from '@/lib/project-work';
+import { projectLifecyclePatch } from '@/lib/project-lifecycle';
 import {
   calculateSubscriptionPayment,
   type SubscriptionPaymentRequest,
@@ -895,8 +896,15 @@ function assertProjectState(input: FarmProjectInput) {
   }
 }
 
-function assertProjectEditable(project: FarmProject | undefined) {
+function assertProjectEditable(
+  project: FarmProject | undefined,
+  allowDeleted = false,
+) {
   if (!project) throw new Error('선택한 사업을 찾을 수 없습니다.');
+  if (project.deletedAt && !allowDeleted)
+    throw new Error(
+      '삭제된 프로젝트입니다. 프로젝트 관리에서 먼저 복구해 주세요.',
+    );
   if (project.status === 'completed') {
     throw new Error('완료된 사업은 먼저 다시 진행 상태로 열어 주세요.');
   }
@@ -1111,6 +1119,10 @@ async function updateProject(projectId: string, input: FarmProjectInput) {
     (project) => project.id === projectId,
   );
   if (!existing) throw new Error('선택한 사업을 찾을 수 없습니다.');
+  if (existing.deletedAt)
+    throw new Error(
+      '삭제된 프로젝트입니다. 프로젝트 관리에서 먼저 복구해 주세요.',
+    );
 
   if (
     existing.status === 'completed' &&
@@ -1192,6 +1204,46 @@ async function updateProject(projectId: string, input: FarmProjectInput) {
   return { project };
 }
 
+async function changeProjectDeletion(
+  projectId: string,
+  expectedUpdatedAt: number,
+  deleted: boolean,
+) {
+  const user = requireSignedInUser();
+  const reference = documentRef('projects', projectId);
+  const updateId = crypto.randomUUID();
+  return runTransaction(getFirebaseServices().db, async (transaction) => {
+    const snapshot = await transaction.get(reference);
+    if (!snapshot.exists()) throw new Error('선택한 사업을 찾을 수 없습니다.');
+    const existing = snapshot.data() as FarmProject;
+    const patch = projectLifecyclePatch(
+      existing,
+      expectedUpdatedAt,
+      deleted,
+      Date.now(),
+      user.uid,
+      updateId,
+    );
+    if (!patch) return { project: existing };
+    const audit = {
+      ...systemProjectUpdate(
+        projectId,
+        deleted ? '프로젝트 삭제' : '프로젝트 복구',
+        deleted
+          ? '프로젝트를 목록·사업 집계에서 제외했습니다. 연결된 농가·입금·업무·서류 기록은 보존했습니다.'
+          : '프로젝트를 목록·사업 집계에 복구했습니다.',
+        user.displayName || user.email || '담당자',
+        patch.updatedAt,
+      ),
+      id: updateId,
+      projectLifecycleAction: deleted ? 'delete' : 'restore',
+    };
+    transaction.update(reference, patch);
+    setCreated(transaction, 'projectUpdates', audit);
+    return { project: { ...existing, ...patch } };
+  });
+}
+
 async function createProjectDocument(
   projectId: string,
   input: FarmProjectDocumentInput,
@@ -1233,6 +1285,7 @@ async function updateProjectDocument(
   if (!existing) throw new Error('제출서류 항목을 찾을 수 없습니다.');
   const project = assertProjectEditable(
     workspace.projects.find((item) => item.id === existing.projectId),
+    true,
   );
   const statusRank = {
     not_started: 0,
@@ -1438,6 +1491,14 @@ async function createFarmWithRecord(
       'farmRecordReservations',
       recordClaimId,
     );
+    const latestProject = await transaction.get(
+      documentRef('projects', project.id),
+    );
+    assertProjectEditable(
+      latestProject.exists()
+        ? (latestProject.data() as FarmProject)
+        : undefined,
+    );
     const [farmClaim, recordClaim] = await Promise.all([
       transaction.get(farmClaimRef),
       transaction.get(recordClaimRef),
@@ -1544,6 +1605,14 @@ async function createRecord(
   const claimId = recordKey(farmId, project.id);
   const { db } = getFirebaseServices();
   await runTransaction(db, async (transaction) => {
+    const latestProject = await transaction.get(
+      documentRef('projects', project.id),
+    );
+    assertProjectEditable(
+      latestProject.exists()
+        ? (latestProject.data() as FarmProject)
+        : undefined,
+    );
     const claimRef = internalDocumentRef('farmRecordReservations', claimId);
     const claim = await transaction.get(claimRef);
     if (claim.exists() && claim.data().active === true) {
@@ -2339,7 +2408,7 @@ async function savePaymentMutation(options: {
       );
     }
     if (!existingWork)
-      assertProjectEditable(projectSnapshot.data() as FarmProject);
+      assertProjectEditable(projectSnapshot.data() as FarmProject, true);
     if (
       existingWork &&
       projectSnapshot.data().status === 'completed' &&
@@ -2642,6 +2711,7 @@ async function createWorkItem(
     throw new Error('프로젝트 업무에는 구독 입금을 기록할 수 없습니다.');
   assertProjectEditable(
     workspace.projects.find((item) => item.id === projectId),
+    Boolean(record),
   );
   const sourceInbox = sourceInboxId
     ? workspace.inboxItems.find((item) => item.id === sourceInboxId)
@@ -2793,7 +2863,7 @@ async function createWorkItem(
     if (await readCreateReplay(transaction)) return;
     const project = await transaction.get(documentRef('projects', projectId));
     if (!project.exists()) throw new Error('프로젝트를 찾을 수 없습니다.');
-    assertProjectEditable(project.data() as FarmProject);
+    assertProjectEditable(project.data() as FarmProject, Boolean(record));
     const writeParent = await prepareParentMutation(transaction, workItem);
     if (sourceInbox) {
       const latest = await transaction.get(
@@ -3269,6 +3339,7 @@ async function saveVisit(input: FarmWorkVisitInput) {
       latestProject.exists()
         ? (latestProject.data() as FarmProject)
         : undefined,
+      true,
     );
     if (existing) {
       const latestVisit = await batch.get(documentRef('visits', existing.id));
@@ -3354,6 +3425,7 @@ async function toggleChecklist(
       latestProject.exists()
         ? (latestProject.data() as FarmProject)
         : undefined,
+      true,
     );
     const latestCheck = await batch.get(
       documentRef('checklistItems', existing.id),
@@ -3404,6 +3476,19 @@ function parseChecklist(value: unknown) {
 async function mutateFarmLedger(method: string, body: JsonObject) {
   const kind = typeof body.kind === 'string' ? body.kind : '';
   if (!kind) throw new Error('저장할 정보 종류를 확인해 주세요.');
+
+  if (kind === 'project_lifecycle' && method === 'PATCH') {
+    if (
+      typeof body.deleted !== 'boolean' ||
+      typeof body.expectedUpdatedAt !== 'number'
+    )
+      throw new Error('프로젝트 삭제·복구 요청을 확인해 주세요.');
+    return changeProjectDeletion(
+      requiredId(body.projectId, '사업 ID'),
+      body.expectedUpdatedAt,
+      body.deleted,
+    );
+  }
 
   if (kind === 'project') {
     const input = parseProjectInput(body.project);

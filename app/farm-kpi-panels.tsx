@@ -69,6 +69,58 @@ export function ProjectTypeSelector({
   );
 }
 
+export function ProjectYearSelector({
+  projects,
+  value,
+  onChange,
+}: {
+  projects: FarmProject[];
+  value: string;
+  onChange: (year: string) => void;
+}) {
+  const years = [
+    ...new Set(
+      projects
+        .filter((project) => !project.deletedAt)
+        .map((project) => String(project.year)),
+    ),
+  ];
+  if (value !== 'all' && !years.includes(value)) years.push(value);
+  years.sort((a, b) => Number(b) - Number(a));
+  return (
+    <Field>
+      <FieldLabel htmlFor="overview-project-year">기준 연도</FieldLabel>
+      <Select
+        value={value}
+        onValueChange={(year) => {
+          if (
+            year === 'all' ||
+            (typeof year === 'string' && years.includes(year))
+          )
+            onChange(String(year));
+        }}
+      >
+        <SelectTrigger
+          id="overview-project-year"
+          className="h-10 w-full bg-white"
+        >
+          <SelectValue>
+            {value === 'all' ? '전체 연도' : `${value}년`}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">전체 연도</SelectItem>
+          {years.map((year) => (
+            <SelectItem key={year} value={year}>
+              {year}년
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
 export function ProjectYearSummary({
   projects,
   selectedYear,
