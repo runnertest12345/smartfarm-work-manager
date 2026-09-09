@@ -41,6 +41,7 @@ const tag = (name) =>
     variant,
     size,
     keepMounted,
+    containerClassName,
     onValueChange,
     ...props
   }) {
@@ -60,6 +61,20 @@ const hook = (initial) => {
 const { ProjectWorkTree } = load('app/project-work-tree.tsx', {
   react: { ...React, useState: hook },
   '@/lib/work-hierarchy': hierarchy,
+  '@/lib/farm-types': types,
+  '@/components/ui/table': Object.fromEntries(
+    [
+      'Table',
+      'TableBody',
+      'TableCell',
+      'TableHead',
+      'TableHeader',
+      'TableRow',
+    ].map((name, i) => [
+      name,
+      tag(['table', 'tbody', 'td', 'th', 'thead', 'tr'][i]),
+    ]),
+  ),
 });
 const { WorkQuickEditor, WorkTaskSurface, ChildTaskForm } = load(
   'app/work-task-controls.tsx',
@@ -372,25 +387,44 @@ const groupProps = (extra = {}) => ({
   searching: false,
   expanded: false,
   onToggleExpanded() {},
-  renderItem: (item) =>
-    React.createElement(
-      'button',
-      { type: 'button', 'aria-label': `${item.title} 상세` },
-      item.title,
-    ),
+  onOpen() {},
+  renderStatus: (item) => types.FARM_WORK_STATUS_LABELS[item.status],
+  renderDueDate: (item) => item.dueDate || '기한 미지정',
+  latestAction: () => '',
+  farmName: () => '프로젝트 공통',
   ...extra,
 });
 
-test('프로젝트 현황에서 자식·손자는 부모 카드 내부에 한 번씩 중첩된다', () => {
+test('계층형 표는 부모→자식→손자 순서로 한 번씩 표시하고 모든 행의 5개 열을 정렬한다', () => {
   reset();
   const tree = render(ProjectWorkTree, groupProps());
-  const root = find(tree, (x) => x.props?.['data-work-id'] === 'root');
-  const child = find(root, (x) => x.props?.['data-work-id'] === 'child');
+  const rootGroup = find(tree, (x) => x.props?.['data-work-group'] === 'root');
+  const child = find(rootGroup, (x) => x.props?.['data-work-id'] === 'child');
   const grandchild = find(
-    child,
+    rootGroup,
     (x) => x.props?.['data-work-id'] === 'grandchild',
   );
   assert.equal(grandchild.props['data-work-depth'], 2);
+  assert.equal(child.props['data-parent-work-id'], 'root');
+  assert.equal(grandchild.props['data-parent-work-id'], 'child');
+  const rows = nodes(rootGroup).filter((x) => x.props?.['data-work-id']);
+  assert.equal(
+    rows[0].props.style.borderTopWidth,
+    2,
+    'collapsed families keep their divider',
+  );
+  assert.equal(
+    rows.map((x) => x.props['data-work-id']).join(','),
+    'root,child,grandchild,sibling',
+  );
+  for (const row of rows) {
+    assert.equal(React.Children.toArray(row.props.children).length, 5);
+    assert.equal(
+      nodes(row).filter((x) => x.props?.['data-work-id']).length,
+      1,
+      'task rows are siblings, never nested cards',
+    );
+  }
   for (const item of nestedItems)
     assert.equal(
       nodes(tree).filter((x) => x.props?.['data-work-id'] === item.id).length,
@@ -403,7 +437,9 @@ test('프로젝트 현황에서 자식·손자는 부모 카드 내부에 한 �
       'buttons are not nested',
     );
   const html = renderToStaticMarkup(tree);
-  assert.match(html, /에 속한 세부 업무/);
+  assert.match(html, /<table/);
+  assert.equal((html.match(/scope="col"/g) || []).length, 5);
+  assert.doesNotMatch(html, /<li|<ul/);
   assert.match(html, /세부 업무 · 2단계/);
   assert.match(html, /border-l-2/);
 });
@@ -416,19 +452,24 @@ test('접힌 조상 아래 손자 검색은 조상을 펼치고 무관한 형제
     (x) => x.props?.['aria-label'] === '견적서 제출 세부 업무 접기',
   ).props.onClick();
   tree = render(ProjectWorkTree, groupProps());
+  assert.equal(nodes(tree).filter((x) => x.props?.['data-work-id']).length, 1);
   assert.equal(
-    find(tree, (x) => x.props?.id === 'project-task-children-root').props
-      .hidden,
-    true,
+    find(
+      tree,
+      (x) => x.props?.['aria-label'] === '견적서 제출 세부 업무 펼치기',
+    ).props['aria-expanded'],
+    false,
   );
   tree = render(
     ProjectWorkTree,
     groupProps({ matchedItems: [nestedItems[2]], searching: true }),
   );
   assert.equal(
-    find(tree, (x) => x.props?.id === 'project-task-children-root').props
-      .hidden,
-    false,
+    find(
+      tree,
+      (x) => x.props?.['aria-label'] === '견적서 제출 세부 업무 검색 중 펼침',
+    ).props['aria-expanded'],
+    true,
   );
   assert.equal(
     nodes(tree).filter((x) => x.props?.['data-work-id'] === 'sibling').length,
@@ -438,11 +479,7 @@ test('접힌 조상 아래 손자 검색은 조상을 펼치고 무관한 형제
   assert.match(renderToStaticMarkup(tree), /검색된 세부 업무의 상위 업무/);
   // Clearing the search restores the user's collapsed state.
   tree = render(ProjectWorkTree, groupProps());
-  assert.equal(
-    find(tree, (x) => x.props?.id === 'project-task-children-root').props
-      .hidden,
-    true,
-  );
+  assert.equal(nodes(tree).filter((x) => x.props?.['data-work-id']).length, 1);
 });
 
 test('모든 업무가 검색에 일치해도 접혀 있던 조상은 검색 중 펼친다', () => {
@@ -453,11 +490,7 @@ test('모든 업무가 검색에 일치해도 접혀 있던 조상은 검색 중
     (x) => x.props?.['aria-label'] === '견적서 제출 세부 업무 접기',
   ).props.onClick();
   tree = render(ProjectWorkTree, groupProps({ searching: true }));
-  assert.equal(
-    find(tree, (x) => x.props?.id === 'project-task-children-root').props
-      .hidden,
-    false,
-  );
+  assert.equal(nodes(tree).filter((x) => x.props?.['data-work-id']).length, 4);
   assert.match(renderToStaticMarkup(tree), /검색 중 펼침/);
 });
 
@@ -472,15 +505,10 @@ test('깊은 세부 업무는 단계 표기를 유지하면서 누적 들여쓰�
     ProjectWorkTree,
     groupProps({ items, matchedItems: items }),
   );
-  const deepList = find(
-    tree,
-    (x) => x.props?.id === 'project-task-children-level-4',
-  );
-  assert.match(deepList.props.className, /p-0 pt-3/);
-  assert.doesNotMatch(deepList.props.className, /sm:p-4/);
+  const deepRow = find(tree, (x) => x.props?.['data-work-id'] === 'level-6');
   assert.equal(
-    find(deepList, (x) => x.type === 'ul').props.className,
-    'space-y-3',
+    find(deepRow, (x) => x.props?.style?.marginLeft).props.style.marginLeft,
+    '60px',
   );
   assert.match(renderToStaticMarkup(tree), /세부 업무 · 6단계/);
 });
@@ -530,21 +558,24 @@ test('더 보기는 8개 부모 묶음으로 제한하며 세부 업무를 중�
   );
 });
 
-test('업무 상세 클릭은 선택한 자식만 연다', () => {
+test('세부 업무 접기와 상세 클릭은 분리되어 선택한 자식만 연다', () => {
   reset();
   const opened = [];
   const tree = render(
     ProjectWorkTree,
     groupProps({
-      renderItem: (item) =>
-        React.createElement(
-          'button',
-          { 'data-open-id': item.id, onClick: () => opened.push(item.id) },
-          item.title,
-        ),
+      onOpen: (item) => opened.push(item.id),
     }),
   );
-  find(tree, (x) => x.props?.['data-open-id'] === 'grandchild').props.onClick();
+  find(
+    tree,
+    (x) => x.props?.['aria-label'] === '견적서 제출 세부 업무 접기',
+  ).props.onClick();
+  assert.deepEqual(opened, []);
+  find(
+    tree,
+    (x) => x.props?.['aria-label'] === '수정 내역 확인 업무 상세 열기',
+  ).props.onClick();
   assert.deepEqual(opened, ['grandchild']);
   assert.equal(
     find(tree, (x) => x.props?.['data-work-id'] === 'root').props.onClick,
@@ -593,6 +624,75 @@ test('조회 누락 세부 업무는 안내하고 잘못된 순환 이력도 중
   assert.equal(groups[0].children.length, 1);
   assert.equal(groups[0].children[0].children.length, 0);
   assert.equal(hierarchy.buildWorkDisplayGroups(missing, []).length, 0);
+});
+
+test('계층 표의 상태·담당자·기한·처리 내용은 각 업무의 값으로 독립 표시된다', () => {
+  reset();
+  const tasks = nestedItems.map((task, i) => ({
+    ...task,
+    owner: `담당 ${i}`,
+    dueDate: `2026-09-${10 + i}`,
+  }));
+  const tree = render(
+    ProjectWorkTree,
+    groupProps({
+      items: tasks,
+      matchedItems: tasks,
+      latestAction: (task) => `처리 ${task.id}`,
+    }),
+  );
+  for (const task of tasks) {
+    const row = find(tree, (x) => x.props?.['data-work-id'] === task.id);
+    const cells = React.Children.toArray(row.props.children);
+    assert.equal(
+      cells[1].props.children,
+      types.FARM_WORK_STATUS_LABELS[task.status],
+    );
+    assert.equal(cells[2].props.children, task.owner);
+    assert.equal(cells[3].props.children, task.dueDate);
+    assert.equal(cells[4].props.children.props.children, `처리 ${task.id}`);
+  }
+});
+
+test('긴 제목은 줄바꿈하고 최근처리는 이력→다음행동→빈 안내 순서로 유지한다', () => {
+  reset();
+  const tasks = [
+    {
+      ...item,
+      id: 'history',
+      title: '확인해야 하는 긴 업무명 '.repeat(12),
+      nextAction: '다음 행동',
+    },
+    { ...item, id: 'next', nextAction: '담당자에게 확인' },
+    { ...item, id: 'empty', owner: '' },
+  ];
+  const tree = render(
+    ProjectWorkTree,
+    groupProps({
+      items: tasks,
+      matchedItems: tasks,
+      latestAction: (task) => (task.id === 'history' ? '최근 처리 기록' : ''),
+    }),
+  );
+  const html = renderToStaticMarkup(tree);
+  assert.match(html, /최근 처리 기록/);
+  assert.match(html, /담당자에게 확인/);
+  assert.match(html, /처리 내용 없음/);
+  assert.match(html, /기한 미지정/);
+  assert.match(html, /미지정/);
+  const title = find(
+    tree,
+    (x) => x.props?.['aria-label'] === `${tasks[0].title} 업무 상세 열기`,
+  );
+  assert.match(title.props.className, /break-words/);
+  assert.doesNotMatch(title.props.className, /truncate/);
+  assert.match(
+    find(
+      tree,
+      (x) => x.props?.['aria-label'] === '프로젝트 하위 업무와 세부 업무',
+    ).props.className,
+    /min-w-\[1000px\]/,
+  );
 });
 test('자식 생성 재시도는 같은 요청 ID와 작성 시각을 유지한다', async () => {
   reset();

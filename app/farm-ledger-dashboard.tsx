@@ -5292,9 +5292,10 @@ export function FarmLedgerDashboard({
                                         </span>
                                       </h3>
                                       <p className="mt-1 text-xs text-[#7d8981]">
-                                        세부 업무는 해당 하위 업무 안에 묶어
-                                        표시합니다. 실행 업무 수와 완료율은 가장
-                                        마지막 단계 업무 기준입니다.
+                                        화살표로 세부 업무를 펼치고, 업무명을
+                                        눌러 상세를 확인하세요. 실행 업무 수와
+                                        완료율은 가장 마지막 단계 업무
+                                        기준입니다.
                                       </p>
                                     </div>
                                     <Button
@@ -5327,82 +5328,41 @@ export function FarmLedgerDashboard({
                                               : [...current, row.project.id],
                                         )
                                       }
-                                      renderItem={(item) => {
-                                        const farm = farmById.get(item.farmId);
-                                        const latestAction = latestEntryWith(
-                                          item,
-                                          'actionContent',
-                                        );
-                                        return (
-                                          <button
-                                            key={item.id}
-                                            type="button"
-                                            aria-label={`${item.title} 업무 상세 열기`}
-                                            onClick={() =>
-                                              openFarm(item.farmId, item.id)
-                                            }
-                                            className="grid w-full gap-3 rounded-xl p-3 text-left transition-colors hover:bg-[#eaf4ed] focus-visible:outline-2 focus-visible:outline-emerald-700 sm:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)_auto] sm:items-center"
+                                      onOpen={(item) =>
+                                        openFarm(item.farmId, item.id)
+                                      }
+                                      farmName={(item) =>
+                                        farmById.get(item.farmId)?.name ??
+                                        '프로젝트 공통'
+                                      }
+                                      latestAction={(item) =>
+                                        latestEntryWith(item, 'actionContent')
+                                          ?.actionContent || ''
+                                      }
+                                      renderStatus={(item) => (
+                                        <Badge
+                                          variant="outline"
+                                          className={`text-sm ${workStatusClass(item.status)}`}
+                                        >
+                                          {FARM_WORK_STATUS_LABELS[item.status]}
+                                        </Badge>
+                                      )}
+                                      renderDueDate={(item) => (
+                                        <div className="space-y-1">
+                                          <p className="text-sm text-[#4d6054]">
+                                            {formatDate(item.dueDate)}
+                                          </p>
+                                          <Badge
+                                            variant="outline"
+                                            className={`text-xs ${dueClass(item.dueDate, item.status === 'completed')}`}
                                           >
-                                            <div className="min-w-0">
-                                              <div className="flex flex-wrap items-center gap-2">
-                                                <Badge
-                                                  variant="outline"
-                                                  className={workStatusClass(
-                                                    item.status,
-                                                  )}
-                                                >
-                                                  {
-                                                    FARM_WORK_STATUS_LABELS[
-                                                      item.status
-                                                    ]
-                                                  }
-                                                </Badge>
-                                                <span className="text-[11px] text-[#7d8981]">
-                                                  {
-                                                    FARM_WORK_TYPE_LABELS[
-                                                      item.workType
-                                                    ]
-                                                  }
-                                                </span>
-                                              </div>
-                                              <p className="mt-2 break-words text-sm font-semibold text-[#29382f]">
-                                                {item.title}
-                                              </p>
-                                              <p className="mt-1 truncate text-xs text-[#7d8981]">
-                                                {farm?.name ?? '프로젝트 공통'}{' '}
-                                                · 담당 {item.owner || '미지정'}
-                                              </p>
-                                            </div>
-                                            <div className="min-w-0 rounded-lg bg-white px-3 py-2">
-                                              <p className="text-[10px] font-semibold text-[#4f765b]">
-                                                마지막 처리 내용
-                                              </p>
-                                              <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#536158]">
-                                                {latestAction?.actionContent ||
-                                                  item.nextAction ||
-                                                  '처리 내용이 없습니다.'}
-                                              </p>
-                                            </div>
-                                            <div className="flex items-center justify-between gap-3 sm:block sm:text-right">
-                                              <Badge
-                                                variant="outline"
-                                                className={dueClass(
-                                                  item.dueDate,
-                                                  item.status === 'completed',
-                                                )}
-                                              >
-                                                {dueLabel(
-                                                  item.dueDate,
-                                                  item.status === 'completed',
-                                                )}
-                                              </Badge>
-                                              <p className="mt-1 text-[10px] text-[#89938c]">
-                                                {formatDate(item.dueDate)}
-                                              </p>
-                                            </div>
-                                          </button>
-                                        );
-                                      }}
+                                            {dueLabel(
+                                              item.dueDate,
+                                              item.status === 'completed',
+                                            )}
+                                          </Badge>
+                                        </div>
+                                      )}
                                     />
                                   ) : (
                                     <div className="mt-3 rounded-xl border border-dashed border-[#d7dfd5] bg-[#fafbf9] px-4 py-8 text-center">
