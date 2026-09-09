@@ -258,6 +258,7 @@ test('프로젝트 표의 KPI 표시가 요약 카드와 같은 수치를 사용
 test('통합 현황은 연도 드롭다운을 사용하고 같은 선택값을 KPI와 목록에 전달한다', () => {
   const chosen = [];
   const props = {
+    id: 'overview-project-year',
     projects: [
       { id: 'a', year: 2026 },
       { id: 'b', year: 2025 },
@@ -269,6 +270,10 @@ test('통합 현황은 연도 드롭다운을 사용하고 같은 선택값을 K
   const tree = render(ProjectYearSelector, props);
   assert.equal(nodes(tree).filter((node) => node.type === 'button').length, 0);
   const select = find(tree, (node) => node.type === selects.Select);
+  assert.equal(
+    find(tree, (node) => node.type === selects.SelectTrigger).props.id,
+    props.id,
+  );
   assert.equal(select.props.value, '2026');
   select.props.onValueChange('2025');
   select.props.onValueChange('all');
@@ -294,6 +299,54 @@ test('통합 현황은 연도 드롭다운을 사용하고 같은 선택값을 K
     dashboard,
     /const yearProjects = filterProjectsByScope\(\s*activeProjects,\s*projectYearFilter/,
   );
+});
+
+test('프로젝트 관리도 연도 버튼 없이 선택 연도의 KPI와 표·카드 목록을 표시한다', () => {
+  const dashboard = source('app/farm-ledger-dashboard.tsx');
+  const projects = dashboard.slice(
+    dashboard.indexOf("{view === 'projects'"),
+    dashboard.indexOf("{view === 'business'"),
+  );
+  assert.match(
+    projects,
+    /<ProjectYearSelector\s+id="management-project-year"\s+projects=\{activeProjects\}\s+value=\{projectYearFilter\}\s+onChange=\{setProjectYearFilter\}/,
+  );
+  assert.doesNotMatch(dashboard, /ProjectYearSummary/);
+  assert.doesNotMatch(
+    source('app/farm-kpi-panels.tsx'),
+    /연도별 사업 집계|aria-pressed/,
+  );
+  assert.match(
+    projects,
+    /summary=\{yearProjectKpis\}\s+year=\{projectYearFilter\}/,
+  );
+  assert.equal((projects.match(/filteredProjects\.map/g) || []).length, 2);
+  assert.match(dashboard, /const filteredProjects = yearProjects\s*\.filter/);
+});
+
+test('연도 선택은 빈 연도와 전체 연도를 유지하며 두 화면의 라벨을 연결한다', () => {
+  for (const value of ['all', '2024']) {
+    const tree = render(ProjectYearSelector, {
+      id: 'management-project-year',
+      projects: [{ id: 'a', year: 2026 }],
+      value,
+      onChange() {},
+    });
+    assert.equal(
+      find(tree, (node) => node.props?.htmlFor).props.htmlFor,
+      'management-project-year',
+    );
+    assert.equal(
+      find(tree, (node) => node.type === selects.Select).props.value,
+      value,
+    );
+    assert.ok(
+      nodes(tree).some(
+        (node) =>
+          node.type === selects.SelectItem && node.props.value === value,
+      ),
+    );
+  }
 });
 
 const project = { id: 'p1', name: '태백 사업', year: 2026, updatedAt: 10 };

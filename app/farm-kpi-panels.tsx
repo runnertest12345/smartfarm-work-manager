@@ -14,10 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { FARM_PROJECT_TYPES, FARM_PROJECT_TYPE_LABELS } from '@/lib/farm-types';
-import {
-  filterProjectsByScope,
-  type ProjectTypeScope,
-} from '@/lib/dashboard-kpis';
+import type { ProjectTypeScope } from '@/lib/dashboard-kpis';
 import type { FarmProject } from '@/lib/farm-types';
 import type {
   ProjectKpis,
@@ -70,10 +67,12 @@ export function ProjectTypeSelector({
 }
 
 export function ProjectYearSelector({
+  id,
   projects,
   value,
   onChange,
 }: {
+  id: string;
   projects: FarmProject[];
   value: string;
   onChange: (year: string) => void;
@@ -89,7 +88,7 @@ export function ProjectYearSelector({
   years.sort((a, b) => Number(b) - Number(a));
   return (
     <Field>
-      <FieldLabel htmlFor="overview-project-year">기준 연도</FieldLabel>
+      <FieldLabel htmlFor={id}>기준 연도</FieldLabel>
       <Select
         value={value}
         onValueChange={(year) => {
@@ -100,10 +99,7 @@ export function ProjectYearSelector({
             onChange(String(year));
         }}
       >
-        <SelectTrigger
-          id="overview-project-year"
-          className="h-10 w-full bg-white"
-        >
+        <SelectTrigger id={id} className="h-10 w-full bg-white">
           <SelectValue>
             {value === 'all' ? '전체 연도' : `${value}년`}
           </SelectValue>
@@ -118,57 +114,6 @@ export function ProjectYearSelector({
         </SelectContent>
       </Select>
     </Field>
-  );
-}
-
-export function ProjectYearSummary({
-  projects,
-  selectedYear,
-  onYearChange,
-  projectType,
-}: {
-  projects: FarmProject[];
-  selectedYear: string;
-  onYearChange: (year: string) => void;
-  projectType: ProjectTypeScope;
-}) {
-  const years = [...new Set(projects.map((project) => project.year))].sort(
-    (a, b) => b - a,
-  );
-  return (
-    <div className="mb-4 flex flex-wrap gap-2" aria-label="연도별 사업 집계">
-      {['all', ...years.map(String)].map((year) => {
-        const scoped = filterProjectsByScope(projects, year, projectType);
-        return (
-          <button
-            key={year}
-            type="button"
-            aria-pressed={selectedYear === year}
-            onClick={() => onYearChange(year)}
-            title={`진행 ${scoped.filter((project) => project.status === 'active').length} · 완료 ${scoped.filter((project) => project.status === 'completed').length} · 보류 ${scoped.filter((project) => project.status === 'on_hold').length}`}
-            className={`flex min-h-10 items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${selectedYear === year ? 'border-[#176448] bg-[#e4f1eb] text-[#125638]' : 'border-[#d8e0e7] bg-white text-[#526172] hover:bg-[#f2f7f1]'}`}
-          >
-            <span className="block text-sm font-semibold">
-              {year === 'all' ? '전체 연도' : `${year}년 사업`}
-            </span>
-            <span className="rounded bg-black/5 px-1.5 text-sm font-bold">
-              {scoped.length}개
-            </span>
-            <span className="sr-only">
-              진행{' '}
-              {scoped.filter((project) => project.status === 'active').length} ·
-              완료{' '}
-              {
-                scoped.filter((project) => project.status === 'completed')
-                  .length
-              }{' '}
-              · 보류{' '}
-              {scoped.filter((project) => project.status === 'on_hold').length}
-            </span>
-          </button>
-        );
-      })}
-    </div>
   );
 }
 

@@ -205,7 +205,6 @@ import {
 import {
   ProjectKpiPanel,
   ProjectTypeSelector,
-  ProjectYearSummary,
   ProjectYearSelector,
   SubscriptionCyclePanel,
 } from './farm-kpi-panels';
@@ -5160,6 +5159,7 @@ export function FarmLedgerDashboard({
                       </div>
                       <div className="mb-4 grid max-w-xl gap-3 sm:grid-cols-2">
                         <ProjectYearSelector
+                          id="overview-project-year"
                           projects={activeProjects}
                           value={projectYearFilter}
                           onChange={setProjectYearFilter}
@@ -7275,19 +7275,19 @@ export function FarmLedgerDashboard({
                           </CollapsibleContent>
                         </Collapsible>
                       )}
-                      <div className="mb-4 max-w-xs">
+                      <div className="mb-4 grid max-w-xl gap-3 sm:grid-cols-2">
+                        <ProjectYearSelector
+                          id="management-project-year"
+                          projects={activeProjects}
+                          value={projectYearFilter}
+                          onChange={setProjectYearFilter}
+                        />
                         <ProjectTypeSelector
                           id="project-type-scope"
                           value={projectTypeFilter}
                           onChange={setProjectTypeFilter}
                         />
                       </div>
-                      <ProjectYearSummary
-                        projects={activeProjects}
-                        selectedYear={projectYearFilter}
-                        onYearChange={setProjectYearFilter}
-                        projectType={projectTypeFilter}
-                      />
                       <ProjectKpiPanel
                         summary={yearProjectKpis}
                         year={projectYearFilter}
