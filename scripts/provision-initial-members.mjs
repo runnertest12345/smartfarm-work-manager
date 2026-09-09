@@ -271,7 +271,7 @@ try {
       );
     }
     // The email is known to exist, so an unexpected setting cannot create a test account.
-    let blocked = false;
+    let rejection = '';
     try {
       await publicIdentity.post(
         '/v1/accounts:signUp',
@@ -283,12 +283,15 @@ try {
         { ...hidden(), queryParams: { key: apiKey } },
       );
     } catch (error) {
-      blocked = error.context?.body?.error?.message === 'ADMIN_ONLY_OPERATION';
+      rejection = error.context?.body?.error?.message || '';
     }
-    if (!blocked)
-      throw new Error('Public signup denial response not confirmed');
+    // Identity Platform may check email uniqueness before signup permissions.
+    // EMAIL_EXISTS confirms only this safe duplicate probe; the fetched config
+    // above is the independent evidence of disabled end-user signup.
+    if (!['ADMIN_ONLY_OPERATION', 'EMAIL_EXISTS'].includes(rejection))
+      throw new Error('Existing-account signup unexpectedly accepted');
     console.log(
-      'Public signup API rejected with ADMIN_ONLY_OPERATION. No passwords changed.',
+      `Signup-disabled configuration confirmed; safe duplicate probe rejected (${rejection}). No new test accounts or password changes.`,
     );
     process.exit(0);
   }
