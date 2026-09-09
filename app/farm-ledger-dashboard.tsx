@@ -1977,7 +1977,9 @@ export function FarmLedgerDashboard({
             subscriptionToday,
           ) &&
           (workTypeFilter === 'all' || workItem.workType === workTypeFilter) &&
-          (workStatusFilter === 'all' || workItem.status === workStatusFilter)
+          (workMode !== 'list' ||
+            workStatusFilter === 'all' ||
+            workItem.status === workStatusFilter)
         );
       })
       .sort((a, b) => {
@@ -1998,6 +2000,7 @@ export function FarmLedgerDashboard({
     historiesByWorkItem,
     workSearch,
     workStatusFilter,
+    workMode,
     workTypeFilter,
     workScope,
     subscriptionToday,
@@ -6453,6 +6456,11 @@ export function FarmLedgerDashboard({
                           })}
                           key="board"
                           mode="board"
+                          searching={Boolean(
+                            workSearch.trim() ||
+                            workTypeFilter !== 'all' ||
+                            workScope,
+                          )}
                           items={filteredWorkItems}
                           allItems={operationalWorkItems}
                           recorder={accountName || accountEmail}

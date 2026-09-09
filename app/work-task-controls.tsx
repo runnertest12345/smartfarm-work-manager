@@ -44,6 +44,7 @@ import { isProjectTask } from '@/lib/project-work';
 import { buildWorkHierarchy } from '@/lib/work-hierarchy';
 import { ReceivedContentInput } from './received-images';
 import type { ReceivedImage } from '@/lib/received-images';
+import { WorkBoard } from './work-board';
 
 export type QuickWorkSave = (
   input: AddFarmHistoryEntryInput,
@@ -60,14 +61,17 @@ export function WorkStatusSelect({
   value,
   onChange,
   id,
+  disabled = false,
 }: {
   value: FarmWorkStatus;
   onChange: (value: FarmWorkStatus) => void;
   id: string;
+  disabled?: boolean;
 }) {
   return (
     <Select
       value={value}
+      disabled={disabled}
       onValueChange={(next) => {
         if (FARM_WORK_STATUSES.includes(next as FarmWorkStatus))
           onChange(next as FarmWorkStatus);
@@ -95,6 +99,7 @@ export function WorkQuickEditor({
   onCancel,
   onAdvanced,
   onBusy,
+  statusLocked = false,
 }: {
   task: FarmWorkItem;
   initialStatus?: FarmWorkStatus;
@@ -103,6 +108,7 @@ export function WorkQuickEditor({
   onCancel: () => void;
   onAdvanced?: () => void;
   onBusy?: (busy: boolean) => void;
+  statusLocked?: boolean;
 }) {
   // Capture the version when opened. Do not silently overwrite a draft after realtime updates.
   const [base] = useState(task);
@@ -198,6 +204,12 @@ export function WorkQuickEditor({
       }}
     >
       <h3 className="text-base font-semibold">{task.title} · 빠른 수정</h3>
+      {statusLocked && (
+        <p className="text-sm text-slate-600">
+          완료된 사업 또는 상위 업무를 다시 열기 전에는 상태를 바꿀 수 없습니다.
+          처리 내용과 캡처는 추가할 수 있습니다.
+        </p>
+      )}
       {changedElsewhere && (
         <p role="alert" className="text-sm text-amber-900">
           다른 변경이 먼저 저장됐습니다. 아래 작성 내용을 복사해 보관한 뒤 닫고
@@ -216,6 +228,7 @@ export function WorkQuickEditor({
             id={`${prefix}-status`}
             value={status}
             onChange={setStatus}
+            disabled={statusLocked}
           />
         </div>
         <div>
@@ -418,6 +431,7 @@ export function WorkTaskSurface({
   onSave,
   latestSummary,
   isClosed = () => false,
+  searching = false,
 }: {
   items: FarmWorkItem[];
   allItems: FarmWorkItem[];
@@ -430,6 +444,7 @@ export function WorkTaskSurface({
   onAddChild: (item: FarmWorkItem) => void;
   onSave: QuickWorkSave;
   isClosed?: (item: FarmWorkItem) => boolean;
+  searching?: boolean;
 }) {
   const tree = buildWorkHierarchy(allItems);
   const projectLabel = (item: FarmWorkItem) =>
@@ -443,6 +458,29 @@ export function WorkTaskSurface({
   const [over, setOver] = useState<FarmWorkStatus | null>(null);
   const [savingId, setSavingId] = useState('');
   const [notice, setNotice] = useState('');
+  const canEdit = (item: FarmWorkItem) =>
+    !isClosed(item) &&
+    !tree.ancestors(item.id).some((parent) => parent.status === 'completed');
+  function beginEdit(item: FarmWorkItem, status?: FarmWorkStatus) {
+    if (editing || savingId) {
+      setNotice('작성 중인 내용을 적용하거나 취소한 뒤 수정해 주세요.');
+      return;
+    }
+    if (status && status !== item.status && !canEdit(item)) {
+      setNotice('완료된 사업 또는 상위 업무를 먼저 다시 열어 주세요.');
+      return;
+    }
+    setEditing({ id: item.id, status });
+    // Keep the editor outside moving columns, but bring it into view on entry.
+    if (typeof requestAnimationFrame === 'function')
+      requestAnimationFrame(() => {
+        const input = document.getElementById(`quick-${item.id}-status`);
+        input
+          ?.closest('form')
+          ?.scrollIntoView({ block: 'start', behavior: 'auto' });
+        input?.focus({ preventScroll: true });
+      });
+  }
   function openItem(item: FarmWorkItem) {
     if (editing || savingId) {
       setNotice(
@@ -471,6 +509,7 @@ export function WorkTaskSurface({
         key={`${item.id}-${editing.status || ''}`}
         task={item}
         initialStatus={editing.status}
+        statusLocked={!canEdit(item)}
         recorder={recorder}
         onSave={onSave}
         onCancel={() => setEditing(null)}
@@ -489,8 +528,9 @@ export function WorkTaskSurface({
         type="button"
         size="sm"
         variant="outline"
+        aria-label={`${item.title} 빠른 수정`}
         disabled={Boolean(savingId || editing)}
-        onClick={() => setEditing({ id: item.id })}
+        onClick={() => beginEdit(item)}
       >
         <Pencil className="size-4" />
         빠른 수정
@@ -500,9 +540,11 @@ export function WorkTaskSurface({
           type="button"
           size="sm"
           variant="ghost"
+          aria-label={`${item.title} 세부 업무 추가`}
           disabled={
             item.status === 'completed' ||
             isClosed(item) ||
+            !canEdit(item) ||
             Boolean(savingId || editing)
           }
           onClick={() => onAddChild(item)}
@@ -543,18 +585,57 @@ export function WorkTaskSurface({
       </p>
     );
   };
+  const handle = (item: FarmWorkItem) => {
+    // A family is positioned by its executable tasks, not by a bulk status write.
+    if (tree.children.get(item.id)?.length || item.childWorkItemIds?.length)
+      return null;
+    return (
+      <button
+        type="button"
+        draggable={!savingId && !editing && canEdit(item)}
+        aria-label={`${item.title} 이동 또는 상태 선택`}
+        title="드래그로 상태 이동 · 클릭하여 상태 선택"
+        onDragStart={(event) => {
+          if (editing || savingId || !canEdit(item)) {
+            event.preventDefault();
+            return;
+          }
+          lastDrag.current = Date.now();
+          setDragged(item);
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('application/x-farmlog-work', item.id);
+        }}
+        onDragEnd={() => {
+          setDragged(null);
+          setOver(null);
+          lastDrag.current = Date.now();
+        }}
+        disabled={Boolean(savingId || editing) || !canEdit(item)}
+        onClick={() => {
+          if (Date.now() - lastDrag.current > 500) beginEdit(item);
+        }}
+        className="-ml-1 flex min-h-10 min-w-8 shrink-0 cursor-grab items-center justify-center rounded hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-emerald-700"
+      >
+        <GripVertical className="size-5 text-slate-500" />
+      </button>
+    );
+  };
   async function drop(status: FarmWorkStatus, occurredAt: number) {
     const item = dragged;
     setDragged(null);
     setOver(null);
     lastDrag.current = occurredAt;
     if (!item || item.status === status || dragLock.current) return;
+    if (!canEdit(item)) {
+      setNotice('완료된 사업 또는 상위 업무를 먼저 다시 열어 주세요.');
+      return;
+    }
     if (editing) {
       setNotice('작성 중인 빠른 수정을 적용하거나 취소한 뒤 이동해 주세요.');
       return;
     }
     if (status === 'waiting' || item.status === 'waiting') {
-      setEditing({ id: item.id, status });
+      beginEdit(item, status);
       setNotice('대기 사유 또는 해제 내용을 입력하고 적용해 주세요.');
       return;
     }
@@ -617,7 +698,7 @@ export function WorkTaskSurface({
     <div className="space-y-3">
       <p className="text-sm text-slate-600">
         {mode === 'board'
-          ? '손잡이를 끌어 상태 열로 이동하세요. 모바일·키보드에서는 빠른 수정을 사용할 수 있습니다. 각 업무는 자신의 상태 열에 표시됩니다.'
+          ? '상위 업무당 카드 한 장입니다. 세부 업무를 펼쳐 상태를 바꾸면 카드가 자동 배치됩니다. 업무명은 상세 열기, 빠른 수정은 상태·처리 내용 수정입니다. 손잡이로 개별 실행 업무를 이동할 수도 있습니다.'
           : '업무를 펼쳐 세부 업무를 확인하고, 현재 목록에서 바로 수정하세요.'}
       </p>
       {notice && (
@@ -632,156 +713,26 @@ export function WorkTaskSurface({
         tree.byId.get(editing.id) &&
         editor(tree.byId.get(editing.id)!)}
       {mode === 'board' ? (
-        <div className="flex gap-4 overflow-x-auto pb-4">
-          {FARM_WORK_STATUSES.map((column) => (
-            // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Native drop target; each card also provides a keyboard-accessible status editor.
-            <section
-              key={column}
-              aria-label={`${FARM_WORK_STATUS_LABELS[column]} 열`}
-              onDragOver={(event) => {
-                if (dragged && !savingId) {
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = 'move';
-                  setOver(column);
-                }
-              }}
-              onDragLeave={(event) => {
-                if (
-                  !(
-                    event.relatedTarget instanceof Node &&
-                    event.currentTarget.contains(event.relatedTarget)
-                  )
-                )
-                  setOver(null);
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                void drop(column, Date.now());
-              }}
-              className={`w-[320px] shrink-0 rounded-xl border p-3 xl:flex-1 ${over === column ? 'border-emerald-600 bg-emerald-50 ring-2 ring-emerald-500' : 'border-slate-200 bg-slate-50'}`}
-            >
-              <h2 className="mb-3 flex items-center justify-between text-base font-semibold">
-                {FARM_WORK_STATUS_LABELS[column]}
-                <span className="text-sm text-slate-500">
-                  {items.filter((item) => item.status === column).length}건
-                </span>
-              </h2>
-              <div className="space-y-3">
-                {items
-                  .filter((item) => item.status === column)
-                  .map((item) => (
-                    <article
-                      key={item.id}
-                      className={`space-y-3 rounded-xl border bg-white p-3 ${savingId === item.id ? 'opacity-60' : ''}`}
-                    >
-                      <div className="flex items-start gap-2">
-                        <button
-                          type="button"
-                          draggable={!savingId && !editing}
-                          aria-label={`${item.title} 이동 또는 상태 선택`}
-                          title="드래그로 상태 이동 · 클릭하여 상태 선택"
-                          onDragStart={(event) => {
-                            if (editing || savingId) {
-                              event.preventDefault();
-                              return;
-                            }
-                            lastDrag.current = Date.now();
-                            setDragged(item);
-                            event.dataTransfer.effectAllowed = 'move';
-                            event.dataTransfer.setData(
-                              'application/x-farmlog-work',
-                              item.id,
-                            );
-                          }}
-                          onDragEnd={() => {
-                            setDragged(null);
-                            setOver(null);
-                            lastDrag.current = Date.now();
-                          }}
-                          disabled={Boolean(savingId || editing)}
-                          onClick={() => {
-                            if (
-                              !editing &&
-                              !savingId &&
-                              Date.now() - lastDrag.current > 500
-                            )
-                              setEditing({ id: item.id });
-                          }}
-                          className="-ml-1 flex min-h-10 min-w-8 cursor-grab items-center justify-center rounded hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-emerald-700"
-                        >
-                          <GripVertical className="size-5 text-slate-500" />
-                        </button>
-                        <div className="min-w-0">
-                          <p className="text-xs text-slate-500">
-                            {projectLabel(item)}
-                          </p>
-                          {item.parentWorkItemId && (
-                            <p className="mt-1 text-xs text-emerald-800">
-                              상위:{' '}
-                              {tree.byId.get(item.parentWorkItemId)?.title ||
-                                '연결 확인 필요'}
-                            </p>
-                          )}
-                          <button
-                            type="button"
-                            disabled={Boolean(editing || savingId)}
-                            onClick={() => openItem(item)}
-                            className="mt-1 text-left text-base font-semibold hover:text-emerald-800 hover:underline"
-                          >
-                            {item.title}
-                          </button>
-                        </div>
-                      </div>
-                      <p className="text-sm text-slate-600">
-                        {item.owner || '미지정'} ·{' '}
-                        {item.dueDate || '기한 미지정'}
-                      </p>
-                      {item.nextAction && (
-                        <p className="line-clamp-2 text-sm">
-                          다음: {item.nextAction}
-                        </p>
-                      )}
-                      {progress(item)}
-                      {historySummary(item)}
-                      {tree.children.get(item.id)?.length ? (
-                        <Collapsible>
-                          <CollapsibleTrigger className="flex min-h-9 items-center gap-1 text-sm text-emerald-800">
-                            <ChevronDown className="size-4" />
-                            세부 업무 {tree.children.get(item.id)!.length}개
-                            보기
-                          </CollapsibleTrigger>
-                          <CollapsibleContent keepMounted>
-                            <ul className="space-y-2 border-l-2 pl-3">
-                              {tree.children.get(item.id)!.map((child) => (
-                                <li key={child.id} className="text-sm">
-                                  <button
-                                    type="button"
-                                    className="text-left underline"
-                                    onClick={() => openItem(child)}
-                                  >
-                                    {child.title}
-                                  </button>
-                                  <span className="ml-2 text-xs text-slate-500">
-                                    {FARM_WORK_STATUS_LABELS[child.status]}
-                                  </span>
-                                </li>
-                              ))}
-                            </ul>
-                          </CollapsibleContent>
-                        </Collapsible>
-                      ) : null}
-                      {actions(item)}
-                    </article>
-                  ))}
-                {!items.some((item) => item.status === column) && (
-                  <p className="rounded-lg border border-dashed p-6 text-center text-sm text-slate-500">
-                    업무를 이 열로 이동할 수 있습니다.
-                  </p>
-                )}
-              </div>
-            </section>
-          ))}
-        </div>
+        <WorkBoard
+          items={items}
+          allItems={allItems}
+          searching={searching}
+          busy={Boolean(editing || savingId)}
+          dragged={Boolean(dragged)}
+          over={over}
+          savingId={savingId}
+          projectLabel={projectLabel}
+          onOpen={openItem}
+          onEdit={beginEdit}
+          onOver={setOver}
+          onDrop={(column) => {
+            void drop(column, Date.now());
+          }}
+          handle={handle}
+          actions={actions}
+          historySummary={historySummary}
+          canEdit={canEdit}
+        />
       ) : (
         <div className="overflow-hidden rounded-xl border bg-white">
           <Table className="min-w-[760px]">
