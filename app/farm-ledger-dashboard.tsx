@@ -1,6 +1,12 @@
 'use client';
 
 import { ProjectWorkTree } from './project-work-tree';
+import { useDetailNavigation } from './use-detail-navigation';
+import type {
+  DashboardView as View,
+  DetailTarget,
+  DetailNavigationSnapshot,
+} from '@/lib/detail-navigation';
 
 import {
   useCallback,
@@ -196,19 +202,6 @@ import {
   SubscriptionCyclePanel,
 } from './farm-kpi-panels';
 
-type View =
-  | 'overview'
-  | 'work'
-  | 'farms'
-  | 'projects'
-  | 'business'
-  | 'subscriptions'
-  | 'service'
-  | 'quality';
-type DetailTarget =
-  | { kind: 'project'; projectId: string }
-  | { kind: 'farm'; farmId: string; projectId?: string }
-  | { kind: 'work'; farmId: string; workItemId: string; projectId?: string };
 type DetailTrailEntry = {
   target: DetailTarget;
   scrollY: number;
@@ -1153,6 +1146,12 @@ export function FarmLedgerDashboard({
   const [detailTrail, setDetailTrail] = useState<DetailTrailEntry[]>([]);
   const listScrollYRef = useRef(0);
   const listFocusRef = useRef<HTMLElement | null>(null);
+  const pendingNavigationScrollRef = useRef<number | null>(null);
+  const detailNavigation = useDetailNavigation(
+    captureDetailNavigation,
+    restoreDetailNavigation,
+    canGoBackDetail,
+  );
   const [editingProjectId, setEditingProjectId] = useState('');
   const [editingProjectDocumentId, setEditingProjectDocumentId] = useState('');
   const [resolvingProjectUpdateId, setResolvingProjectUpdateId] = useState('');
@@ -1202,6 +1201,23 @@ export function FarmLedgerDashboard({
   const paymentRequestsRef = useRef(
     new Map<string, SubscriptionPaymentRequest>(),
   );
+
+  useEffect(() => {
+    if (loading || pendingNavigationScrollRef.current === null) return;
+    const top = pendingNavigationScrollRef.current;
+    const frame = requestAnimationFrame(() => {
+      window.scrollTo({ top, behavior: 'auto' });
+      pendingNavigationScrollRef.current = null;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [
+    loading,
+    detailTrail,
+    view,
+    selectedProjectId,
+    selectedFarmId,
+    selectedWorkItemId,
+  ]);
 
   useEffect(() => {
     workspaceRef.current = workspace;
@@ -2910,22 +2926,46 @@ export function FarmLedgerDashboard({
 
   function openDetail(target: DetailTarget) {
     const current = currentDetailTarget();
-    if (!sameDetailTarget(current, target) && current) {
-      setDetailTrail((trail) => [
-        ...trail,
-        {
-          target: current,
-          scrollY: window.scrollY,
-          focusElement:
-            document.activeElement instanceof HTMLElement
-              ? document.activeElement
-              : null,
-          projectTab: projectDetailTab,
-          farmTab: farmDetailTab,
-        },
-      ]);
-    } else if (!current) {
-      listScrollYRef.current = window.scrollY;
+    if (sameDetailTarget(current, target)) return;
+    const nextTrail: DetailTrailEntry[] = current
+      ? [
+          ...detailTrail,
+          {
+            target: current,
+            scrollY: Math.max(0, window.scrollY),
+            focusElement:
+              document.activeElement instanceof HTMLElement
+                ? document.activeElement
+                : null,
+            projectTab: projectDetailTab,
+            farmTab: farmDetailTab,
+          },
+        ]
+      : [];
+    const next: DetailNavigationSnapshot = {
+      ...captureDetailNavigation(),
+      target,
+      trail: nextTrail.map(({ target, scrollY, projectTab, farmTab }) => ({
+        target,
+        scrollY,
+        projectTab,
+        farmTab,
+      })),
+      scrollY: 0,
+      listScrollY: Math.max(
+        0,
+        current ? listScrollYRef.current : window.scrollY,
+      ),
+      projectTab: target.kind === 'project' ? 'summary' : projectDetailTab,
+      farmTab: target.kind === 'farm' ? 'work' : farmDetailTab,
+    };
+    if (detailNavigation.current && !detailNavigation.current.push(next))
+      return;
+    setDetailTrail(nextTrail);
+    setProjectDetailTab(next.projectTab);
+    setFarmDetailTab(next.farmTab);
+    if (!current) {
+      listScrollYRef.current = Math.max(0, window.scrollY);
       listFocusRef.current =
         document.activeElement instanceof HTMLElement
           ? document.activeElement
@@ -2942,7 +2982,26 @@ export function FarmLedgerDashboard({
   }
 
   function backDetail() {
+    if (detailNavigation.current?.back()) return;
     const previous = detailTrail.at(-1) ?? null;
+    detailNavigation.current?.replace(
+      {
+        ...captureDetailNavigation(),
+        target: previous?.target ?? null,
+        trail: detailTrail
+          .slice(0, -1)
+          .map(({ target, scrollY, projectTab, farmTab }) => ({
+            target,
+            scrollY,
+            projectTab,
+            farmTab,
+          })),
+        projectTab: previous?.projectTab ?? projectDetailTab,
+        farmTab: previous?.farmTab ?? farmDetailTab,
+        scrollY: previous?.scrollY ?? listScrollYRef.current,
+      },
+      !previous,
+    );
     setDetailTrail((trail) => trail.slice(0, -1));
     applyDetailTarget(previous?.target ?? null);
     if (previous) {
@@ -2964,6 +3023,21 @@ export function FarmLedgerDashboard({
   }
 
   function changeView(next: View) {
+    if (
+      detailNavigation.current &&
+      !detailNavigation.current.replace(
+        {
+          ...captureDetailNavigation(),
+          view: next,
+          target: null,
+          trail: [],
+          scrollY: 0,
+          listScrollY: 0,
+        },
+        true,
+      )
+    )
+      return false;
     closeDetails();
     setView(next);
     setWorkScope(null);
@@ -2971,6 +3045,7 @@ export function FarmLedgerDashboard({
     setQualityFocus(null);
     focusActiveHeading();
     requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'auto' }));
+    return true;
   }
 
   function focusActiveHeading() {
@@ -2983,8 +3058,55 @@ export function FarmLedgerDashboard({
     });
   }
 
+  function captureDetailNavigation(): DetailNavigationSnapshot {
+    return {
+      view,
+      target: currentDetailTarget(),
+      projectTab: projectDetailTab,
+      farmTab: farmDetailTab,
+      trail: detailTrail.map(({ target, scrollY, projectTab, farmTab }) => ({
+        target,
+        scrollY,
+        projectTab,
+        farmTab,
+      })),
+      scrollY:
+        pendingNavigationScrollRef.current ?? Math.max(0, window.scrollY),
+      listScrollY: Math.max(0, listScrollYRef.current),
+    };
+  }
+
+  function canGoBackDetail() {
+    if (dialog || childTaskParent || quickDetailTaskId || submitting) {
+      toast.add({
+        title: '열려 있는 입력창을 저장하거나 닫은 뒤 이동해 주세요.',
+        type: 'error',
+      });
+      return false;
+    }
+    return true;
+  }
+
+  function restoreDetailNavigation(snapshot: DetailNavigationSnapshot) {
+    setView(snapshot.view);
+    applyDetailTarget(snapshot.target);
+    setDetailTrail(
+      snapshot.trail.map((entry) => ({ ...entry, focusElement: null })),
+    );
+    setProjectDetailTab(snapshot.projectTab);
+    setFarmDetailTab(snapshot.farmTab);
+    listScrollYRef.current = snapshot.listScrollY;
+    pendingNavigationScrollRef.current = snapshot.scrollY;
+    requestAnimationFrame(() => {
+      const focus = !snapshot.target ? listFocusRef.current : null;
+      if (focus?.isConnected && focus.getClientRects().length)
+        focus.focus({ preventScroll: true });
+      else focusActiveHeading();
+    });
+  }
+
   function openScopedWork(status: 'all' | 'open' | 'overdue' = 'all') {
-    changeView('work');
+    if (!changeView('work')) return;
     setWorkMode('list');
     setWorkSearch('');
     setWorkTypeFilter('all');
@@ -2998,7 +3120,7 @@ export function FarmLedgerDashboard({
 
   function selectProjectKpi(target: 'projects' | 'tasks' | 'attention') {
     if (target === 'projects') {
-      changeView('projects');
+      if (!changeView('projects')) return;
       setProjectSearch('');
       setProjectRiskFilter('all');
     } else openScopedWork(target === 'attention' ? 'open' : 'all');
@@ -3014,7 +3136,6 @@ export function FarmLedgerDashboard({
 
   function openProjectDetail(projectId: string) {
     openDetail({ kind: 'project', projectId });
-    setProjectDetailTab('summary');
   }
 
   function openFarm(farmId: string, workItemId = '', sourceProjectId?: string) {
@@ -3045,7 +3166,6 @@ export function FarmLedgerDashboard({
         ? { kind: 'work', farmId, workItemId, projectId }
         : { kind: 'farm', farmId, projectId },
     );
-    if (!workItemId) setFarmDetailTab('work');
   }
 
   function openFarmDialog() {
@@ -5536,7 +5656,7 @@ export function FarmLedgerDashboard({
                             <button
                               type="button"
                               onClick={() => {
-                                changeView('subscriptions');
+                                if (!changeView('subscriptions')) return;
                                 setSubscriptionMode('management');
                                 setSubscriptionListProjectType(
                                   projectTypeFilter,
@@ -5570,7 +5690,7 @@ export function FarmLedgerDashboard({
                             <button
                               type="button"
                               onClick={() => {
-                                changeView('quality');
+                                if (!changeView('quality')) return;
                                 setQualityFocus({
                                   issueIds: qualityIssues
                                     .filter((issue) =>
@@ -9645,7 +9765,7 @@ export function FarmLedgerDashboard({
                               variant="outline"
                               className="mt-3"
                               onClick={() => {
-                                changeView('subscriptions');
+                                if (!changeView('subscriptions')) return;
                                 setSubscriptionMode('management');
                                 setSubscriptionListProjectType(
                                   selectedProject.projectType,
