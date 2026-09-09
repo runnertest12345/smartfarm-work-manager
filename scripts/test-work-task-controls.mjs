@@ -10,6 +10,12 @@ import ts from 'typescript';
 const require = createRequire(import.meta.url);
 let state = [],
   cursor = 0;
+let effects = [];
+const focusElements = new Map();
+const documentMock = {
+  activeElement: null,
+  getElementById: (id) => focusElements.get(id) || null,
+};
 function load(path, aliases = {}) {
   const module = { exports: {} };
   const code = ts.transpileModule(
@@ -28,6 +34,7 @@ function load(path, aliases = {}) {
     crypto: webcrypto,
     Date,
     Error,
+    document: documentMock,
     Node: class {},
     require: (name) => aliases[name] || require(name),
   });
@@ -59,6 +66,28 @@ const hook = (initial) => {
     },
   ];
 };
+const dialogs = Object.fromEntries(
+  [
+    'Dialog',
+    'DialogClose',
+    'DialogContent',
+    'DialogHeader',
+    'DialogTitle',
+    'DialogDescription',
+  ].map((name) => [name, tag('div')]),
+);
+const alerts = Object.fromEntries(
+  [
+    'AlertDialog',
+    'AlertDialogContent',
+    'AlertDialogHeader',
+    'AlertDialogTitle',
+    'AlertDialogDescription',
+    'AlertDialogFooter',
+    'AlertDialogCancel',
+    'AlertDialogAction',
+  ].map((name) => [name, tag('div')]),
+);
 const { ProjectWorkTree } = load('app/project-work-tree.tsx', {
   react: { ...React, useState: hook },
   '@/lib/work-hierarchy': hierarchy,
@@ -84,6 +113,7 @@ const { WorkQuickEditor, WorkTaskSurface, ChildTaskForm } = load(
       ...React,
       useState: hook,
       useRef: (initial) => hook(() => ({ current: initial }))[0],
+      useEffect: (effect, deps) => effects.push({ effect, deps }),
     },
     '@/lib/farm-types': types,
     '@/lib/project-work': work,
@@ -91,6 +121,8 @@ const { WorkQuickEditor, WorkTaskSurface, ChildTaskForm } = load(
     '@/components/ui/button': { Button: tag('button') },
     '@/components/ui/input': { Input: tag('input') },
     '@/components/ui/textarea': { Textarea: tag('textarea') },
+    '@/components/ui/dialog': dialogs,
+    '@/components/ui/alert-dialog': alerts,
     '@/components/ui/select': Object.fromEntries(
       [
         'Select',
@@ -149,6 +181,9 @@ function render(component, props) {
 function reset() {
   state = [];
   cursor = 0;
+  effects = [];
+  documentMock.activeElement = null;
+  focusElements.clear();
 }
 function nodes(element) {
   if (!element || typeof element !== 'object') return [];
@@ -291,7 +326,7 @@ const surface = (extra = {}) => ({
   onSave: async () => {},
   ...extra,
 });
-test('일반 열 드롭은 상태 변경을 한 번 저장하고 대기 열은 편집기를 연다', async () => {
+test('일반 열 드롭은 상태 변경을 한 번 저장하고 대기 열은 팝업 편집기를 연다', async () => {
   reset();
   let saved = [];
   const props = surface({
@@ -320,6 +355,7 @@ test('일반 열 드롭은 상태 변경을 한 번 저장하고 대기 열은 �
   tree = render(WorkTaskSurface, props);
   assert.equal(saved.length, 1);
   assert.ok(find(tree, (x) => x.type === WorkQuickEditor));
+  assert.equal(find(tree, (x) => x.type === WorkQuickEditor).props.popup, true);
   assert.ok(
     React.Children.toArray(tree.props.children).some(
       (x) => x.type === WorkQuickEditor,
@@ -450,7 +486,7 @@ test('완료 상위 아래의 자식은 상태 재개를 막되 후속 처리 �
     target: { value: '완료 후 확인 연락 기록' },
   });
   tree = render(WorkQuickEditor, editorProps);
-  await tree.props.onSubmit(event);
+  await find(tree, (node) => node.type === 'form').props.onSubmit(event);
   assert.equal(sent.newStatus, 'completed');
   assert.equal(sent.actionContent, '완료 후 확인 연락 기록');
 });
@@ -855,4 +891,233 @@ test('자식 생성 재시도는 같은 요청 ID와 작성 시각을 유지한�
   assert.equal(sent[0][5], sent[1][5]);
   assert.equal(sent[0][6], sent[1][6]);
   assert.equal(nodes(tree).filter((x) => x.props?.keepMounted).length, 2);
+});
+
+const popupProps = (extra = {}) => ({
+  task: item,
+  popup: true,
+  recorder: '담당',
+  onSave: async () => {},
+  onCancel() {},
+  ...extra,
+});
+const modal = (tree) => find(tree, (x) => x.type === dialogs.Dialog);
+const discard = (tree) => find(tree, (x) => x.type === alerts.AlertDialog);
+const closeEvent = (reason) => ({
+  reason,
+  cancel() {
+    this.cancelled = true;
+  },
+});
+
+test('빠른 수정은 제목·설명이 있는 팝업이고 작은 화면에서는 내부 스크롤을 사용한다', () => {
+  reset();
+  const tree = render(WorkQuickEditor, popupProps());
+  assert.equal(modal(tree).props.open, true);
+  assert.equal(modal(tree).props.disablePointerDismissal, true);
+  const content = find(tree, (x) => x.type === dialogs.DialogContent);
+  assert.match(content.props.className, /farm-app farm-dialog/);
+  assert.match(content.props.className, /max-h-\[90dvh\].*overflow-y-auto/);
+  assert.equal(
+    find(tree, (x) => x.type === dialogs.DialogTitle).props.children,
+    '빠른 수정',
+  );
+  assert.equal(
+    find(tree, (x) => x.type === dialogs.DialogDescription).props.children,
+    item.title,
+  );
+  assert.equal(
+    find(tree, (x) => x.type === 'form').props['aria-label'],
+    `${item.title} 빠른 수정`,
+  );
+  const statusFocus = {},
+    actionFocus = {};
+  focusElements.set('quick-a-status', statusFocus);
+  focusElements.set('quick-a-action', actionFocus);
+  assert.equal(content.props.initialFocus('keyboard'), statusFocus);
+  assert.equal(content.props.initialFocus('touch'), true);
+  const locked = render(WorkQuickEditor, popupProps({ statusLocked: true }));
+  assert.equal(
+    find(locked, (x) => x.type === dialogs.DialogContent).props.initialFocus(
+      'mouse',
+    ),
+    actionFocus,
+  );
+});
+
+test('바깥 클릭은 닫지 않으며 입력 전 Esc는 팝업을 닫는다', () => {
+  reset();
+  let closed = 0;
+  const tree = render(
+    WorkQuickEditor,
+    popupProps({ onCancel: () => closed++ }),
+  );
+  const outside = closeEvent('outside-press');
+  modal(tree).props.onOpenChange(false, outside);
+  assert.equal(outside.cancelled, true);
+  assert.equal(closed, 0);
+  modal(tree).props.onOpenChange(false, closeEvent('escape-key'));
+  assert.equal(closed, 1);
+});
+
+test('입력 후 취소·닫기·Esc는 취소 확인을 띄우고 계속 작성하면 초안을 유지한다', () => {
+  for (const reason of ['escape-key', 'close-press', 'cancel-button']) {
+    reset();
+    let closed = 0;
+    const props = popupProps({ onCancel: () => closed++ });
+    let tree = render(WorkQuickEditor, props);
+    find(tree, (x) => x.props?.id === 'quick-a-action').props.onChange({
+      target: { value: '현장 확인 중' },
+    });
+    tree = render(WorkQuickEditor, props);
+    if (reason === 'cancel-button')
+      find(tree, (x) => x.props?.children === '취소').props.onClick();
+    else modal(tree).props.onOpenChange(false, closeEvent(reason));
+    tree = render(WorkQuickEditor, props);
+    assert.equal(discard(tree).props.open, true);
+    assert.equal(closed, 0);
+    discard(tree).props.onOpenChange(false);
+    tree = render(WorkQuickEditor, props);
+    assert.equal(discard(tree).props.open, false);
+    assert.equal(
+      find(tree, (x) => x.props?.id === 'quick-a-action').props.value,
+      '현장 확인 중',
+    );
+    modal(tree).props.onOpenChange(false, closeEvent('close-press'));
+    tree = render(WorkQuickEditor, props);
+    find(tree, (x) => x.type === alerts.AlertDialogAction).props.onClick();
+    assert.equal(closed, 1);
+  }
+});
+
+test('팝업 저장 중 닫기를 막고 저장 성공 때 취소 확인 없이 정확히 한 번 닫는다', async () => {
+  reset();
+  let resolveSave,
+    closed = 0;
+  const sent = [];
+  const props = popupProps({
+    onCancel: () => closed++,
+    onSave: async (...args) => {
+      sent.push(args);
+      await new Promise((resolve) => {
+        resolveSave = resolve;
+      });
+    },
+  });
+  let tree = render(WorkQuickEditor, props);
+  find(tree, (x) => x.props?.id === 'quick-a-action').props.onChange({
+    target: { value: '견적 전달 완료' },
+  });
+  tree = render(WorkQuickEditor, props);
+  const submit = find(tree, (x) => x.type === 'form').props.onSubmit(event);
+  tree = render(WorkQuickEditor, props);
+  modal(tree).props.onOpenChange(false, closeEvent('escape-key'));
+  modal(tree).props.onOpenChange(false, closeEvent('close-press'));
+  assert.equal(closed, 0);
+  assert.equal(discard(tree).props.open, false);
+  assert.equal(
+    find(tree, (x) => x.type === dialogs.DialogClose).props.render.props
+      .disabled,
+    true,
+  );
+  assert.equal(
+    find(tree, (x) => x.props?.children === '취소').props.disabled,
+    true,
+  );
+  resolveSave();
+  await submit;
+  assert.equal(closed, 1);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0][0].workItemId, item.id);
+  assert.equal(sent[0][0].actionContent, '견적 전달 완료');
+});
+
+test('팝업 이미지 처리 중 닫기를 막고 실패·외부 변경 때 초안과 오류를 남긴다', async () => {
+  reset();
+  let closed = 0;
+  const props = popupProps({
+    onCancel: () => closed++,
+    onSave: async () => {
+      throw new Error('연결 오류');
+    },
+  });
+  let tree = render(WorkQuickEditor, props);
+  find(tree, (x) => x.props?.onBusyChange).props.onBusyChange(true);
+  tree = render(WorkQuickEditor, props);
+  modal(tree).props.onOpenChange(false, closeEvent('close-press'));
+  assert.equal(closed, 0);
+  assert.equal(
+    find(tree, (x) => x.type === dialogs.DialogClose).props.render.props
+      .disabled,
+    true,
+  );
+  find(tree, (x) => x.props?.onBusyChange).props.onBusyChange(false);
+  find(tree, (x) => x.props?.id === 'quick-a-action').props.onChange({
+    target: { value: '작성 중인 처리 내용' },
+  });
+  tree = render(WorkQuickEditor, props);
+  await find(tree, (x) => x.type === 'form').props.onSubmit(event);
+  tree = render(WorkQuickEditor, props);
+  assert.equal(closed, 0);
+  assert.ok(
+    nodes(tree).some(
+      (x) => x.props?.role === 'alert' && x.props.children === '연결 오류',
+    ),
+  );
+  assert.equal(
+    find(tree, (x) => x.props?.id === 'quick-a-action').props.value,
+    '작성 중인 처리 내용',
+  );
+  tree = render(WorkQuickEditor, {
+    ...props,
+    task: { ...item, updatedAt: 20, status: 'in_progress' },
+  });
+  assert.equal(
+    find(tree, (x) => x.props?.children === '적용').props.disabled,
+    true,
+  );
+  assert.equal(
+    find(tree, (x) => x.props?.id === 'quick-a-action').props.value,
+    '작성 중인 처리 내용',
+  );
+});
+
+test('보드·목록 빠른 수정은 팝업 열림을 부모에 알리고 닫기·언마운트 때 해제하며 원래 위치로 초점을 돌린다', () => {
+  for (const mode of ['board', 'list']) {
+    reset();
+    const changes = [],
+      trigger = { isConnected: true },
+      fallback = {};
+    documentMock.activeElement = trigger;
+    const props = surface({
+      mode,
+      onEditingChange: (open) => changes.push(open),
+    });
+    let tree = render(WorkTaskSurface, props);
+    const actions =
+      mode === 'board'
+        ? find(tree, (x) => x.props?.actions).props.actions(item)
+        : find(tree, (x) => x.props?.item?.id === item.id).props.actions;
+    find(
+      actions,
+      (x) => x.props?.['aria-label'] === `${item.title} 빠른 수정`,
+    ).props.onClick();
+    tree = render(WorkTaskSurface, props);
+    tree.props.ref.current = fallback;
+    const editor = find(tree, (x) => x.type === WorkQuickEditor);
+    assert.equal(editor.props.popup, true);
+    assert.equal(editor.props.returnFocus(), trigger);
+    trigger.isConnected = false;
+    assert.equal(editor.props.returnFocus(), fallback);
+    const cleanup = effects.at(-1).effect();
+    assert.deepEqual(changes, [true]);
+    editor.props.onCancel();
+    cleanup();
+    tree = render(WorkTaskSurface, props);
+    assert.deepEqual(changes, [true, false]);
+    assert.equal(
+      nodes(tree).some((x) => x.type === WorkQuickEditor),
+      false,
+    );
+  }
 });

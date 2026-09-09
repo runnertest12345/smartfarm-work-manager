@@ -1163,6 +1163,7 @@ export function FarmLedgerDashboard({
   const [childTaskBusy, setChildTaskBusy] = useState(false);
   const [quickDetailTaskId, setQuickDetailTaskId] = useState('');
   const [quickDetailBusy, setQuickDetailBusy] = useState(false);
+  const [workQuickEditOpen, setWorkQuickEditOpen] = useState(false);
   const [projectForm, setProjectForm] =
     useState<FarmProjectInput>(emptyProjectForm);
   const [projectDocumentForm, setProjectDocumentForm] =
@@ -3080,7 +3081,13 @@ export function FarmLedgerDashboard({
   }
 
   function canGoBackDetail() {
-    if (dialog || childTaskParent || quickDetailTaskId || submitting) {
+    if (
+      dialog ||
+      childTaskParent ||
+      quickDetailTaskId ||
+      workQuickEditOpen ||
+      submitting
+    ) {
       toast.add({
         title: '열려 있는 입력창을 저장하거나 닫은 뒤 이동해 주세요.',
         type: 'error',
@@ -6443,6 +6450,7 @@ export function FarmLedgerDashboard({
 
                       {workMode === 'board' && (
                         <WorkTaskSurface
+                          onEditingChange={setWorkQuickEditOpen}
                           farmLabel={(item) =>
                             farmById.get(item.farmId)?.name || ''
                           }
@@ -6555,6 +6563,7 @@ export function FarmLedgerDashboard({
 
                       {workMode === 'list' && (
                         <WorkTaskSurface
+                          onEditingChange={setWorkQuickEditOpen}
                           farmLabel={(item) =>
                             farmById.get(item.farmId)?.name || ''
                           }
@@ -9291,6 +9300,7 @@ export function FarmLedgerDashboard({
                           실행 업무 완료
                         </h2>
                         <WorkTaskSurface
+                          onEditingChange={setWorkQuickEditOpen}
                           farmLabel={(item) =>
                             farmById.get(item.farmId)?.name || ''
                           }
@@ -9914,6 +9924,7 @@ export function FarmLedgerDashboard({
                         농가 구독료 입금은 구독·입금에서 관리합니다.
                       </p>
                       <WorkTaskSurface
+                        onEditingChange={setWorkQuickEditOpen}
                         farmLabel={(item) =>
                           farmById.get(item.farmId)?.name || ''
                         }

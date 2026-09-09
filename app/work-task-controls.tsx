@@ -1,13 +1,32 @@
 'use client';
 
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   GripVertical,
   ChevronDown,
   ChevronRight,
   Plus,
   Pencil,
+  X,
 } from 'lucide-react';
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -100,6 +119,8 @@ export function WorkQuickEditor({
   onAdvanced,
   onBusy,
   statusLocked = false,
+  popup = false,
+  returnFocus,
 }: {
   task: FarmWorkItem;
   initialStatus?: FarmWorkStatus;
@@ -109,6 +130,8 @@ export function WorkQuickEditor({
   onAdvanced?: () => void;
   onBusy?: (busy: boolean) => void;
   statusLocked?: boolean;
+  popup?: boolean;
+  returnFocus?: () => HTMLElement | null;
 }) {
   // Capture the version when opened. Do not silently overwrite a draft after realtime updates.
   const [base] = useState(task);
@@ -128,6 +151,7 @@ export function WorkQuickEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const locked = useRef(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const changedElsewhere = task.updatedAt !== base.updatedAt;
   const dirty = Boolean(
     action ||
@@ -141,10 +165,19 @@ export function WorkQuickEditor({
     blockedBy !== base.blockedBy,
   );
   const prefix = `quick-${task.id}`;
-  return (
+  function requestClose() {
+    if (locked.current || saving || imageBusy) return;
+    if (popup && dirty) setConfirmDiscard(true);
+    else onCancel();
+  }
+  const form = (
     <form
       aria-label={`${task.title} 빠른 수정`}
-      className="space-y-3 rounded-xl border border-emerald-300 bg-white p-4 text-left shadow-sm"
+      className={
+        popup
+          ? 'space-y-3 text-left'
+          : 'space-y-3 rounded-xl border border-emerald-300 bg-white p-4 text-left shadow-sm'
+      }
       onSubmit={async (event) => {
         event.preventDefault();
         if (locked.current || imageBusy || changedElsewhere) return;
@@ -203,7 +236,9 @@ export function WorkQuickEditor({
         }
       }}
     >
-      <h3 className="text-base font-semibold">{task.title} · 빠른 수정</h3>
+      {!popup && (
+        <h3 className="text-base font-semibold">{task.title} · 빠른 수정</h3>
+      )}
       {statusLocked && (
         <p className="text-sm text-slate-600">
           완료된 사업 또는 상위 업무를 다시 열기 전에는 상태를 바꿀 수 없습니다.
@@ -389,7 +424,9 @@ export function WorkQuickEditor({
           {error}
         </p>
       )}
-      <div className="flex flex-wrap justify-end gap-2">
+      <div
+        className={`flex flex-wrap justify-end gap-2 ${popup ? 'sticky -bottom-4 z-10 border-t bg-white py-3' : ''}`}
+      >
         {onAdvanced && (
           <Button
             type="button"
@@ -404,7 +441,7 @@ export function WorkQuickEditor({
           type="button"
           variant="outline"
           disabled={saving || imageBusy}
-          onClick={onCancel}
+          onClick={requestClose}
         >
           취소
         </Button>
@@ -416,6 +453,75 @@ export function WorkQuickEditor({
         </Button>
       </div>
     </form>
+  );
+  if (!popup) return form;
+  return (
+    <Dialog
+      open
+      disablePointerDismissal
+      onOpenChange={(open, details) => {
+        if (open) return;
+        // Closing is controlled here; a successful save bypasses the discard guard.
+        details.cancel();
+        if (details.reason !== 'outside-press') requestClose();
+      }}
+    >
+      <DialogContent
+        showCloseButton={false}
+        className="farm-app farm-dialog max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-[640px]"
+        initialFocus={(interaction) =>
+          interaction === 'touch'
+            ? true
+            : document.getElementById(
+                `${prefix}-${statusLocked ? 'action' : 'status'}`,
+              ) || true
+        }
+        finalFocus={returnFocus}
+      >
+        <DialogHeader>
+          <DialogTitle>빠른 수정</DialogTitle>
+          <DialogDescription className="break-words text-base text-slate-700">
+            {task.title}
+          </DialogDescription>
+        </DialogHeader>
+        {form}
+        <DialogClose
+          disabled={saving || imageBusy}
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="빠른 수정 닫기"
+              disabled={saving || imageBusy}
+              className="absolute right-2 top-2"
+            />
+          }
+        >
+          <X className="size-5" />
+        </DialogClose>
+        <AlertDialog open={confirmDiscard} onOpenChange={setConfirmDiscard}>
+          <AlertDialogContent className="farm-app farm-dialog">
+            <AlertDialogHeader>
+              <AlertDialogTitle>작성 내용을 취소할까요?</AlertDialogTitle>
+              <AlertDialogDescription>
+                아직 적용하지 않은 내용은 저장되지 않습니다. 기존 업무와 기록은
+                그대로 유지됩니다.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>계속 작성</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={onCancel}
+                disabled={saving || imageBusy}
+              >
+                작성 내용 버리고 닫기
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -432,6 +538,7 @@ export function WorkTaskSurface({
   latestSummary,
   isClosed = () => false,
   searching = false,
+  onEditingChange,
 }: {
   items: FarmWorkItem[];
   allItems: FarmWorkItem[];
@@ -445,6 +552,7 @@ export function WorkTaskSurface({
   onSave: QuickWorkSave;
   isClosed?: (item: FarmWorkItem) => boolean;
   searching?: boolean;
+  onEditingChange?: (open: boolean) => void;
 }) {
   const tree = buildWorkHierarchy(allItems);
   const projectLabel = (item: FarmWorkItem) =>
@@ -458,6 +566,14 @@ export function WorkTaskSurface({
   const [over, setOver] = useState<FarmWorkStatus | null>(null);
   const [savingId, setSavingId] = useState('');
   const [notice, setNotice] = useState('');
+  const surfaceElement = useRef<HTMLDivElement>(null);
+  const editorTrigger = useRef<HTMLElement | null>(null);
+  const editorOpen = Boolean(editing);
+  useEffect(() => {
+    if (!editorOpen) return;
+    onEditingChange?.(true);
+    return () => onEditingChange?.(false);
+  }, [editorOpen, onEditingChange]);
   const canEdit = (item: FarmWorkItem) =>
     !isClosed(item) &&
     !tree.ancestors(item.id).some((parent) => parent.status === 'completed');
@@ -470,16 +586,11 @@ export function WorkTaskSurface({
       setNotice('완료된 사업 또는 상위 업무를 먼저 다시 열어 주세요.');
       return;
     }
+    editorTrigger.current =
+      typeof document !== 'undefined'
+        ? (document.activeElement as HTMLElement | null)
+        : null;
     setEditing({ id: item.id, status });
-    // Keep the editor outside moving columns, but bring it into view on entry.
-    if (typeof requestAnimationFrame === 'function')
-      requestAnimationFrame(() => {
-        const input = document.getElementById(`quick-${item.id}-status`);
-        input
-          ?.closest('form')
-          ?.scrollIntoView({ block: 'start', behavior: 'auto' });
-        input?.focus({ preventScroll: true });
-      });
   }
   function openItem(item: FarmWorkItem) {
     if (editing || savingId) {
@@ -506,6 +617,12 @@ export function WorkTaskSurface({
   const editor = (item: FarmWorkItem) =>
     editing?.id === item.id ? (
       <WorkQuickEditor
+        popup
+        returnFocus={() =>
+          editorTrigger.current?.isConnected
+            ? editorTrigger.current
+            : surfaceElement.current
+        }
         key={`${item.id}-${editing.status || ''}`}
         task={item}
         initialStatus={editing.status}
@@ -695,7 +812,7 @@ export function WorkTaskSurface({
     )
       visit(item, 0);
   return (
-    <div className="space-y-3">
+    <div ref={surfaceElement} tabIndex={-1} className="space-y-3">
       <p className="text-sm text-slate-600">
         {mode === 'board'
           ? '상위 업무당 카드 한 장입니다. 세부 업무를 펼쳐 상태를 바꾸면 카드가 자동 배치됩니다. 업무명은 상세 열기, 빠른 수정은 상태·처리 내용 수정입니다. 손잡이로 개별 실행 업무를 이동할 수도 있습니다.'

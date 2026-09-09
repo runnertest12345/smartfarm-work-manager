@@ -558,3 +558,22 @@ test('대시보드 복원은 검색·필터·펼침 상태를 초기화하지 �
   assert.match(open, /sameDetailTarget\(current, target\)/);
   assert.match(open, /detailNavigation.current.push\(next\)/);
 });
+
+test('빠른 수정 팝업은 기존 뒤로가기 보호에 포함되고 모든 업무 목록에서 열림을 연결한다', () => {
+  const dashboard = source('app/farm-ledger-dashboard.tsx');
+  const guard = dashboard.slice(
+    dashboard.indexOf('  function canGoBackDetail('),
+    dashboard.indexOf('  function restoreDetailNavigation('),
+  );
+  assert.match(guard, /workQuickEditOpen/);
+  const surfaces = [
+    ...dashboard.matchAll(
+      /<WorkTaskSurface\b([\s\S]*?)\bonSave=\{saveQuickWork\}/g,
+    ),
+  ];
+  assert.equal(surfaces.length, 4);
+  for (const [, props] of surfaces)
+    assert.match(props, /onEditingChange=\{setWorkQuickEditOpen\}/);
+  const controls = source('app/work-task-controls.tsx');
+  assert.doesNotMatch(controls, /scrollIntoView/);
+});
