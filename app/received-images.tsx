@@ -1,7 +1,13 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Private data URL attachments are already bounded/compressed and have no optimizer URL. */
 
-import { useEffect, useRef, useState, type ComponentProps } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ClipboardEvent,
+} from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -15,11 +21,15 @@ export function ReceivedContentInput({
   images,
   onImagesChange,
   onBusyChange,
+  imageOnly = false,
+  existingCount = 0,
   ...props
 }: ComponentProps<typeof Textarea> & {
   images: ReceivedImage[];
   onImagesChange: (images: ReceivedImage[]) => void;
   onBusyChange: (busy: boolean) => void;
+  imageOnly?: boolean;
+  existingCount?: number;
 }) {
   const [error, setError] = useState('');
   const [processing, setProcessing] = useState(false);
@@ -34,7 +44,7 @@ export function ReceivedContentInput({
   async function addFiles(files: File[]) {
     if (busy.current || props.disabled) return;
     setError('');
-    if (images.length + files.length > MAX_RECEIVED_IMAGES) {
+    if (existingCount + images.length + files.length > MAX_RECEIVED_IMAGES) {
       setError('이미지는 한 번에 최대 3장까지 첨부할 수 있습니다.');
       return;
     }
@@ -58,27 +68,36 @@ export function ReceivedContentInput({
       onBusyChange(false);
     }
   }
+  const onPaste = (event: ClipboardEvent<HTMLElement>) => {
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (files.length) {
+      if (!event.clipboardData.getData('text/plain')) event.preventDefault();
+      void addFiles(files);
+    }
+  };
   return (
     <div className="space-y-2">
-      <Textarea
-        {...props}
-        onPaste={(event) => {
-          const files = Array.from(event.clipboardData.items)
-            .filter(
-              (item) => item.kind === 'file' && item.type.startsWith('image/'),
-            )
-            .map((item) => item.getAsFile())
-            .filter((file): file is File => file !== null);
-          if (files.length) {
-            if (!event.clipboardData.getData('text/plain'))
-              event.preventDefault();
-            void addFiles(files);
-          }
-        }}
-      />
+      {imageOnly ? (
+        <div
+          tabIndex={props.disabled ? -1 : 0}
+          role="group"
+          aria-label="농장 위치도 사진 붙여넣기"
+          aria-disabled={props.disabled || processing}
+          onPaste={onPaste}
+          className="rounded-lg border border-dashed border-emerald-300 bg-emerald-50 p-4 text-sm text-emerald-900 focus-visible:outline-2 focus-visible:outline-emerald-600"
+        >
+          이 영역을 선택한 뒤 Ctrl+V로 위치도 캡처를 붙여넣거나 아래에서 사진을
+          선택하세요.
+        </div>
+      ) : (
+        <Textarea {...props} onPaste={onPaste} />
+      )}
       <div className="flex flex-wrap items-center gap-2">
-        <label className="cursor-pointer rounded-md border bg-white px-3 py-2 text-sm font-medium">
-          이미지 파일 첨부
+        <label className="cursor-pointer rounded-md border bg-white px-3 py-2 text-sm font-medium focus-within:ring-2 focus-within:ring-emerald-600">
+          {imageOnly ? '위치도 사진 선택' : '이미지 파일 첨부'}
           <input
             type="file"
             accept="image/png,image/jpeg,image/webp"
@@ -93,7 +112,9 @@ export function ReceivedContentInput({
           />
         </label>
         <span className="text-xs text-slate-600">
-          받은 내용에 Ctrl+V로 캡처 붙여넣기 · 최대 3장 · 큰 이미지는 자동 압축
+          {imageOnly
+            ? 'PNG·JPG·WebP · 기존 사진 포함 최대 3장 · 원본 장당 10MB 이하 · 큰 사진은 자동 압축'
+            : '받은 내용에 Ctrl+V로 캡처 붙여넣기 · 최대 3장 · 큰 이미지는 자동 압축'}
         </span>
       </div>
       {images.length > 0 && (

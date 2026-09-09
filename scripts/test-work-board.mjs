@@ -140,6 +140,12 @@ function render(props) {
   cursor = 0;
   return WorkBoard(props);
 }
+function renderExpanded(props) {
+  const tree = render(props);
+  for (const node of nodes(tree).filter((node) => node.props?.onOpenChange))
+    node.props.onOpenChange(true);
+  return render(props);
+}
 function setup(extra = {}) {
   slots = [];
   cursor = 0;
@@ -332,7 +338,7 @@ test('보드 집계는 원본 업무 상태·KPI·입금 제외 범위를 변경
   );
 });
 test('보드에는 카드 1개만, 카드 내부에는 세부 업무 각각 한 번씩 표시한다', () => {
-  const tree = render(setup());
+  const tree = renderExpanded(setup());
   assert.equal(
     nodes(tree).filter((node) => node.props?.['data-board-root']).length,
     1,
@@ -377,7 +383,7 @@ test('세부 업무명은 선택한 업무 상세만 열고 상태 선택은 그
     onOpen: (item) => opened.push(item.id),
     onEdit: (item, status) => edited.push([item.id, status]),
   });
-  const tree = render(props);
+  const tree = renderExpanded(props);
   find(
     tree,
     (node) => node.props?.['aria-label'] === '단가 업무 상세 열기',
@@ -399,7 +405,7 @@ test('세부 업무명은 선택한 업무 상세만 열고 상태 선택은 그
 });
 test('각 세부 업무의 추가 작업 버튼을 유지하여 손자 업무를 등록할 수 있다', () => {
   const props = setup();
-  const tree = render(props);
+  const tree = renderExpanded(props);
   for (const task of props.allItems.slice(1))
     assert.ok(
       find(
@@ -438,13 +444,33 @@ test('중간 부모 확인이 남으면 최상위 완료 버튼을 숨기고 안
   );
   assert.match(renderToStaticMarkup(tree), /중간 상위 업무 1건/);
 });
-test('검색은 자식이 포함된 전체 묶음을 펼치고 검색 해제 시 기존 접힘을 복원한다', () => {
+test('검색된 자식은 일치 건수로 알리고 상세는 사용자가 펼치고 접을 수 있다', () => {
   const props = setup();
-  let tree = render({ ...props, searching: true, items: [props.allItems[3]] });
-  assert.equal(find(tree, (node) => node.props?.onOpenChange).props.open, true);
+  const searchingProps = {
+    ...props,
+    searching: true,
+    items: [props.allItems[3]],
+  };
+  let tree = render(searchingProps);
+  assert.equal(
+    find(tree, (node) => node.props?.onOpenChange).props.open,
+    false,
+  );
+  assert.match(renderToStaticMarkup(tree), /조건에 맞는 세부 업무 1건/);
+  assert.equal(
+    nodes(tree).filter((node) => node.props?.['data-board-task']).length,
+    0,
+  );
+  tree = renderExpanded(searchingProps);
   assert.equal(
     nodes(tree).filter((node) => node.props?.['data-board-task']).length,
     4,
+  );
+  find(tree, (node) => node.props?.onOpenChange).props.onOpenChange(false);
+  tree = render(searchingProps);
+  assert.equal(
+    find(tree, (node) => node.props?.onOpenChange).props.open,
+    false,
   );
   tree = render(props);
   assert.equal(
@@ -476,7 +502,7 @@ test('카드의 열이 바뀌어도 세부 업무 펼침 상태를 유지한다'
   );
 });
 test('저장·편집 중 상세 이동과 상태 선택을 비활성화한다', () => {
-  const tree = render(setup({ busy: true }));
+  const tree = renderExpanded(setup({ busy: true }));
   assert.equal(
     find(tree, (node) => node.props?.['aria-label'] === '단가 업무 상세 열기')
       .props.disabled,
@@ -506,7 +532,7 @@ test('깊은 계층은 단계·상위 제목을 남기고 들여쓰기가 무한
       parentWorkItemId: i ? 'depth-' + (i - 1) : undefined,
     }),
   );
-  const tree = render(setup({ allItems: items, items }));
+  const tree = renderExpanded(setup({ allItems: items, items }));
   assert.equal(
     find(tree, (node) => node.props?.['data-board-task'] === 'depth-6').props
       .style.marginLeft,
@@ -521,10 +547,74 @@ test('완료된 사업의 상위 업무 다시 열기는 비활성화된다', ()
     status: 'completed',
     openChildCount: 0,
   }));
-  const tree = render(setup({ allItems: items, items, canEdit: () => false }));
+  const tree = renderExpanded(
+    setup({ allItems: items, items, canEdit: () => false }),
+  );
   assert.equal(
     find(tree, (node) => node.props?.children === '상위 업무 다시 열기').props
       .disabled,
     true,
   );
+});
+
+test('접힌 카드는 기본 정보·진행 요약·작업 버튼만 남기고 긴 내용은 숨긴다', () => {
+  const props = setup();
+  let tree = render(props);
+  let html = renderToStaticMarkup(tree);
+  assert.match(html, /태백 노지 실증단지/);
+  assert.match(html, /견적서 제출/);
+  assert.match(html, /총괄 영업팀 · 마감 2026-09-15/);
+  assert.match(html, /완료 1\/4 · 처리 중 1 · 대기 1/);
+  assert.match(html, /대기 사유 1건/);
+  assert.match(html, /상세 보기/);
+  assert.doesNotMatch(html, /농가 회신 대기|기록:|data-board-task|2026-09-10/);
+  assert.ok(
+    find(
+      tree,
+      (node) => node.props?.['aria-label'] === '견적서 제출 세부 업무 추가',
+    ),
+  );
+  tree = renderExpanded(props);
+  html = renderToStaticMarkup(tree);
+  assert.match(html, /농가 회신 대기|기록:견적서 제출/);
+  find(tree, (node) => node.props?.onOpenChange).props.onOpenChange(false);
+  assert.doesNotMatch(
+    renderToStaticMarkup(render(props)),
+    /농가 회신 대기|기록:|data-board-task/,
+  );
+});
+
+test('독립 업무도 대기 사유·다음 행동·이력을 아래로 펼치며 다른 카드는 유지한다', () => {
+  const items = [
+    task('독립 업무', 'waiting', {
+      blockedReason: '내역 회신 대기',
+      nextAction: '담당자 재연락',
+    }),
+    task('다른 업무'),
+  ];
+  let opened = 0,
+    edited = 0;
+  const props = setup({
+    items,
+    allItems: items,
+    onOpen: () => opened++,
+    onEdit: () => edited++,
+  });
+  let tree = render(props);
+  assert.doesNotMatch(
+    renderToStaticMarkup(tree),
+    /내역 회신 대기|담당자 재연락|기록:/,
+  );
+  const card = find(
+    tree,
+    (node) => node.props?.['data-board-root'] === '독립 업무',
+  );
+  find(card, (node) => node.props?.onOpenChange).props.onOpenChange(true);
+  tree = render(props);
+  assert.match(renderToStaticMarkup(tree), /내역 회신 대기/);
+  assert.match(renderToStaticMarkup(tree), /담당자 재연락/);
+  assert.match(renderToStaticMarkup(tree), /기록:독립 업무/);
+  assert.doesNotMatch(renderToStaticMarkup(tree), /기록:다른 업무/);
+  assert.equal(opened, 0);
+  assert.equal(edited, 0);
 });

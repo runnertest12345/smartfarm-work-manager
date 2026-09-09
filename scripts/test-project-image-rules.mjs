@@ -507,6 +507,92 @@ check('new payment for preserved farm participation remains allowed', 'ALLOW', {
   parent: { id: 'preserved-record', deletedAt: 2 },
 });
 
+const locationImage = {
+  ...image,
+  parentCollection: 'farms',
+  parentId: 'farm-test',
+};
+check('farm location image linked to the same farm is allowed', 'ALLOW', {
+  data: locationImage,
+  parent: { locationImageIds: [imageId] },
+});
+check('farm location image without a farm link is denied', 'DENY', {
+  data: locationImage,
+  parent: { imageIds: [imageId] },
+});
+check('farm location image exceeding three links is denied', 'DENY', {
+  data: locationImage,
+  parent: { locationImageIds: [imageId, 'two', 'three', 'four'] },
+});
+check('location images retain signed-out denial', 'DENY', {
+  data: locationImage,
+  user: null,
+  parent: { locationImageIds: [imageId] },
+});
+const farmDoc = { ...audit, id: 'farm-test', locationImageIds: [imageId] };
+check('farm may link a new location image with matching ownership', 'ALLOW', {
+  collection: 'farms',
+  id: 'farm-test',
+  data: farmDoc,
+  parent: locationImage,
+});
+check('farm cannot link an image owned by another farm', 'DENY', {
+  collection: 'farms',
+  id: 'farm-test',
+  data: farmDoc,
+  parent: { ...locationImage, parentId: 'other-farm' },
+});
+check('farm cannot link an inbox attachment', 'DENY', {
+  collection: 'farms',
+  id: 'farm-test',
+  data: farmDoc,
+  parent: image,
+});
+check('farm cannot link a missing image', 'DENY', {
+  collection: 'farms',
+  id: 'farm-test',
+  data: farmDoc,
+  parent: {},
+});
+check('farm cannot duplicate a location image ID', 'DENY', {
+  collection: 'farms',
+  id: 'farm-test',
+  data: { ...farmDoc, locationImageIds: [imageId, imageId] },
+  parent: locationImage,
+});
+check('farm cannot exceed three location images', 'DENY', {
+  collection: 'farms',
+  id: 'farm-test',
+  data: { ...farmDoc, locationImageIds: [imageId, 'two', 'three', 'four'] },
+  parent: locationImage,
+});
+check('old farm fields remain valid without photos', 'ALLOW', {
+  collection: 'farms',
+  id: 'farm-test',
+  data: { ...audit, id: 'farm-test' },
+});
+check('farm update preserves location references', 'ALLOW', {
+  collection: 'farms',
+  id: 'farm-test',
+  method: 'update',
+  resource: farmDoc,
+  data: { ...farmDoc, updatedAt: 2, name: 'updated' },
+});
+check('stale full farm update cannot erase photo field', 'DENY', {
+  collection: 'farms',
+  id: 'farm-test',
+  method: 'update',
+  resource: farmDoc,
+  data: { ...audit, id: 'farm-test', updatedAt: 2 },
+});
+check('explicit farm attachment exclusion removes reference only', 'ALLOW', {
+  collection: 'farms',
+  id: 'farm-test',
+  method: 'update',
+  resource: farmDoc,
+  data: { ...farmDoc, locationImageIds: [], updatedAt: 2 },
+});
+
 try {
   const options = { project: 'smartfarm-work-manager', nonInteractive: true };
   const account = auth.getGlobalDefaultAccount();

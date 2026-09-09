@@ -86,10 +86,18 @@ const table = Object.fromEntries(
     tag(['table', 'tbody', 'td', 'th', 'thead', 'tr'][i]),
   ]),
 );
+const collapseContext = React.createContext(false);
 const collapsible = {
   Collapsible: ({ open, children }) =>
-    open ? React.createElement('section', {}, children) : null,
-  CollapsibleContent: tag('div'),
+    React.createElement(
+      collapseContext.Provider,
+      { value: open },
+      React.createElement('section', {}, children),
+    ),
+  CollapsibleContent: ({ children, ...props }) =>
+    React.useContext(collapseContext)
+      ? React.createElement('div', props, children)
+      : null,
   CollapsibleTrigger: button,
 };
 const selects = Object.fromEntries(
@@ -121,10 +129,8 @@ const aliases = {
   '@/lib/farm-types': load('lib/farm-types.ts'),
   '@/lib/dashboard-kpis': {},
 };
-const { ProjectFarmProgressCard, ProjectStageFigures } = load(
-  'app/project-farm-progress.tsx',
-  aliases,
-);
+const { ProjectFarmProgressCard, ProjectStageFigures, ProjectStageSummary } =
+  load('app/project-farm-progress.tsx', aliases);
 const { ProjectDeletionDialog } = load(
   'app/project-deletion-dialog.tsx',
   aliases,
@@ -252,8 +258,55 @@ test('프로젝트 표의 KPI 표시가 요약 카드와 같은 수치를 사용
   assert.match(html, /완료 2개소/);
   assert.match(html, /미완료 1개소/);
   const dashboard = source('app/farm-ledger-dashboard.tsx');
-  assert.match(dashboard, /snapshot.farmProgress.stages.map/);
+  assert.match(
+    dashboard,
+    /<ProjectStageSummary\s+progress=\{snapshot.farmProgress\}/,
+  );
   assert.match(dashboard, /progress=\{selectedProjectSnapshot.farmProgress\}/);
+});
+
+test('프로젝트 표는 비율만 먼저 표시하고 상세 보기에서 완료·미완료 개소를 펼친다', () => {
+  reset();
+  const props = {
+    progress: summarizeProjectFarms(records, 'p1'),
+    projectName: '테스트 사업',
+  };
+  let tree = render(ProjectStageSummary, props);
+  let html = renderToStaticMarkup(tree);
+  assert.match(html, /67%/);
+  assert.match(html, /상세 보기/);
+  assert.doesNotMatch(html, /완료 2개소|미완료 1개소/);
+  find(tree, (node) => node.props?.onOpenChange).props.onOpenChange(true);
+  tree = render(ProjectStageSummary, props);
+  html = renderToStaticMarkup(tree);
+  assert.match(html, /상세 접기/);
+  assert.match(html, /완료 2개소/);
+  assert.match(html, /미완료 1개소/);
+  find(tree, (node) => node.props?.onOpenChange).props.onOpenChange(false);
+  assert.doesNotMatch(
+    renderToStaticMarkup(render(ProjectStageSummary, props)),
+    /완료 2개소|미완료 1개소/,
+  );
+});
+
+test('사업 기준 연도는 로그인 후 현재 연도로 시작하며 연도를 고정하지 않는다', () => {
+  const dashboard = source('app/farm-ledger-dashboard.tsx');
+  assert.match(
+    dashboard,
+    /const \[projectYearFilter, setProjectYearFilter\] = useState\(\(\) =>\s*localDateString\(\)\.slice\(0, 4\)/,
+  );
+  const localDate = dashboard.match(
+    /function localDateString\([\s\S]*?\n}/,
+  )?.[0];
+  assert.ok(localDate);
+  for (const year of [2026, 2027]) {
+    const date = new Date(year, 0, 1);
+    const output = vm.runInNewContext(
+      `${localDate}; localDateString(input).slice(0, 4)`,
+      { input: date },
+    );
+    assert.equal(output, String(year));
+  }
 });
 test('통합 현황은 연도 드롭다운을 사용하고 같은 선택값을 KPI와 목록에 전달한다', () => {
   const chosen = [];

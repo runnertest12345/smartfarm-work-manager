@@ -1,9 +1,10 @@
 'use client';
 
 import { ProjectWorkTree } from './project-work-tree';
+import { FarmPaymentHistory } from './farm-payment-history';
 import {
   ProjectFarmProgressCard,
-  ProjectStageFigures,
+  ProjectStageSummary,
 } from './project-farm-progress';
 import { summarizeProjectFarms } from '@/lib/project-farm-progress';
 import { ProjectDeletionDialog } from './project-deletion-dialog';
@@ -1096,7 +1097,9 @@ export function FarmLedgerDashboard({
   >('all');
   const [overviewExpandedTaskProjects, setOverviewExpandedTaskProjects] =
     useState<string[]>([]);
-  const [projectYearFilter, setProjectYearFilter] = useState('all');
+  const [projectYearFilter, setProjectYearFilter] = useState(() =>
+    localDateString().slice(0, 4),
+  );
   const [projectTypeFilter, setProjectTypeFilter] = useState<
     'all' | FarmProjectType
   >('all');
@@ -1189,6 +1192,18 @@ export function FarmLedgerDashboard({
   const [projectBlockerResolutionForm, setProjectBlockerResolutionForm] =
     useState<ProjectBlockerResolutionForm>({ resolution: '', resolvedBy: '' });
   const [farmForm, setFarmForm] = useState<FarmForm>(() => emptyFarmForm(''));
+  const [farmLocationImages, setFarmLocationImages] = useState<ReceivedImage[]>(
+    [],
+  );
+  const [farmLocationIds, setFarmLocationIds] = useState<string[]>([]);
+  const [farmLocationExpectedIds, setFarmLocationExpectedIds] = useState<
+    string[]
+  >([]);
+  const [farmLocationBusy, setFarmLocationBusy] = useState(false);
+  const farmSaveBusyRef = useRef(false);
+  const farmImageBusyRef = useRef(false);
+  const [editingFarmId, setEditingFarmId] = useState('');
+  const [editingFarmVersion, setEditingFarmVersion] = useState(0);
   const [workItemForm, setWorkItemForm] = useState<WorkItemForm>(() =>
     emptyWorkItemForm(),
   );
@@ -1482,6 +1497,9 @@ export function FarmLedgerDashboard({
       )
     : [];
   const selectedWorkItem = workItemById.get(selectedWorkItemId) ?? null;
+  const selectedServiceItems = selectedWorkItems.filter(
+    (item) => item.workType === 'service',
+  );
   const subscriptionExpiryRecord =
     recordById.get(subscriptionExpiryForm.farmRecordId) ?? null;
   const subscriptionExpiryFarm = subscriptionExpiryRecord
@@ -2837,6 +2855,11 @@ export function FarmLedgerDashboard({
         )
     : [];
 
+  const selectedFarmPayments = selectedFarmHistory.filter(
+    ({ entry, workItem }) =>
+      workItem.workType === 'payment' && entry.amount > 0,
+  );
+
   const navItems: Array<{
     id: View;
     label: string;
@@ -3186,6 +3209,12 @@ export function FarmLedgerDashboard({
   }
 
   function openFarmDialog() {
+    setEditingFarmId('');
+    setFarmLocationImages([]);
+    setFarmLocationIds([]);
+    setFarmLocationExpectedIds([]);
+    setFarmLocationBusy(false);
+    farmImageBusyRef.current = false;
     setFarmForm(
       emptyFarmForm(
         activeProjects.find((project) => project.status === 'active')?.id ??
@@ -3199,6 +3228,13 @@ export function FarmLedgerDashboard({
 
   function openFarmEditDialog() {
     if (!selectedFarm) return;
+    setEditingFarmId(selectedFarm.id);
+    setEditingFarmVersion(selectedFarm.updatedAt);
+    setFarmLocationImages([]);
+    setFarmLocationIds([...(selectedFarm.locationImageIds ?? [])]);
+    setFarmLocationExpectedIds([...(selectedFarm.locationImageIds ?? [])]);
+    setFarmLocationBusy(false);
+    farmImageBusyRef.current = false;
     const form = emptyFarmForm(
       selectedRecords[0]?.projectId ?? activeProjects[0]?.id ?? '',
     );
@@ -3358,7 +3394,10 @@ export function FarmLedgerDashboard({
     setDialog('project_blocker_resolve');
   }
 
-  function openWorkItemDialog(farmRecordId = '') {
+  function openWorkItemDialog(
+    farmRecordId = '',
+    workType: WorkType = 'communication',
+  ) {
     setDraftImages([]);
     if (!selectedFarm || !selectedRecords.length) return;
     const safeRecordId = selectedRecords.some(
@@ -3368,7 +3407,14 @@ export function FarmLedgerDashboard({
       : selectedRecords.length === 1
         ? selectedRecords[0].id
         : '';
-    setWorkItemForm(emptyWorkItemForm(safeRecordId));
+    setWorkItemForm({
+      ...emptyWorkItemForm(safeRecordId),
+      workType,
+      checklistText: (WORK_CHECKLIST_TEMPLATES[workType] ?? []).join('\n'),
+      ...(workType === 'payment'
+        ? { title: '구독료 입금', dueDate: localDateString() }
+        : {}),
+    });
     setClarifyingInboxId('');
     setFormError('');
     setDialog('work_item');
@@ -4203,6 +4249,8 @@ export function FarmLedgerDashboard({
 
   async function submitFarm(event: FormSubmitEvent) {
     event.preventDefault();
+    if (submitting || farmSaveBusyRef.current || farmImageBusyRef.current)
+      return;
     const mode = dialog;
     const farmPayload: FarmInput = {
       farmCode: farmForm.farmCode,
@@ -4256,6 +4304,7 @@ export function FarmLedgerDashboard({
       setFormError('같은 농가에 동일 사업을 중복 연결할 수 없습니다.');
       return;
     }
+    farmSaveBusyRef.current = true;
     setSubmitting(true);
     setFormError('');
     try {
@@ -4268,9 +4317,20 @@ export function FarmLedgerDashboard({
             farm: farmPayload,
             record: recordPayload,
             recorder: farmForm.recorder,
+            locationImages: farmLocationImages,
+            locationImageIds: farmLocationIds,
+            expectedLocationImageIds: farmLocationExpectedIds,
           }
         : isFarmEdit
-          ? { kind: 'farm', farmId: selectedFarm?.id, farm: farmPayload }
+          ? {
+              kind: 'farm',
+              farmId: editingFarmId,
+              expectedFarmUpdatedAt: editingFarmVersion,
+              farm: farmPayload,
+              locationImages: farmLocationImages,
+              locationImageIds: farmLocationIds,
+              expectedLocationImageIds: farmLocationExpectedIds,
+            }
           : isRecordAdd
             ? {
                 kind: 'record',
@@ -4296,7 +4356,9 @@ export function FarmLedgerDashboard({
       const createdFarmId =
         isFarmCreate && data.farm && typeof data.farm === 'object'
           ? (data.farm as { id: string }).id
-          : selectedFarm?.id;
+          : isFarmEdit
+            ? editingFarmId
+            : selectedFarm?.id;
       await waitForFarmLedgerSync();
       if (createdFarmId)
         openFarm(
@@ -4327,6 +4389,7 @@ export function FarmLedgerDashboard({
           : '관리대장 정보를 저장하지 못했습니다.',
       );
     } finally {
+      farmSaveBusyRef.current = false;
       setSubmitting(false);
     }
   }
@@ -5049,22 +5112,6 @@ export function FarmLedgerDashboard({
                   ) : (
                     <RefreshCw />
                   )}
-                </Button>
-                <Button
-                  onClick={openProjectDialog}
-                  variant="outline"
-                  className="hidden rounded-xl sm:flex"
-                >
-                  <Building2 />
-                  사업 추가
-                </Button>
-                <Button
-                  onClick={openFarmDialog}
-                  disabled={!activeProjects.length}
-                  className="rounded-xl bg-[#2f7b59] hover:bg-[#286b4d]"
-                >
-                  <Plus />
-                  농가 등록
                 </Button>
               </div>
             </header>
@@ -6656,6 +6703,7 @@ export function FarmLedgerDashboard({
                           </Button>
                           <Button
                             onClick={openFarmDialog}
+                            disabled={!activeProjects.length}
                             className="bg-[#2f7b59] hover:bg-[#286b4d]"
                           >
                             <Plus />
@@ -7456,16 +7504,10 @@ export function FarmLedgerDashboard({
                                       </p>
                                     </TableCell>
                                     <TableCell>
-                                      <div className="grid min-w-[330px] grid-cols-3 gap-3">
-                                        {snapshot.farmProgress.stages.map(
-                                          (stage) => (
-                                            <ProjectStageFigures
-                                              key={stage.key}
-                                              stage={stage}
-                                            />
-                                          ),
-                                        )}
-                                      </div>
+                                      <ProjectStageSummary
+                                        progress={snapshot.farmProgress}
+                                        projectName={project.name}
+                                      />
                                     </TableCell>
                                     <TableCell>
                                       <p>
@@ -10453,9 +10495,9 @@ export function FarmLedgerDashboard({
                         전체 참여 사업 {allSelectedRecords.length}개
                       </Badge>
                       <Badge variant="outline">
-                        진행 업무{' '}
+                        진행 A/S{' '}
                         {
-                          selectedWorkItems.filter(
+                          selectedServiceItems.filter(
                             (item) => item.status !== 'completed',
                           ).length
                         }
@@ -10517,7 +10559,7 @@ export function FarmLedgerDashboard({
                           </SelectContent>
                         </Select>
                         <span className="text-sm text-[#586777]">
-                          업무·설치·구독·이력에 함께 적용
+                          A/S·설치·구독·처리 이력·입금내역에 함께 적용
                         </span>
                       </div>
                     )}
@@ -10527,108 +10569,29 @@ export function FarmLedgerDashboard({
                     className="w-full"
                   >
                     <Tabs
-                      value={selectedWorkItem ? 'work-detail' : farmDetailTab}
+                      value={
+                        selectedWorkItem
+                          ? 'work-detail'
+                          : farmDetailTab === 'info'
+                            ? 'work'
+                            : farmDetailTab
+                      }
                       onValueChange={(value) => setFarmDetailTab(String(value))}
                       className="gap-4"
                     >
                       {!selectedWorkItem && (
                         <>
-                          <TabsList
-                            className="detail-tabs"
-                            aria-label="농가 상세 항목"
-                          >
-                            <TabsTrigger value="work">
-                              업무 {selectedWorkItems.length}
-                            </TabsTrigger>
-                            <TabsTrigger value="info">
-                              사업·설치·구독
-                            </TabsTrigger>
-                            <TabsTrigger value="history">
-                              처리 이력 {selectedFarmHistory.length}
-                            </TabsTrigger>
-                          </TabsList>
-                          <TabsContent
-                            value="info"
+                          <section
+                            aria-label="농가 참여 사업·설치·구독 정보"
                             className="rounded-xl border border-[#d8e0e7] bg-white p-5"
                           >
-                            <div className="flex flex-wrap gap-2">
-                              {selectedFarm.folderUrl && (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  render={
-                                    <a
-                                      href={selectedFarm.folderUrl}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      aria-label="농장 폴더 열기"
-                                    />
-                                  }
-                                >
-                                  <FolderOpen />
-                                  농장 폴더
-                                </Button>
-                              )}
-                              {selectedFarm.locationUrl && (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  render={
-                                    <a
-                                      href={selectedFarm.locationUrl}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      aria-label="농장 위치도 열기"
-                                    />
-                                  }
-                                >
-                                  <MapPin />
-                                  위치도
-                                </Button>
-                              )}
-                              <Button
-                                onClick={openFarmEditDialog}
-                                size="sm"
-                                variant="outline"
-                              >
-                                <Pencil />
-                                기본정보 수정
-                              </Button>
-                              <Button
-                                onClick={openRecordAddDialog}
-                                size="sm"
-                                variant="outline"
-                              >
-                                <Plus />
-                                참여 사업 추가
-                              </Button>
-                              <Button
-                                onClick={() => openWorkItemDialog()}
-                                size="sm"
-                                disabled={!selectedRecords.length}
-                                className="bg-[#2f7b59] hover:bg-[#286b4d]"
-                              >
-                                <Plus />새 업무 등록
-                              </Button>
-                            </div>
-                            {selectedFarm.specialNotes && (
-                              <div className="mt-4 rounded-2xl bg-[#f4f7f3] p-4">
-                                <p className="text-xs font-semibold text-[#65736a]">
-                                  특이사항
-                                </p>
-                                <p className="mt-1 whitespace-pre-wrap text-sm leading-6">
-                                  {selectedFarm.specialNotes}
-                                </p>
-                              </div>
-                            )}
-
-                            <section className="mt-6">
+                            <section>
                               <div>
                                 <h3 className="font-bold">
-                                  참여 사업·설치 정보
+                                  참여 사업·설치·구독 정보
                                 </h3>
                                 <p className="mt-0.5 text-xs text-[#89938c]">
-                                  업무를 등록할 때 반드시 아래 사업 중 하나에
+                                  A/S와 입금을 등록할 때 아래 사업 중 하나에
                                   연결합니다.
                                 </p>
                               </div>
@@ -10727,12 +10690,15 @@ export function FarmLedgerDashboard({
                                           </Button>
                                           <Button
                                             onClick={() =>
-                                              openWorkItemDialog(record.id)
+                                              openWorkItemDialog(
+                                                record.id,
+                                                'service',
+                                              )
                                             }
                                             size="sm"
                                             variant="outline"
                                           >
-                                            <Plus />이 사업에 업무 등록
+                                            <Plus />이 사업에 A/S 등록
                                           </Button>
                                         </div>
                                       </div>
@@ -10741,44 +10707,159 @@ export function FarmLedgerDashboard({
                                 })}
                               </div>
                             </section>
-                          </TabsContent>
+                            <div className="mt-4 flex flex-wrap gap-2">
+                              {selectedFarm.folderUrl && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  render={
+                                    <a
+                                      href={selectedFarm.folderUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      aria-label="농장 폴더 열기"
+                                    />
+                                  }
+                                >
+                                  <FolderOpen />
+                                  농장 폴더
+                                </Button>
+                              )}
+                              {selectedFarm.locationUrl && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  render={
+                                    <a
+                                      href={selectedFarm.locationUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      aria-label="농장 위치도 열기"
+                                    />
+                                  }
+                                >
+                                  <MapPin />
+                                  위치도
+                                </Button>
+                              )}
+                              <Button
+                                onClick={openFarmEditDialog}
+                                size="sm"
+                                variant="outline"
+                              >
+                                <Pencil />
+                                기본정보 수정
+                              </Button>
+                              <Button
+                                onClick={openRecordAddDialog}
+                                size="sm"
+                                variant="outline"
+                              >
+                                <Plus />
+                                참여 사업 추가
+                              </Button>
+                              <Button
+                                onClick={() =>
+                                  openWorkItemDialog('', 'service')
+                                }
+                                size="sm"
+                                disabled={!selectedRecords.length}
+                                className="bg-[#2f7b59] hover:bg-[#286b4d]"
+                              >
+                                <Plus />
+                                A/S 등록
+                              </Button>
+                            </div>
+                            {!!selectedFarm.locationImageIds?.length && (
+                              <section
+                                className="mt-4 rounded-xl border border-slate-200 p-4"
+                                aria-label="농장 위치도 사진"
+                              >
+                                <h3 className="text-base font-semibold">
+                                  농장 위치도
+                                </h3>
+                                <ReceivedImages
+                                  imageIds={selectedFarm.locationImageIds}
+                                />
+                              </section>
+                            )}
+                            {selectedFarm.specialNotes && (
+                              <div className="mt-4 rounded-2xl bg-[#f4f7f3] p-4">
+                                <p className="text-xs font-semibold text-[#65736a]">
+                                  특이사항
+                                </p>
+                                <p className="mt-1 whitespace-pre-wrap text-sm leading-6">
+                                  {selectedFarm.specialNotes}
+                                </p>
+                              </div>
+                            )}
+                          </section>
+                          <TabsList
+                            className="detail-tabs"
+                            aria-label="농가 상세 항목"
+                          >
+                            <TabsTrigger value="work">
+                              A/S {selectedServiceItems.length}
+                            </TabsTrigger>
+                            <TabsTrigger value="history">
+                              처리 이력 {selectedFarmHistory.length}
+                            </TabsTrigger>
+                            <TabsTrigger value="payments">
+                              입금내역 {selectedFarmPayments.length}
+                            </TabsTrigger>
+                          </TabsList>
                           <TabsContent value="work">
                             <section className="rounded-xl border border-[#d8e0e7] bg-white p-5">
                               <div className="flex items-center justify-between">
                                 <div>
-                                  <h3 className="font-bold">농가 업무</h3>
+                                  <h3 className="font-bold">농가 A/S</h3>
                                   <p className="mt-0.5 text-xs text-[#89938c]">
                                     현재 상태와 마지막 받은·처리 내용을
                                     확인합니다.
                                   </p>
                                 </div>
                                 <Button
-                                  onClick={() => openWorkItemDialog()}
+                                  onClick={() =>
+                                    openWorkItemDialog('', 'service')
+                                  }
+                                  disabled={!selectedRecords.length}
                                   size="sm"
                                   variant="outline"
                                 >
                                   <Plus />
-                                  업무 등록
+                                  A/S 등록
                                 </Button>
                               </div>
                               <div className="mt-4 grid gap-3">
-                                {selectedWorkItems.map((item) => (
+                                {selectedServiceItems.map((item) => (
                                   <WorkItemCard key={item.id} workItem={item} />
                                 ))}
-                                {!selectedWorkItems.length && (
+                                {!selectedServiceItems.length && (
                                   <div className="rounded-2xl border border-dashed border-[#d7dfd5] py-10 text-center">
                                     <FileText className="mx-auto size-7 text-[#9aa49d]" />
                                     <p className="mt-3 text-sm font-semibold">
-                                      등록된 업무가 없습니다.
+                                      등록된 A/S가 없습니다.
                                     </p>
                                     <p className="mt-1 text-xs text-[#89938c]">
-                                      메일·카톡·전화·구두 내용을 첫 업무로
-                                      남겨보세요.
+                                      농가에서 접수한 문의나 점검 요청을 A/S로
+                                      등록해 주세요.
                                     </p>
                                   </div>
                                 )}
                               </div>
                             </section>
+                          </TabsContent>
+                          <TabsContent value="payments">
+                            <FarmPaymentHistory
+                              key={`${selectedFarm.id}-${farmContextProjectId}`}
+                              payments={selectedFarmPayments}
+                              projectLabel={(item) =>
+                                projectForWorkItem(item)?.name || '사업 없음'
+                              }
+                              onOpen={(item) => openFarm(item.farmId, item.id)}
+                              onAdd={() => openWorkItemDialog('', 'payment')}
+                              disabled={!selectedRecords.length}
+                            />
                           </TabsContent>
                         </>
                       )}
@@ -12890,7 +12971,13 @@ export function FarmLedgerDashboard({
             dialog === 'record_edit'
           }
           onOpenChange={(open) => {
-            if (!submitting && !open) setDialog(null);
+            if (
+              !submitting &&
+              !farmImageBusyRef.current &&
+              !farmSaveBusyRef.current &&
+              !open
+            )
+              setDialog(null);
           }}
         >
           <DialogContent className="max-h-[94vh] overflow-y-auto p-5 sm:max-w-[860px] sm:p-6">
@@ -12999,7 +13086,7 @@ export function FarmLedgerDashboard({
                       />
                     </Field>
                     <Field>
-                      <FieldLabel>농장 폴더 링크</FieldLabel>
+                      <FieldLabel>농장 폴더 링크 (선택)</FieldLabel>
                       <Input
                         type="url"
                         value={farmForm.folderUrl}
@@ -13013,7 +13100,7 @@ export function FarmLedgerDashboard({
                       />
                     </Field>
                     <Field>
-                      <FieldLabel>농장 위치도 링크</FieldLabel>
+                      <FieldLabel>농장 위치도 링크 (선택)</FieldLabel>
                       <Input
                         type="url"
                         value={farmForm.locationUrl}
@@ -13026,6 +13113,68 @@ export function FarmLedgerDashboard({
                         placeholder="https://..."
                       />
                     </Field>
+                    <div className="space-y-3 sm:col-span-2 lg:col-span-3">
+                      <h4 className="text-sm font-semibold">
+                        농장 위치도 사진 (선택)
+                      </h4>
+                      {farmLocationExpectedIds.length > 0 && (
+                        <div className="space-y-2">
+                          <ReceivedImages imageIds={farmLocationExpectedIds} />
+                          {farmLocationExpectedIds.map((id, index) => {
+                            const kept = farmLocationIds.includes(id);
+                            return (
+                              <div
+                                key={id}
+                                className="flex items-center gap-2 text-sm"
+                              >
+                                <span>
+                                  기존 위치도 {index + 1}
+                                  {kept ? '' : ' · 저장 시 제외'}
+                                </span>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={
+                                    submitting ||
+                                    farmLocationBusy ||
+                                    (!kept &&
+                                      farmLocationIds.length +
+                                        farmLocationImages.length >=
+                                        3)
+                                  }
+                                  onClick={() =>
+                                    setFarmLocationIds((ids) =>
+                                      kept
+                                        ? ids.filter((value) => value !== id)
+                                        : farmLocationExpectedIds.filter(
+                                            (value) =>
+                                              value === id ||
+                                              ids.includes(value),
+                                          ),
+                                    )
+                                  }
+                                >
+                                  {kept ? '첨부 제외' : '제외 취소'}
+                                </Button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <ReceivedContentInput
+                        key={`${dialog}-${editingFarmId}`}
+                        imageOnly
+                        images={farmLocationImages}
+                        existingCount={farmLocationIds.length}
+                        onImagesChange={setFarmLocationImages}
+                        onBusyChange={(busy) => {
+                          farmImageBusyRef.current = busy;
+                          setFarmLocationBusy(busy);
+                        }}
+                        disabled={submitting}
+                      />
+                    </div>
                     <Field className="sm:col-span-2 lg:col-span-3">
                       <FieldLabel>특이사항</FieldLabel>
                       <Textarea
@@ -13404,13 +13553,13 @@ export function FarmLedgerDashboard({
                   type="button"
                   variant="outline"
                   onClick={() => setDialog(null)}
-                  disabled={submitting}
+                  disabled={submitting || farmLocationBusy}
                 >
                   취소
                 </Button>
                 <Button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || farmLocationBusy}
                   className="bg-[#2f7b59] hover:bg-[#286b4d]"
                 >
                   {submitting && <Loader2 className="animate-spin" />}
@@ -13785,7 +13934,13 @@ export function FarmLedgerDashboard({
         >
           <DialogContent className="max-h-[94vh] overflow-y-auto p-5 sm:max-w-[760px] sm:p-6">
             <DialogHeader>
-              <DialogTitle className="text-lg">농가 업무 등록</DialogTitle>
+              <DialogTitle className="text-lg">
+                {workItemForm.workType === 'service'
+                  ? 'A/S 등록'
+                  : workItemForm.workType === 'payment'
+                    ? '입금 등록'
+                    : '농가 업무 등록'}
+              </DialogTitle>
               <DialogDescription>
                 {selectedFarm?.name} 농가의 업무를 참여 사업에 연결하고 최초
                 수신·처리 내용을 기록합니다.
@@ -14278,7 +14433,12 @@ export function FarmLedgerDashboard({
                   disabled={submitting || imagesBusy}
                   className="bg-[#2f7b59] hover:bg-[#286b4d]"
                 >
-                  {submitting && <Loader2 className="animate-spin" />}업무 등록
+                  {submitting && <Loader2 className="animate-spin" />}
+                  {workItemForm.workType === 'service'
+                    ? 'A/S 등록'
+                    : workItemForm.workType === 'payment'
+                      ? '입금 등록'
+                      : '업무 등록'}
                 </Button>
               </DialogFooter>
             </form>

@@ -388,6 +388,7 @@ export interface Farm {
   businessNumber: string;
   folderUrl: string;
   locationUrl: string;
+  locationImageIds?: string[];
   specialNotes: string;
   createdAt: number;
   updatedAt: number;

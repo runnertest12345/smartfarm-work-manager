@@ -16,7 +16,7 @@ import { parseReceivedImages, type ReceivedImage } from '../received-images';
 export function writeReceivedImages(
   writer: { set: (ref: DocumentReference, data: DocumentData) => unknown },
   images: ReceivedImage[],
-  parentCollection: 'inboxItems' | 'historyEntries',
+  parentCollection: 'inboxItems' | 'historyEntries' | 'farms',
   parentId: string,
 ) {
   const uid = requireSignedInUser().uid;

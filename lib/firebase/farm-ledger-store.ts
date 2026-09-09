@@ -71,6 +71,11 @@ import {
 import { renewalCountBeforeEvent } from '@/lib/subscription-renewal-report';
 import { parseReceivedImages, type ReceivedImage } from '@/lib/received-images';
 import { writeReceivedImages } from './received-images-store';
+import {
+  parseFarmLocationChange,
+  resolveFarmLocationImages,
+  type FarmLocationChange,
+} from '@/lib/farm-location-images';
 import { isProjectTask } from '@/lib/project-work';
 import { projectLifecyclePatch } from '@/lib/project-lifecycle';
 import {
@@ -1443,6 +1448,7 @@ async function createFarmWithRecord(
   farmInput: FarmInput,
   recordInput: FarmRecordInput,
   recorder: string,
+  locationChange?: FarmLocationChange,
 ) {
   const workspace = currentWorkspace();
   const project = assertProjectEditable(
@@ -1459,6 +1465,7 @@ async function createFarmWithRecord(
   const farm: Farm = {
     id: crypto.randomUUID(),
     ...farmInput,
+    locationImageIds: resolveFarmLocationImages([], locationChange),
     createdAt: now,
     updatedAt: now,
   };
@@ -1510,6 +1517,12 @@ async function createFarmWithRecord(
       throw new Error('이 농가는 이미 같은 프로젝트에 등록되어 있습니다.');
     }
     transaction.set(documentRef('farms', farm.id), createdData(farm));
+    writeReceivedImages(
+      transaction,
+      locationChange?.images ?? [],
+      'farms',
+      farm.id,
+    );
     transaction.set(documentRef('records', record.id), createdData(record));
     transaction.set(
       documentRef('workItems', workItem.id),
@@ -1659,7 +1672,12 @@ async function createRecord(
   return { record, workItem, historyEntry };
 }
 
-async function updateFarm(farmId: string, input: FarmInput) {
+async function updateFarm(
+  farmId: string,
+  input: FarmInput,
+  locationChange?: FarmLocationChange,
+  expectedUpdatedAt?: number,
+) {
   const workspace = currentWorkspace();
   const existing = workspace.farms.find((item) => item.id === farmId);
   if (!existing) throw new Error('농가를 찾을 수 없습니다.');
@@ -1670,11 +1688,30 @@ async function updateFarm(farmId: string, input: FarmInput) {
   );
   if (duplicate) throw new Error('이미 사용 중인 농장번호입니다.');
   const now = Date.now();
-  const farm: Farm = { ...existing, ...input, updatedAt: now };
-  const oldClaimId = farmCodeKey(existing.farmCode);
+  let farm: Farm;
   const newClaimId = farmCodeKey(input.farmCode);
   const { db } = getFirebaseServices();
   await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(documentRef('farms', farmId));
+    if (!snapshot.exists()) throw new Error('농가를 찾을 수 없습니다.');
+    const latest = snapshot.data() as Farm;
+    if (
+      expectedUpdatedAt !== undefined &&
+      latest.updatedAt !== expectedUpdatedAt
+    )
+      throw new Error(
+        '농가 정보가 다른 곳에서 변경되었습니다. 입력 내용은 유지됩니다. 창을 다시 열어 최신 정보를 확인해 주세요.',
+      );
+    farm = {
+      ...latest,
+      ...input,
+      locationImageIds: resolveFarmLocationImages(
+        latest.locationImageIds,
+        locationChange,
+      ),
+      updatedAt: Math.max(now, latest.updatedAt + 1),
+    };
+    const oldClaimId = farmCodeKey(latest.farmCode);
     if (oldClaimId !== newClaimId) {
       const oldClaimRef = internalDocumentRef(
         'farmCodeReservations',
@@ -1723,8 +1760,14 @@ async function updateFarm(farmId: string, input: FarmInput) {
       );
     }
     transaction.set(documentRef('farms', farm.id), updatedData(farm));
+    writeReceivedImages(
+      transaction,
+      locationChange?.images ?? [],
+      'farms',
+      farm.id,
+    );
   });
-  return { farm };
+  return { farm: farm! };
 }
 
 async function updateRecord(
@@ -3525,11 +3568,28 @@ async function mutateFarmLedger(method: string, body: JsonObject) {
 
   if (kind === 'farm') {
     const input = parseFarmInput(body.farm);
+    const locationChange = parseFarmLocationChange(body);
     if (method === 'PATCH') {
-      return updateFarm(requiredId(body.farmId, '농가 ID'), input);
+      if (
+        body.expectedFarmUpdatedAt !== undefined &&
+        (!Number.isSafeInteger(body.expectedFarmUpdatedAt) ||
+          Number(body.expectedFarmUpdatedAt) <= 0)
+      )
+        throw new Error('농가 정보 버전을 확인해 주세요.');
+      return updateFarm(
+        requiredId(body.farmId, '농가 ID'),
+        input,
+        locationChange,
+        body.expectedFarmUpdatedAt as number | undefined,
+      );
     }
     const recorder = requiredId(body.recorder, '담당자');
-    return createFarmWithRecord(input, parseRecordInput(body.record), recorder);
+    return createFarmWithRecord(
+      input,
+      parseRecordInput(body.record),
+      recorder,
+      locationChange,
+    );
   }
 
   if (kind === 'record') {

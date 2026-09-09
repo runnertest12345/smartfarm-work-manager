@@ -2,7 +2,12 @@
 
 import { useId, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
+import { ChevronDown, ChevronRight } from 'lucide-react';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import {
   Table,
   TableBody,
@@ -15,8 +20,10 @@ import type { ProjectFarmProgress } from '@/lib/project-farm-progress';
 
 export function ProjectStageFigures({
   stage,
+  showCounts = true,
 }: {
   stage: ProjectFarmProgress['stages'][number];
+  showCounts?: boolean;
 }) {
   return (
     <div aria-label={`${stage.label} 농가 진행 현황`}>
@@ -24,6 +31,18 @@ export function ProjectStageFigures({
       <p className="mt-1 text-xl font-bold tabular-nums text-emerald-800">
         {stage.rate === null ? '-' : `${stage.rate}%`}
       </p>
+      {showCounts && <ProjectStageCounts stage={stage} />}
+    </div>
+  );
+}
+
+function ProjectStageCounts({
+  stage,
+}: {
+  stage: ProjectFarmProgress['stages'][number];
+}) {
+  return (
+    <div aria-label={`${stage.label} 완료·미완료 개소`}>
       <p className="mt-2 text-sm tabular-nums text-slate-600">
         완료 {stage.completed}개소
       </p>
@@ -33,6 +52,54 @@ export function ProjectStageFigures({
         미완료 {stage.remaining}개소
       </p>
     </div>
+  );
+}
+
+export function ProjectStageSummary({
+  progress,
+  projectName,
+}: {
+  progress: ProjectFarmProgress;
+  projectName: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
+  return (
+    <Collapsible
+      open={expanded}
+      onOpenChange={setExpanded}
+      className="min-w-[330px]"
+    >
+      <div className="grid grid-cols-3 gap-3">
+        {progress.stages.map((stage) => (
+          <ProjectStageFigures
+            key={stage.key}
+            stage={stage}
+            showCounts={false}
+          />
+        ))}
+      </div>
+      <CollapsibleTrigger
+        aria-label={`${projectName} 설치·시운전·교육 상세 ${expanded ? '접기' : '보기'}`}
+        aria-expanded={expanded}
+        aria-controls={detailsId}
+        className="mt-1 flex min-h-10 items-center gap-1 text-sm font-medium text-emerald-800 hover:underline"
+      >
+        {expanded ? (
+          <ChevronDown className="size-4" />
+        ) : (
+          <ChevronRight className="size-4" />
+        )}
+        {expanded ? '상세 접기' : '상세 보기'}
+      </CollapsibleTrigger>
+      <CollapsibleContent id={detailsId}>
+        <div className="grid grid-cols-3 gap-3 border-t border-slate-200 pb-1">
+          {progress.stages.map((stage) => (
+            <ProjectStageCounts key={stage.key} stage={stage} />
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
