@@ -1,4 +1,13 @@
 'use client';
+import {
+  ProjectSettlementDetails,
+  ProjectSettlementEditor,
+} from './project-settlement-panels';
+import {
+  emptySettlement,
+  projectSettlementLabel,
+  withSettlementRounds,
+} from '@/lib/project-settlements';
 
 import { ProjectWorkTree } from './project-work-tree';
 import { FarmPaymentHistory } from './farm-payment-history';
@@ -753,6 +762,7 @@ function emptyProjectForm(): FarmProjectInput {
     settlementOwner: '',
     settlementEvidenceUrl: '',
     settlementNote: '',
+    settlementRounds: { first: emptySettlement(), second: emptySettlement() },
   };
 }
 
@@ -1207,6 +1217,7 @@ export function FarmLedgerDashboard({
     setDeletedProjectToClose('');
     if (selectedProjectId === deletedProjectToClose) closeDetails();
   }, [projectDeletionTarget, deletedProjectToClose]);
+  const projectExpectedVersion = useRef(0);
   const [projectForm, setProjectForm] =
     useState<FarmProjectInput>(emptyProjectForm);
   const [projectDocumentForm, setProjectDocumentForm] =
@@ -3410,6 +3421,7 @@ export function FarmLedgerDashboard({
   }
 
   function openProjectDialog() {
+    projectExpectedVersion.current = 0;
     setEditingProjectId('');
     setProjectForm(emptyProjectForm());
     setFormError('');
@@ -3417,6 +3429,7 @@ export function FarmLedgerDashboard({
   }
 
   function openProjectEditDialog(project: FarmProject) {
+    projectExpectedVersion.current = project.updatedAt;
     setEditingProjectId(project.id);
     setProjectForm({
       name: project.name,
@@ -3440,6 +3453,9 @@ export function FarmLedgerDashboard({
       settlementOwner: project.settlementOwner,
       settlementEvidenceUrl: project.settlementEvidenceUrl,
       settlementNote: project.settlementNote,
+      ...(project.settlementRounds
+        ? { settlementRounds: structuredClone(project.settlementRounds) }
+        : {}),
     });
     setFormError('');
     setDialog('project');
@@ -4181,7 +4197,10 @@ export function FarmLedgerDashboard({
         body: JSON.stringify({
           kind: 'project',
           projectId: editingProjectId,
-          project: projectForm,
+          expectedUpdatedAt: projectExpectedVersion.current,
+          project: projectForm.settlementRounds
+            ? withSettlementRounds(projectForm, projectForm.settlementRounds)
+            : projectForm,
         }),
       });
       const data = await readResponse(response);
@@ -5088,7 +5107,7 @@ export function FarmLedgerDashboard({
               selectedProjectSnapshot.documentRate,
               selectedProjectSnapshot.settlementProgress,
             ),
-            evidence: `서류 승인 ${selectedProjectSnapshot.approvedDocuments.length}/${selectedProjectSnapshot.requiredDocuments.length} · 정산 ${FARM_SETTLEMENT_STATUS_LABELS[selectedProject.settlementStatus]}`,
+            evidence: `서류 승인 ${selectedProjectSnapshot.approvedDocuments.length}/${selectedProjectSnapshot.requiredDocuments.length} · 정산 ${projectSettlementLabel(selectedProject)}`,
           },
           {
             label: '사업 마감',
@@ -7814,11 +7833,7 @@ export function FarmLedgerDashboard({
                                         {snapshot.requiredDocuments.length}건
                                       </p>
                                       <p className="mt-1 text-sm text-[#586777]">
-                                        {
-                                          FARM_SETTLEMENT_STATUS_LABELS[
-                                            project.settlementStatus
-                                          ]
-                                        }
+                                        {projectSettlementLabel(project)}
                                       </p>
                                     </TableCell>
                                   </TableRow>
@@ -8072,11 +8087,7 @@ export function FarmLedgerDashboard({
                                           제출
                                         </Badge>
                                         <Badge variant="outline">
-                                          {
-                                            FARM_SETTLEMENT_STATUS_LABELS[
-                                              project.settlementStatus
-                                            ]
-                                          }
+                                          {projectSettlementLabel(project)}
                                         </Badge>
                                       </div>
                                       <div className="mt-4 flex items-center justify-between border-t border-[#edf1ec] pt-3 text-xs font-semibold text-[#3d7455]">
@@ -9960,10 +9971,7 @@ export function FarmLedgerDashboard({
                           },
                           {
                             label: '정산',
-                            value:
-                              FARM_SETTLEMENT_STATUS_LABELS[
-                                selectedProject.settlementStatus
-                              ],
+                            value: projectSettlementLabel(selectedProject),
                             note: selectedProject.settlementDueDate
                               ? `${selectedProject.settlementDueDate} · ${dueLabel(selectedProject.settlementDueDate, ['paid', 'closed'].includes(selectedProject.settlementStatus))}`
                               : '정산기한 미입력',
@@ -10573,82 +10581,7 @@ export function FarmLedgerDashboard({
                     <TabsContent value="settlement">
                       <section>
                         <div className="rounded-2xl bg-white p-5 shadow-sm">
-                          <div className="flex items-center justify-between gap-3">
-                            <div>
-                              <h3 className="font-bold">최종 정산</h3>
-                              <p className="mt-1 text-xs text-[#7d8981]">
-                                현재 버전은 프로젝트별 최종정산 1건을
-                                관리합니다.
-                              </p>
-                            </div>
-                            <Badge variant="outline">
-                              {
-                                FARM_SETTLEMENT_STATUS_LABELS[
-                                  selectedProject.settlementStatus
-                                ]
-                              }
-                            </Badge>
-                          </div>
-                          <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                            {[
-                              ['계약금액', selectedProject.contractAmount],
-                              ['청구액', selectedProject.settlementClaimAmount],
-                              [
-                                '승인액',
-                                selectedProject.settlementApprovedAmount,
-                              ],
-                              ['입금액', selectedProject.settlementPaidAmount],
-                            ].map(([label, value]) => (
-                              <div
-                                key={String(label)}
-                                className="rounded-xl bg-[#f6f8f5] p-3"
-                              >
-                                <dt className="text-xs text-[#7d8981]">
-                                  {label}
-                                </dt>
-                                <dd className="mt-1 font-bold">
-                                  {formatMoney(Number(value))}
-                                </dd>
-                              </div>
-                            ))}
-                          </dl>
-                          <div className="mt-4 space-y-2 rounded-xl border border-[#e2e8e1] p-3 text-sm">
-                            <p>
-                              <span className="text-[#7d8981]">담당자</span>{' '}
-                              <strong>
-                                {selectedProject.settlementOwner || '미지정'}
-                              </strong>
-                            </p>
-                            <p>
-                              <span className="text-[#7d8981]">정산기한</span>{' '}
-                              <strong>
-                                {selectedProject.settlementDueDate || '미입력'}
-                              </strong>
-                            </p>
-                            <p>
-                              <span className="text-[#7d8981]">
-                                입금·마감일
-                              </span>{' '}
-                              <strong>
-                                {selectedProject.settledAt || '미입력'}
-                              </strong>
-                            </p>
-                            {selectedProject.settlementEvidenceUrl && (
-                              <a
-                                href={selectedProject.settlementEvidenceUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-1 font-semibold text-[#39795b] hover:underline"
-                              >
-                                <ExternalLink className="size-3.5" /> 정산 증빙
-                                열기
-                              </a>
-                            )}
-                            <p className="leading-6 text-[#657269]">
-                              {selectedProject.settlementNote ||
-                                '정산 메모가 없습니다.'}
-                            </p>
-                          </div>
+                          <ProjectSettlementDetails project={selectedProject} />
                           <Button
                             variant="outline"
                             className="mt-4 w-full"
@@ -12514,165 +12447,14 @@ export function FarmLedgerDashboard({
                   </p>
                 </div>
               )}
-              <div className="rounded-2xl border border-[#dfe6dd] bg-[#f7f9f6] p-4">
-                <div className="mb-4">
-                  <h3 className="font-semibold">최종 정산 관리</h3>
-                  <p className="mt-1 text-xs text-[#77847b]">
-                    현재 버전은 프로젝트별 최종정산 1건을 관리합니다.
-                  </p>
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <Field>
-                    <FieldLabel htmlFor="project-settlement-status">
-                      정산 상태
-                    </FieldLabel>
-                    <Select
-                      value={projectForm.settlementStatus}
-                      onValueChange={(value) =>
-                        setProjectForm((current) => ({
-                          ...current,
-                          settlementStatus: value as FarmSettlementStatus,
-                        }))
-                      }
-                    >
-                      <SelectTrigger
-                        id="project-settlement-status"
-                        className="h-10 w-full bg-white"
-                      >
-                        <SelectValue>
-                          {
-                            FARM_SETTLEMENT_STATUS_LABELS[
-                              projectForm.settlementStatus
-                            ]
-                          }
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {Object.entries(FARM_SETTLEMENT_STATUS_LABELS).map(
-                          ([value, label]) => (
-                            <SelectItem key={value} value={value}>
-                              {label}
-                            </SelectItem>
-                          ),
-                        )}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field>
-                    <FieldLabel htmlFor="project-settlement-owner">
-                      정산 담당자
-                    </FieldLabel>
-                    <Input
-                      id="project-settlement-owner"
-                      value={projectForm.settlementOwner}
-                      onChange={(event) =>
-                        setProjectForm((current) => ({
-                          ...current,
-                          settlementOwner: event.target.value,
-                        }))
-                      }
-                      placeholder="예: 경영지원팀"
-                      className="bg-white"
-                    />
-                  </Field>
-                  <Field>
-                    <FieldLabel htmlFor="project-settlement-due-date">
-                      정산 기한
-                    </FieldLabel>
-                    <Input
-                      id="project-settlement-due-date"
-                      type="date"
-                      value={projectForm.settlementDueDate}
-                      onChange={(event) =>
-                        setProjectForm((current) => ({
-                          ...current,
-                          settlementDueDate: event.target.value,
-                        }))
-                      }
-                      className="bg-white"
-                    />
-                  </Field>
-                  <Field>
-                    <FieldLabel htmlFor="project-settled-at">
-                      입금·마감일
-                    </FieldLabel>
-                    <Input
-                      id="project-settled-at"
-                      type="date"
-                      value={projectForm.settledAt}
-                      onChange={(event) =>
-                        setProjectForm((current) => ({
-                          ...current,
-                          settledAt: event.target.value,
-                        }))
-                      }
-                      className="bg-white"
-                    />
-                  </Field>
-                  {[
-                    ['계약금액', 'contractAmount'],
-                    ['청구액', 'settlementClaimAmount'],
-                    ['승인액', 'settlementApprovedAmount'],
-                    ['입금액', 'settlementPaidAmount'],
-                  ].map(([label, field]) => (
-                    <Field key={field}>
-                      <FieldLabel htmlFor={`project-${field}`}>
-                        {label}
-                      </FieldLabel>
-                      <Input
-                        id={`project-${field}`}
-                        type="number"
-                        min={0}
-                        step={1}
-                        value={
-                          projectForm[field as keyof FarmProjectInput] as number
-                        }
-                        onChange={(event) =>
-                          setProjectForm((current) => ({
-                            ...current,
-                            [field]: Number(event.target.value),
-                          }))
-                        }
-                        className="bg-white"
-                      />
-                    </Field>
-                  ))}
-                  <Field className="sm:col-span-2">
-                    <FieldLabel htmlFor="project-settlement-evidence">
-                      정산 증빙 링크
-                    </FieldLabel>
-                    <Input
-                      id="project-settlement-evidence"
-                      value={projectForm.settlementEvidenceUrl}
-                      onChange={(event) =>
-                        setProjectForm((current) => ({
-                          ...current,
-                          settlementEvidenceUrl: event.target.value,
-                        }))
-                      }
-                      placeholder="https://drive.google.com/..."
-                      className="bg-white"
-                    />
-                  </Field>
-                  <Field className="sm:col-span-2">
-                    <FieldLabel htmlFor="project-settlement-note">
-                      정산 메모
-                    </FieldLabel>
-                    <Textarea
-                      id="project-settlement-note"
-                      value={projectForm.settlementNote}
-                      onChange={(event) =>
-                        setProjectForm((current) => ({
-                          ...current,
-                          settlementNote: event.target.value,
-                        }))
-                      }
-                      placeholder="보완 요청, 입금 예정, 확인사항을 적어 주세요."
-                      className="min-h-20 bg-white"
-                    />
-                  </Field>
-                </div>
-              </div>
+              <ProjectSettlementEditor
+                value={projectForm}
+                onChange={setProjectForm}
+                locked={Boolean(
+                  editingProjectId &&
+                  projectById.get(editingProjectId)?.status === 'completed',
+                )}
+              />
               {formError && <FieldError>{formError}</FieldError>}
               <DialogFooter className="mx-0 mb-0 px-0 pb-0 pt-4">
                 <Button

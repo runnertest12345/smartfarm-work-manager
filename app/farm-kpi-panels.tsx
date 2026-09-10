@@ -135,12 +135,12 @@ export function ProjectKpiPanel({
       note: `일반 ${summary.general} · 연구 ${summary.research}`,
     },
     {
-      label: '진행 중 사업',
+      label: '진행 중 프로젝트',
       value: `${summary.active}개`,
       note: '선택 연도·사업 타입 기준',
     },
     {
-      label: '완료 사업',
+      label: '완료 프로젝트',
       value: `${summary.completed}개`,
       note: '사업 상태 완료',
     },
@@ -232,6 +232,26 @@ export function ProjectKpiPanel({
           </button>
         ))}
       </div>
+      <div
+        className="mt-3 grid gap-3 sm:grid-cols-3"
+        aria-label="프로젝트 진행·완료 현황"
+      >
+        {[
+          metrics[1],
+          metrics[2],
+          {
+            label: '프로젝트 완료율',
+            value: rateLabel(summary.projectCompletionRate),
+            note: `완료 ${summary.completed} / 전체 ${summary.projects}개 · 보류 ${summary.onHold}개 포함`,
+          },
+        ].map((metric) => (
+          <div key={metric.label} className="metric-link">
+            <p className="metric-label">{metric.label}</p>
+            <p className="metric-value">{metric.value}</p>
+            <p className="metric-note">{metric.note}</p>
+          </div>
+        ))}
+      </div>
       <Collapsible className="mt-2">
         <CollapsibleTrigger className="flex min-h-10 items-center gap-2 text-sm font-semibold text-[#176448]">
           설치·구독·서류·정산 지표{' '}
@@ -240,7 +260,7 @@ export function ProjectKpiPanel({
         <CollapsibleContent>
           <div className="grid gap-3 pb-3 sm:grid-cols-2 xl:grid-cols-4">
             {metrics
-              .filter((_, index) => ![0, 4, 5, 6].includes(index))
+              .filter((_, index) => ![0, 1, 2, 4, 5, 6].includes(index))
               .map((metric) => (
                 <div key={metric.label} className="metric-link">
                   <p className="metric-label">{metric.label}</p>

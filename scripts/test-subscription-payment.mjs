@@ -315,6 +315,7 @@ const compile = (path) =>
 const scripts = new Map(
   [
     'lib/farm-types.ts',
+    'lib/project-settlements.ts',
     'lib/subscription-payment.ts',
     'lib/subscription-renewal-report.ts',
     'lib/project-work.ts',
@@ -371,6 +372,192 @@ function load(
   return result;
 }
 const { calculateSubscriptionPayment } = load('lib/subscription-payment.ts');
+const settlementTools = load('lib/project-settlements.ts');
+
+test('회차 원본에서 기한·마감일·금액을 재계산하여 오래된 요약이 위험 KPI를 숨기지 않는다', () => {
+  const first = {
+    ...settlementTools.emptySettlement(),
+    status: 'paid',
+    approvedAmount: 100,
+    paidAmount: 100,
+    settledAt: '2026-01-01',
+  };
+  const second = {
+    ...settlementTools.emptySettlement(),
+    dueDate: '2026-02-01',
+  };
+  const project = settlementProject({
+    settlementDueDate: '',
+    settlementPaidAmount: 999,
+    settlementStatus: 'closed',
+    settlementRounds: { first, second },
+  });
+  const result = settlementTools.normalizeProjectSettlement(project);
+  assert.equal(result.settlementDueDate, '2026-02-01');
+  assert.equal(result.settlementPaidAmount, 100);
+  assert.equal(result.settlementStatus, 'collecting');
+  assert.equal(result.settledAt, '');
+});
+
+function settlementProject(patch = {}) {
+  return {
+    name: '정산 시험 사업',
+    projectType: 'general',
+    year: 2026,
+    institution: '시험 기관',
+    status: 'active',
+    description: '',
+    targetFarmCount: 0,
+    manager: '담당',
+    startDate: '',
+    endDate: '',
+    currentStage: 'operation',
+    settlementStatus: 'closed',
+    settlementDueDate: '',
+    contractAmount: 1000,
+    settlementClaimAmount: 300,
+    settlementApprovedAmount: 300,
+    settlementPaidAmount: 300,
+    settledAt: '2025-12-31',
+    settlementOwner: '담당',
+    settlementEvidenceUrl: '',
+    settlementNote: '기존 내역',
+    ...patch,
+  };
+}
+
+test('정산 회차는 금액을 중복하지 않고 미지정 보존·빈 회차 지정·전체 상태를 계산한다', () => {
+  const {
+    emptySettlement,
+    legacySettlement,
+    withSettlementRounds,
+    assignLegacySettlement,
+    assertSettlementTransition,
+    parseSettlementRounds,
+  } = settlementTools;
+  const old = settlementProject();
+  const split = withSettlementRounds(old, {
+    first: emptySettlement(),
+    second: emptySettlement(),
+    unassigned: legacySettlement(old),
+  });
+  assertSettlementTransition(old, split);
+  assert.equal(split.settlementPaidAmount, 300);
+  const assigned = withSettlementRounds(
+    split,
+    assignLegacySettlement(split.settlementRounds, 'first'),
+  );
+  assertSettlementTransition(split, assigned);
+  assert.equal(assigned.settlementPaidAmount, 300);
+  assert.equal(assigned.settlementStatus, 'collecting');
+  assert.equal(assigned.settlementRounds.unassigned, undefined);
+  const complete = withSettlementRounds(assigned, {
+    ...assigned.settlementRounds,
+    second: {
+      ...emptySettlement(),
+      status: 'paid',
+      approvedAmount: 200,
+      paidAmount: 200,
+    },
+  });
+  assert.equal(complete.settlementStatus, 'paid');
+  assert.equal(complete.settlementPaidAmount, 500);
+  assert.equal(complete.contractAmount, 1000);
+  assert.equal(complete.settledAt, '');
+  assert.throws(
+    () =>
+      assertSettlementTransition(
+        split,
+        withSettlementRounds(split, {
+          first: emptySettlement(),
+          second: emptySettlement(),
+        }),
+      ),
+    /기존 내역/,
+  );
+  assert.throws(
+    () =>
+      assignLegacySettlement(
+        { ...split.settlementRounds, first: legacySettlement(old) },
+        'first',
+      ),
+    /이미 입력/,
+  );
+  for (const patch of [
+    { paidAmount: -1 },
+    { paidAmount: 301 },
+    { claimAmount: 0.5 },
+    { dueDate: '2026-02-30' },
+    { evidenceUrl: 'javascript:alert(1)' },
+  ])
+    assert.throws(() =>
+      parseSettlementRounds({
+        first: { ...legacySettlement(old), ...patch },
+        second: emptySettlement(),
+      }),
+    );
+});
+
+test('프로젝트 정산 저장은 차수·감사를 원자적으로 보존하고 과거 완료·오래된 초안·구버전 덮어쓰기를 막는다', async () => {
+  const h = harness();
+  const { emptySettlement, legacySettlement, withSettlementRounds } =
+    settlementTools;
+  const old = {
+    ...settlementProject(),
+    id: 'settlement-project',
+    createdAt: 1,
+    updatedAt: 1,
+    createdByUid: 'tester',
+    updatedByUid: 'tester',
+  };
+  h.put('projects', old);
+  h.sync();
+  const split = withSettlementRounds(old, {
+    first: emptySettlement(),
+    second: emptySettlement(),
+    unassigned: legacySettlement(old),
+  });
+  const save = (project, version = 1) =>
+    h.api.patch({
+      kind: 'project',
+      projectId: old.id,
+      expectedUpdatedAt: version,
+      project,
+    });
+  h.fail();
+  await assert.rejects(save(split), /Simulated/);
+  assert.equal(
+    h.list('projects').find((p) => p.id === old.id).settlementRounds,
+    undefined,
+  );
+  assert.equal(h.list('projectUpdates').length, 0);
+  const result = await save(split);
+  h.sync();
+  assert.equal(result.project.settlementPaidAmount, 300);
+  assert.match(h.list('projectUpdates')[0].actionContent, /1차 정산/);
+  await assert.rejects(save(split), /다른 변경/);
+  await assert.rejects(save(old, result.project.updatedAt), /최신 화면/);
+  assert.equal(h.list('subscriptionEvents').length, 0);
+  const closed = {
+    ...old,
+    year: 2025,
+    status: 'completed',
+    currentStage: 'closed',
+  };
+  h.put('projects', closed);
+  h.sync();
+  const unchanged = await save(closed);
+  assert.equal(unchanged.project.status, 'completed');
+  assert.equal(unchanged.project.settlementRounds, undefined);
+  h.sync();
+  await assert.rejects(
+    save(
+      { ...split, status: 'completed', currentStage: 'closed' },
+      unchanged.project.updatedAt,
+    ),
+    /완료 근거/,
+  );
+});
 for (const [expiry, paid, amount, expected] of [
   ['2026-01-31', '2026-03-31', 66000, '2027-01-31'],
   ['2026-01-31', '2026-04-01', 66000, '2027-04-30'],

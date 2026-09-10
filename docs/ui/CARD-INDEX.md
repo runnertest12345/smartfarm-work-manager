@@ -33,8 +33,8 @@
 | 카드·영역                                                                 | 파일                          |
 | ------------------------------------------------------------------------- | ----------------------------- |
 | [연도별 사업 현황·선택](overview/cards/year-selector.md)                  | `year-selector.md`            |
-| [진행 중 사업 KPI](overview/cards/active-projects.md)                     | `active-projects.md`          |
-| [완료 사업 KPI](overview/cards/completed-projects.md)                     | `completed-projects.md`       |
+| [진행 중 프로젝트 KPI](overview/cards/active-projects.md)                     | `active-projects.md`          |
+| [완료 프로젝트 KPI](overview/cards/completed-projects.md)                     | `completed-projects.md`       |
 | [보류 사업 KPI](overview/cards/on-hold-projects.md)                       | `on-hold-projects.md`         |
 | [참여 농가 KPI](overview/cards/participating-farms.md)                    | `participating-farms.md`      |
 | [설치·시운전·교육 KPI](overview/cards/operation-rates.md)                 | `operation-rates.md`          |
@@ -128,11 +128,11 @@
 | [참여 농가 KPI](projects/cards/participating-farms.md)                   | `participating-farms.md`        |
 | [참여 농가·구독 표](projects/cards/participation-table.md)               | `participation-table.md`        |
 | [참여농가 확정 단계](projects/cards/stage-farms.md)                      | `stage-farms.md`                |
-| [최종 정산](projects/cards/settlement.md)                                | `settlement.md`                 |
-| [최종 정산 · 계약금액](projects/cards/contract-amount.md)                | `contract-amount.md`            |
-| [최종 정산 · 승인액](projects/cards/settlement-approved-amount.md)       | `settlement-approved-amount.md` |
-| [최종 정산 · 입금액](projects/cards/settlement-paid-amount.md)           | `settlement-paid-amount.md`     |
-| [최종 정산 · 청구액](projects/cards/settlement-claim-amount.md)          | `settlement-claim-amount.md`    |
+| [회차별 정산](projects/cards/settlement.md)                                | `settlement.md`                 |
+| [회차별 정산 · 계약금액](projects/cards/contract-amount.md)                | `contract-amount.md`            |
+| [회차별 정산 · 승인액](projects/cards/settlement-approved-amount.md)       | `settlement-approved-amount.md` |
+| [회차별 정산 · 입금액](projects/cards/settlement-paid-amount.md)           | `settlement-paid-amount.md`     |
+| [회차별 정산 · 청구액](projects/cards/settlement-claim-amount.md)          | `settlement-claim-amount.md`    |
 | [프로젝트 최근 히스토리](projects/cards/recent-history.md)               | `recent-history.md`             |
 | [프로젝트 통합 현황 목록 카드](projects/cards/project-list.md)           | `project-list.md`               |
 | [필수 제출서류 KPI](projects/cards/required-documents-kpi.md)            | `required-documents-kpi.md`     |

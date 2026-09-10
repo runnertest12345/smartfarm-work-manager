@@ -97,6 +97,36 @@ const snapshot = (records, workItems = [], patch = {}) => ({
   ...patch,
 });
 
+test('프로젝트 진행·완료율은 보류를 포함한 선택 연도·타입 전체가 분모이며 업무 완료율과 독립이다', () => {
+  const projects = [
+    { id: 'a', year: 2026, projectType: 'general', status: 'active' },
+    { id: 'b', year: 2026, projectType: 'general', status: 'completed' },
+    { id: 'c', year: 2026, projectType: 'general', status: 'on_hold' },
+    { id: 'd', year: 2025, projectType: 'research', status: 'completed' },
+  ];
+  const current = summarizeProjectKpis(
+    filterProjectsByScope(projects, '2026', 'general'),
+    new Map(),
+    today,
+  );
+  assert.equal(current.active, 1);
+  assert.equal(current.completed, 1);
+  assert.equal(current.projectCompletionRate, 33);
+  assert.equal(current.taskCompletionRate, null);
+  assert.equal(
+    summarizeProjectKpis(
+      filterProjectsByScope(projects, '2025', 'research'),
+      new Map(),
+      today,
+    ).projectCompletionRate,
+    100,
+  );
+  assert.equal(
+    summarizeProjectKpis([], new Map(), today).projectCompletionRate,
+    null,
+  );
+});
+
 test('프로젝트 KPI는 상위·세부 수를 구분하고 최하위 실행 업무 완료율만 계산한다', () => {
   const project = { id: 'p1', status: 'active', projectType: 'general' };
   const items = [

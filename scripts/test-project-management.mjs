@@ -138,7 +138,21 @@ const { ProjectDeletionDialog } = load(
   'app/project-deletion-dialog.tsx',
   aliases,
 );
-const { ProjectYearSelector } = load('app/farm-kpi-panels.tsx', aliases);
+const { ProjectYearSelector, ProjectKpiPanel } = load(
+  'app/farm-kpi-panels.tsx',
+  aliases,
+);
+const settlements = load('lib/project-settlements.ts', {
+  './farm-types': aliases['@/lib/farm-types'],
+});
+const { ProjectSettlementEditor, ProjectSettlementDetails } = load(
+  'app/project-settlement-panels.tsx',
+  {
+    ...aliases,
+    '@/components/ui/textarea': { Textarea: tag('textarea') },
+    '@/lib/project-settlements': settlements,
+  },
+);
 const lifecycle = load('lib/work-lifecycle.ts', {
   './organization': load('lib/organization.ts'),
 });
@@ -176,6 +190,95 @@ const farmRecord = (farmId, patch = {}) => ({
   commissioningDate: '',
   educationDate: '',
   ...patch,
+});
+
+test('프로젝트 진행·완료 KPI는 접힘 밖에 표시하고 업무 완료율과 구분한다', () => {
+  reset();
+  const tree = render(ProjectKpiPanel, {
+    summary: {
+      projects: 3,
+      active: 1,
+      completed: 1,
+      onHold: 1,
+      projectCompletionRate: 33,
+      taskCompletionRate: 50,
+    },
+    year: '2026',
+    projectType: 'all',
+  });
+  const group = find(
+    tree,
+    (node) => node.props?.['aria-label'] === '프로젝트 진행·완료 현황',
+  );
+  const markup = renderToStaticMarkup(group);
+  assert.match(markup, /진행 중 프로젝트/);
+  assert.match(markup, /완료 프로젝트/);
+  assert.match(markup, /프로젝트 완료율/);
+  assert.match(markup, /33%/);
+  assert.equal(
+    nodes(group).some((node) => node.type === collapsible.CollapsibleContent),
+    false,
+  );
+});
+
+test('정산 입력은 두 회차를 접어 표시하고 기존 내역 전환·지정에도 금액을 한 번만 집계한다', () => {
+  reset();
+  let value = {
+    contractAmount: 1000,
+    settlementStatus: 'closed',
+    settlementDueDate: '',
+    settlementClaimAmount: 300,
+    settlementApprovedAmount: 300,
+    settlementPaidAmount: 300,
+    settledAt: '',
+    settlementOwner: '',
+    settlementEvidenceUrl: '',
+    settlementNote: '보존 메모',
+  };
+  const onChange = (next) => {
+    value = next;
+  };
+  let tree = render(ProjectSettlementEditor, {
+    value,
+    onChange,
+    locked: false,
+  });
+  find(
+    tree,
+    (node) =>
+      node.type === button && String(node.props.children).includes('관리 시작'),
+  ).props.onClick();
+  tree = render(ProjectSettlementEditor, { value, onChange, locked: false });
+  const details = nodes(tree).filter((node) => node.type === 'details');
+  assert.equal(details.length, 2);
+  assert.ok(details.every((node) => !node.props.open));
+  find(
+    tree,
+    (node) =>
+      node.type === button &&
+      React.Children.toArray(node.props.children)
+        .join('')
+        .includes('1차로 지정'),
+  ).props.onClick();
+  assert.equal(value.settlementRounds.unassigned, undefined);
+  assert.equal(value.settlementPaidAmount, 300);
+  assert.equal(value.settlementRounds.first.note, '보존 메모');
+  tree = render(ProjectSettlementEditor, { value, onChange, locked: false });
+  assert.match(
+    find(tree, (node) => node.props?.role === 'status').props.children,
+    /먼저 수정 저장/,
+  );
+  const markup = renderToStaticMarkup(
+    render(ProjectSettlementDetails, { project: value }),
+  );
+  assert.match(markup, /1차 정산/);
+  assert.match(markup, /2차 정산/);
+  assert.match(markup, /총 입금액/);
+  assert.equal(
+    render(ProjectSettlementEditor, { value, onChange, locked: true }).props
+      .disabled,
+    true,
+  );
 });
 const records = [
   farmRecord('a', {

@@ -593,6 +593,217 @@ check('explicit farm attachment exclusion removes reference only', 'ALLOW', {
   data: { ...farmDoc, locationImageIds: [], updatedAt: 2 },
 });
 
+const emptyRound = {
+  status: 'not_started',
+  dueDate: '',
+  claimAmount: 0,
+  approvedAmount: 0,
+  paidAmount: 0,
+  settledAt: '',
+  owner: '',
+  evidenceUrl: '',
+  note: '',
+};
+const settledRound = {
+  ...emptyRound,
+  status: 'closed',
+  claimAmount: 300,
+  approvedAmount: 300,
+  paidAmount: 300,
+  note: '기존 내역',
+};
+const legacyProject = {
+  ...audit,
+  status: 'active',
+  contractAmount: 1000,
+  settlementStatus: 'closed',
+  settlementDueDate: '',
+  settlementClaimAmount: 300,
+  settlementApprovedAmount: 300,
+  settlementPaidAmount: 300,
+  settledAt: '',
+  settlementOwner: '',
+  settlementEvidenceUrl: '',
+  settlementNote: '기존 내역',
+};
+const splitProject = {
+  ...legacyProject,
+  updatedAt: 2,
+  settlementStatus: 'collecting',
+  settlementNote: '',
+  settlementRounds: {
+    first: emptyRound,
+    second: emptyRound,
+    unassigned: settledRound,
+  },
+};
+const firstAssignedProject = {
+  ...splitProject,
+  updatedAt: 3,
+  settlementRounds: { first: settledRound, second: emptyRound },
+};
+function settlementRule(name, expectation, before, after) {
+  check(name, expectation, {
+    collection: 'projects',
+    id: audit.id,
+    method: before ? 'update' : 'create',
+    resource: before,
+    data: after,
+  });
+}
+settlementRule(
+  'legacy completed project stays compatible',
+  'ALLOW',
+  { ...legacyProject, status: 'completed' },
+  { ...legacyProject, status: 'completed', updatedAt: 2 },
+);
+settlementRule(
+  'existing single settlement preserved as unassigned',
+  'ALLOW',
+  legacyProject,
+  splitProject,
+);
+settlementRule(
+  'unassigned can move to empty first without double counting',
+  'ALLOW',
+  splitProject,
+  firstAssignedProject,
+);
+settlementRule('new project has two empty rounds', 'ALLOW', null, {
+  ...legacyProject,
+  settlementStatus: 'not_started',
+  settlementClaimAmount: 0,
+  settlementApprovedAmount: 0,
+  settlementPaidAmount: 0,
+  settlementRounds: { first: emptyRound, second: emptyRound },
+});
+settlementRule(
+  'first done and second pending is not overall done',
+  'DENY',
+  firstAssignedProject,
+  { ...firstAssignedProject, updatedAt: 4, settlementStatus: 'paid' },
+);
+settlementRule(
+  'both rounds done permits project completion',
+  'ALLOW',
+  firstAssignedProject,
+  {
+    ...firstAssignedProject,
+    updatedAt: 4,
+    status: 'completed',
+    settlementStatus: 'closed',
+    settlementClaimAmount: 600,
+    settlementApprovedAmount: 600,
+    settlementPaidAmount: 600,
+    settlementRounds: { first: settledRound, second: settledRound },
+  },
+);
+settlementRule(
+  'inflated settlement total rejected',
+  'DENY',
+  firstAssignedProject,
+  { ...firstAssignedProject, updatedAt: 4, settlementPaidAmount: 900 },
+);
+settlementRule('negative round amount rejected', 'DENY', firstAssignedProject, {
+  ...firstAssignedProject,
+  updatedAt: 4,
+  settlementRounds: {
+    first: settledRound,
+    second: { ...emptyRound, paidAmount: -1 },
+  },
+});
+settlementRule(
+  'old client cannot remove rounds',
+  'DENY',
+  firstAssignedProject,
+  { ...legacyProject, updatedAt: 4 },
+);
+settlementRule(
+  'empty map cannot bypass round validation',
+  'DENY',
+  legacyProject,
+  { ...legacyProject, updatedAt: 2, settlementRounds: {} },
+);
+settlementRule(
+  'unassigned original cannot be silently dropped',
+  'DENY',
+  splitProject,
+  {
+    ...splitProject,
+    updatedAt: 3,
+    settlementStatus: 'not_started',
+    settlementClaimAmount: 0,
+    settlementApprovedAmount: 0,
+    settlementPaidAmount: 0,
+    settlementRounds: { first: emptyRound, second: emptyRound },
+  },
+);
+settlementRule(
+  'unassigned original cannot be rewritten',
+  'DENY',
+  splitProject,
+  {
+    ...splitProject,
+    updatedAt: 3,
+    settlementRounds: {
+      ...splitProject.settlementRounds,
+      unassigned: { ...settledRound, note: '변조' },
+    },
+  },
+);
+settlementRule(
+  'completed project cannot silently switch settlement basis',
+  'DENY',
+  { ...legacyProject, status: 'completed' },
+  { ...splitProject, status: 'completed' },
+);
+
+settlementRule(
+  'summary due date cannot be erased independently',
+  'DENY',
+  firstAssignedProject,
+  { ...firstAssignedProject, updatedAt: 4, settlementDueDate: '2030-12-31' },
+);
+settlementRule(
+  'summary closure date cannot be forged independently',
+  'DENY',
+  firstAssignedProject,
+  { ...firstAssignedProject, updatedAt: 4, settledAt: '2030-12-31' },
+);
+settlementRule(
+  'legacy can be assigned to second round',
+  'ALLOW',
+  splitProject,
+  {
+    ...firstAssignedProject,
+    settlementRounds: { first: emptyRound, second: settledRound },
+  },
+);
+settlementRule(
+  'two populated new rounds validate within rule limits',
+  'ALLOW',
+  null,
+  {
+    ...legacyProject,
+    settlementStatus: 'submitted',
+    settlementClaimAmount: 600,
+    settlementApprovedAmount: 300,
+    settlementPaidAmount: 300,
+    settlementRounds: {
+      first: settledRound,
+      second: {
+        ...emptyRound,
+        status: 'submitted',
+        claimAmount: 300,
+        dueDate: '2026-12-31',
+        owner: '정산 담당',
+        note: '제출 완료',
+      },
+    },
+    settlementDueDate: '2026-12-31',
+  },
+);
+
 try {
   const options = { project: 'smartfarm-work-manager', nonInteractive: true };
   const account = auth.getGlobalDefaultAccount();
@@ -628,6 +839,8 @@ try {
   assert.equal(body.testResults?.length, cases.length, 'Missing rule results');
   for (let i = 0; i < cases.length; i++) {
     const result = body.testResults[i];
+    if (result.state !== 'SUCCESS')
+      console.log(JSON.stringify({ failure: result }));
     console.log(
       JSON.stringify({
         test: cases[i].name,

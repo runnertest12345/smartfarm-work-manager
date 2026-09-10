@@ -236,6 +236,73 @@ service cloud.firestore {
           && (ids.size() < 3 || linkedFarmImage(workspaceId, farmId, ids[2]))));
     }
 
+    function validSettlement(entry) {
+      return entry is map && entry.keys().hasOnly(['status', 'dueDate', 'claimAmount', 'approvedAmount', 'paidAmount', 'settledAt', 'owner', 'evidenceUrl', 'note'])
+        && entry.status in ['not_started', 'collecting', 'submitted', 'revision', 'approved', 'paid', 'closed']
+        && entry.claimAmount is int && entry.claimAmount >= 0 && entry.claimAmount <= 1000000000000000
+        && entry.approvedAmount is int && entry.approvedAmount >= 0 && entry.approvedAmount <= 1000000000000000
+        && entry.paidAmount is int && entry.paidAmount >= 0 && entry.paidAmount <= entry.approvedAmount
+        && entry.dueDate is string && entry.dueDate.size() <= 10
+        && entry.settledAt is string && entry.settledAt.size() <= 10
+        && entry.owner is string && entry.evidenceUrl is string && entry.note is string;
+    }
+
+    function oldSettlement(data) {
+      return {'status': data.settlementStatus, 'dueDate': data.settlementDueDate, 'claimAmount': data.settlementClaimAmount,
+        'approvedAmount': data.settlementApprovedAmount, 'paidAmount': data.settlementPaidAmount, 'settledAt': data.settledAt,
+        'owner': data.settlementOwner, 'evidenceUrl': data.settlementEvidenceUrl, 'note': data.settlementNote};
+    }
+
+    function emptySettlement() {
+      return {'status': 'not_started', 'dueDate': '', 'claimAmount': 0, 'approvedAmount': 0, 'paidAmount': 0, 'settledAt': '', 'owner': '', 'evidenceUrl': '', 'note': ''};
+    }
+
+    function preservesOldSettlement(before, rounds) {
+      let previous = before.get('settlementRounds', {});
+      let original = previous == {} ? oldSettlement(before) : previous.get('unassigned', {});
+      return original == {} ? !rounds.keys().hasAny(['unassigned'])
+        : (rounds.keys().hasAny(['unassigned']) ? rounds.unassigned == original
+          : ((rounds.first == original && (previous == {} || previous.first == emptySettlement()))
+            || (rounds.second == original && (previous == {} || previous.second == emptySettlement()))));
+    }
+
+    function roundStatus(rounds) {
+      let statuses = rounds.keys().hasAny(['unassigned']) ? [rounds.first.status, rounds.second.status, rounds.unassigned.status] : [rounds.first.status, rounds.second.status];
+      return statuses.hasOnly(['closed']) ? 'closed' : statuses.hasOnly(['paid', 'closed']) ? 'paid'
+        : statuses.hasAny(['revision']) ? 'revision' : statuses.hasOnly(['not_started']) ? 'not_started'
+        : statuses.hasOnly(['approved', 'paid', 'closed']) ? 'approved'
+        : statuses.hasOnly(['submitted', 'approved', 'paid', 'closed']) ? 'submitted' : 'collecting';
+    }
+
+    function validRoundTotals(after) {
+      let rounds = after.settlementRounds;
+      let extra = rounds.get('unassigned', {'claimAmount': 0, 'approvedAmount': 0, 'paidAmount': 0});
+      return after.contractAmount is int && after.contractAmount >= 0 && after.contractAmount <= 1000000000000000
+        && after.settlementClaimAmount == rounds.first.claimAmount + rounds.second.claimAmount + extra.claimAmount
+        && after.settlementApprovedAmount == rounds.first.approvedAmount + rounds.second.approvedAmount + extra.approvedAmount
+        && after.settlementPaidAmount == rounds.first.paidAmount + rounds.second.paidAmount + extra.paidAmount
+        && after.settlementStatus == roundStatus(rounds)
+        && (after.status != 'completed' || after.settlementStatus in ['paid', 'closed']);
+    }
+
+
+    function validProjectSettlements(creating) {
+      let before = creating ? {} : resource.data;
+      let after = request.resource.data;
+      let previous = before.get('settlementRounds', {});
+      let rounds = after.get('settlementRounds', {});
+      return !after.keys().hasAny(['settlementRounds']) ? !before.keys().hasAny(['settlementRounds'])
+        : (before.keys().hasAny(['settlementRounds']) && rounds == previous && !after.diff(before).affectedKeys().hasAny(['settlementStatus', 'settlementClaimAmount', 'settlementApprovedAmount', 'settlementPaidAmount', 'contractAmount', 'status', 'settlementDueDate', 'settledAt']))
+        || (rounds is map && rounds.keys().hasAll(['first', 'second']) && rounds.keys().hasOnly(['first', 'second', 'unassigned'])
+          && (rounds.first == previous.get('first', {}) || validSettlement(rounds.first))
+          && (rounds.second == previous.get('second', {}) || validSettlement(rounds.second))
+          && validRoundTotals(after)
+          && (rounds != previous || (after.settlementDueDate == before.settlementDueDate && after.settledAt == before.settledAt))
+          && (creating ? !rounds.keys().hasAny(['unassigned']) : preservesOldSettlement(before, rounds))
+          && (creating || before.get('status', '') != 'completed' || after.status != 'completed' || (rounds == previous && !after.diff(before).affectedKeys().hasAny(['contractAmount', 'settlementClaimAmount', 'settlementApprovedAmount', 'settlementPaidAmount', 'settlementStatus', 'settlementDueDate', 'settledAt'])))
+          && (creating || before.get('deletedAt', 0) == 0));
+    }
+
     function validProjectLifecycle(workspaceId, documentId, creating) {
       let before = creating ? {} : resource.data;
       let after = request.resource.data;
@@ -387,7 +454,7 @@ service cloud.firestore {
         && knownCollection(collectionName)
         && validCreate(documentId)
         && (collectionName != 'farms' || validFarmImages(workspaceId, documentId, true))
-        && (collectionName != 'projects' || validProjectLifecycle(workspaceId, documentId, true))
+        && (collectionName != 'projects' || (validProjectLifecycle(workspaceId, documentId, true) && validProjectSettlements(true)))
         && (collectionName == 'workItems'
           ? !request.resource.data.keys().hasAny(['deletedAt', 'deletedByUid', 'workLifecycleEntryId'])
             && validWorkTree(workspaceId, documentId, true) && validWorkAssignment(workspaceId, true)
@@ -399,7 +466,7 @@ service cloud.firestore {
         && !(collectionName in ['subscriptionEvents', 'historyEntries'])
         && validUpdate(documentId)
         && (collectionName != 'farms' || validFarmImages(workspaceId, documentId, false))
-        && (collectionName != 'projects' || validProjectLifecycle(workspaceId, documentId, false))
+        && (collectionName != 'projects' || (validProjectLifecycle(workspaceId, documentId, false) && validProjectSettlements(false)))
         && (collectionName == 'workItems' ? workUpdate(workspaceId, documentId) : validRelations(workspaceId, collectionName, false));
 
       allow delete: if false;

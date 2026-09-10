@@ -93,6 +93,10 @@ export function summarizeProjectKpis(
   ).length;
   return {
     projects: projects.length,
+    projectCompletionRate: percent(
+      projects.filter((project) => project.status === 'completed').length,
+      projects.length,
+    ),
     active: projects.filter((project) => project.status === 'active').length,
     completed: projects.filter((project) => project.status === 'completed')
       .length,

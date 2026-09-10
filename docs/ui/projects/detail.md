@@ -4,7 +4,7 @@
 
 ## 화면 목적·진입
 
-[프로젝트 목록](README.md)의 카드를 눌러 특정 프로젝트의 농가·설치·구독·막힘·서류·최종정산·히스토리를 확인합니다. 다른 화면에서 `openProjectDetail`을 호출하는 프로젝트 항목으로도 진입할 수 있습니다. 선택된 프로젝트 ID로 전체 화면 상세를 표시하며 별도의 URL 경로를 만드는 방식은 아닙니다.
+[프로젝트 목록](README.md)의 카드를 눌러 특정 프로젝트의 농가·설치·구독·막힘·서류·회차별 정산·히스토리를 확인합니다. 다른 화면에서 `openProjectDetail`을 호출하는 프로젝트 항목으로도 진입할 수 있습니다. 선택된 프로젝트 ID로 전체 화면 상세를 표시하며 별도의 URL 경로를 만드는 방식은 아닙니다.
 
 ## 상단 정보·이동
 
@@ -16,7 +16,7 @@
 
 이 상세 화면에는 검색 또는 기간 필터가 없습니다. 목록에서 선택한 프로젝트 전체의 데이터를 사용합니다. 목록 검색·연도·위험 필터나 사업 집계·구독 화면 필터가 상세 수치를 추가로 제한하지 않습니다.
 
-상단 ‘프로젝트 기록 추가’, ‘사업·정산 수정’, ‘제출서류 추가’가 각각 입력창을 엽니다. 현재 막힌 곳에는 해결 처리 및 농가 업무·서류 이동이 있고, 제출서류 대장에는 추가·수정, 최종 정산에는 정보 수정·증빙 열기, 히스토리에는 막힘 추가·기록 추가가 있습니다. 입력창의 필드와 저장 동작은 [등록·수정 폼 안내](../forms/README.md)를 참조합니다.
+상단 ‘프로젝트 기록 추가’, ‘사업·정산 수정’, ‘제출서류 추가’가 각각 입력창을 엽니다. 현재 막힌 곳에는 해결 처리 및 농가 업무·서류 이동이 있고, 제출서류 대장에는 추가·수정, 회차별 정산에는 정보 수정·증빙 열기, 히스토리에는 막힘 추가·기록 추가가 있습니다. 입력창의 필드와 저장 동작은 [등록·수정 폼 안내](../forms/README.md)를 참조합니다.
 
 완료 상태에서 상단·대장의 제출서류 추가, 대장의 개별 서류 버튼, 히스토리의 막힘 추가 버튼은 비활성화됩니다. 프로젝트 기록 추가와 사업·정산 수정 버튼은 활성 상태로 남습니다. 이 설명은 해당 화면에 실제로 설정된 버튼 상태를 기준으로 합니다.
 
@@ -39,7 +39,7 @@
 - [현재 막힌 곳](cards/blockers.md)
 - [참여 농가·구독 표](cards/participation-table.md)
 - [제출서류 대장](cards/documents.md)
-- [최종 정산](cards/settlement.md): [계약금액](cards/contract-amount.md), [청구액](cards/settlement-claim-amount.md), [승인액](cards/settlement-approved-amount.md), [입금액](cards/settlement-paid-amount.md)
+- [회차별 정산](cards/settlement.md): [계약금액](cards/contract-amount.md), [청구액](cards/settlement-claim-amount.md), [승인액](cards/settlement-approved-amount.md), [입금액](cards/settlement-paid-amount.md)
 - [프로젝트 최근 히스토리](cards/recent-history.md): [마지막 받은 내용](cards/latest-received.md), [마지막 처리 내용](cards/latest-action.md)
 
 ## 빈 상태·계산 주의점

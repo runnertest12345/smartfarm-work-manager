@@ -29,6 +29,7 @@ import {
   FARM_PROJECT_TYPES,
   FARM_PROJECT_UPDATE_KINDS,
   FARM_SETTLEMENT_STATUSES,
+  FARM_SETTLEMENT_STATUS_LABELS,
   FARM_SUBSCRIPTION_EVENT_TYPES,
   FARM_VISIT_STATUSES,
   FARM_WORK_PRIORITIES,
@@ -85,6 +86,13 @@ import {
 } from '@/lib/project-work';
 import { resolveTaskAssignment } from './organization-store';
 import { projectLifecyclePatch } from '@/lib/project-lifecycle';
+import {
+  assertSettlementTransition,
+  parseSettlementRounds,
+  withSettlementRounds,
+  settlementsEqual,
+  normalizeProjectSettlement,
+} from '@/lib/project-settlements';
 import {
   assertWorkActive,
   canManageWorkDeletion,
@@ -219,7 +227,7 @@ function localDateAt(timestamp = Date.now()) {
 }
 
 function parseProjectInput(value: unknown): FarmProjectInput {
-  const input = parseShape<FarmProjectInput>(
+  let input = parseShape<FarmProjectInput>(
     value,
     {
       name: 'string',
@@ -246,6 +254,21 @@ function parseProjectInput(value: unknown): FarmProjectInput {
     },
     '사업 입력값을 확인해 주세요.',
   );
+  const rounds = asObject(
+    value,
+    '정산 입력값을 확인해 주세요.',
+  ).settlementRounds;
+  if (rounds !== undefined)
+    input = withSettlementRounds(input, parseSettlementRounds(rounds));
+  if (
+    [
+      input.contractAmount,
+      input.settlementClaimAmount,
+      input.settlementApprovedAmount,
+      input.settlementPaidAmount,
+    ].some((amount) => amount < 0)
+  )
+    throw new Error('정산 금액은 0 이상으로 입력해 주세요.');
   assertEnum(
     input.projectType,
     FARM_PROJECT_TYPES,
@@ -770,9 +793,9 @@ function currentWorkspace() {
 
 function sortWorkspace(workspace: FarmLedgerWorkspace): FarmLedgerWorkspace {
   return {
-    projects: [...workspace.projects].sort(
-      (a, b) => b.year - a.year || a.name.localeCompare(b.name, 'ko'),
-    ),
+    projects: workspace.projects
+      .map(normalizeProjectSettlement)
+      .sort((a, b) => b.year - a.year || a.name.localeCompare(b.name, 'ko')),
     projectDocuments: [...workspace.projectDocuments].sort(
       (a, b) =>
         a.projectId.localeCompare(b.projectId) ||
@@ -1063,6 +1086,23 @@ export async function waitForFarmLedgerSync() {
 
 function projectChangeSummary(existing: FarmProject, input: FarmProjectInput) {
   const changed: string[] = [];
+  if (input.settlementRounds) {
+    for (const [key, label] of [
+      ['first', '1차 정산'],
+      ['second', '2차 정산'],
+      ['unassigned', '회차 미지정 정산'],
+    ] as const) {
+      const before = existing.settlementRounds?.[key];
+      const after = input.settlementRounds[key];
+      if (!settlementsEqual(before, after)) {
+        changed.push(
+          after
+            ? `${label} (상태 ${FARM_SETTLEMENT_STATUS_LABELS[after.status]}, 청구 ${after.claimAmount.toLocaleString('ko-KR')}원, 승인 ${after.approvedAmount.toLocaleString('ko-KR')}원, 입금 ${after.paidAmount.toLocaleString('ko-KR')}원)`
+            : `${label} 회차 지정`,
+        );
+      }
+    }
+  }
   if (existing.currentStage !== input.currentStage) changed.push('진행 단계');
   if (existing.status !== input.status) changed.push('사업 상태');
   if (existing.settlementStatus !== input.settlementStatus)
@@ -1145,12 +1185,24 @@ async function createProject(input: FarmProjectInput) {
   return { project };
 }
 
-async function updateProject(projectId: string, input: FarmProjectInput) {
+async function updateProject(
+  projectId: string,
+  input: FarmProjectInput,
+  expectedUpdatedAt?: number,
+) {
   const workspace = currentWorkspace();
   const existing = workspace.projects.find(
     (project) => project.id === projectId,
   );
   if (!existing) throw new Error('선택한 사업을 찾을 수 없습니다.');
+  if (
+    expectedUpdatedAt !== undefined &&
+    expectedUpdatedAt !== existing.updatedAt
+  )
+    throw new Error(
+      '다른 변경이 먼저 저장됐습니다. 프로젝트를 다시 열어 주세요.',
+    );
+  assertSettlementTransition(existing, input);
   if (existing.deletedAt)
     throw new Error(
       '삭제된 프로젝트입니다. 프로젝트 관리에서 먼저 복구해 주세요.',
@@ -1169,6 +1221,7 @@ async function updateProject(projectId: string, input: FarmProjectInput) {
       existing.settlementApprovedAmount !== input.settlementApprovedAmount ||
       existing.settlementPaidAmount !== input.settlementPaidAmount ||
       existing.settledAt !== input.settledAt ||
+      !settlementsEqual(existing.settlementRounds, input.settlementRounds) ||
       existing.settlementEvidenceUrl !== input.settlementEvidenceUrl)
   ) {
     throw new Error(
@@ -1217,7 +1270,7 @@ async function updateProject(projectId: string, input: FarmProjectInput) {
     }
   }
 
-  const now = Date.now();
+  const now = Math.max(Date.now(), existing.updatedAt + 1);
   const project: FarmProject = {
     ...existing,
     ...input,
@@ -1230,10 +1283,15 @@ async function updateProject(projectId: string, input: FarmProjectInput) {
     input.manager,
     now,
   );
-  const batch = writeBatch(getFirebaseServices().db);
-  setUpdated(batch, 'projects', project);
-  setCreated(batch, 'projectUpdates', auditUpdate);
-  await batch.commit();
+  await runTransaction(getFirebaseServices().db, async (transaction) => {
+    const latest = await transaction.get(documentRef('projects', projectId));
+    if (!latest.exists() || latest.data().updatedAt !== existing.updatedAt)
+      throw new Error(
+        '다른 변경이 먼저 저장됐습니다. 프로젝트를 다시 열어 주세요.',
+      );
+    setUpdated(transaction, 'projects', project);
+    setCreated(transaction, 'projectUpdates', auditUpdate);
+  });
   return { project };
 }
 
@@ -3758,7 +3816,11 @@ async function mutateFarmLedger(method: string, body: JsonObject) {
   if (kind === 'project') {
     const input = parseProjectInput(body.project);
     return method === 'PATCH'
-      ? updateProject(requiredId(body.projectId, '사업 ID'), input)
+      ? updateProject(
+          requiredId(body.projectId, '사업 ID'),
+          input,
+          body.expectedUpdatedAt as number | undefined,
+        )
       : createProject(input);
   }
 

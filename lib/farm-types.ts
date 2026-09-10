@@ -252,6 +252,25 @@ export const FARM_HISTORY_CHANNEL_LABELS: Record<FarmHistoryChannel, string> = {
   other: '기타',
 };
 
+export interface ProjectSettlement {
+  status: FarmSettlementStatus;
+  dueDate: string;
+  claimAmount: number;
+  approvedAmount: number;
+  paidAmount: number;
+  settledAt: string;
+  owner: string;
+  evidenceUrl: string;
+  note: string;
+}
+
+export interface ProjectSettlementRounds {
+  first: ProjectSettlement;
+  second: ProjectSettlement;
+  /** Original single settlement, counted once until explicitly assigned. */
+  unassigned?: ProjectSettlement;
+}
+
 export interface FarmProject {
   id: string;
   /** Recoverable removal from project lists; linked records remain intact. */
@@ -279,6 +298,7 @@ export interface FarmProject {
   settlementOwner: string;
   settlementEvidenceUrl: string;
   settlementNote: string;
+  settlementRounds?: ProjectSettlementRounds;
   createdAt: number;
   updatedAt: number;
 }
@@ -305,6 +325,7 @@ export interface FarmProjectInput {
   settlementOwner: string;
   settlementEvidenceUrl: string;
   settlementNote: string;
+  settlementRounds?: ProjectSettlementRounds;
 }
 
 export interface FarmProjectDocument {
