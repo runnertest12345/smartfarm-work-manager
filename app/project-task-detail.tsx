@@ -21,6 +21,7 @@ export function ProjectTaskDetail({
   onParent,
   onAddChild,
   childrenContent,
+  deleteAction,
 }: {
   task: FarmWorkItem;
   project?: FarmProject;
@@ -32,6 +33,7 @@ export function ProjectTaskDetail({
   onParent?: () => void;
   onAddChild?: () => void;
   childrenContent?: ReactNode;
+  deleteAction?: ReactNode;
 }) {
   return (
     <section
@@ -70,6 +72,7 @@ export function ProjectTaskDetail({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {deleteAction}
           <Button onClick={onRecord}>처리 기록·상태 변경</Button>
           {onAddChild && (
             <Button

@@ -42,7 +42,11 @@ function load(path, aliases = {}) {
 }
 const types = load('lib/farm-types.ts');
 const hierarchy = load('lib/work-hierarchy.ts');
-const work = load('lib/project-work.ts');
+const organization = load('lib/organization.ts');
+const lifecycle = load('lib/work-lifecycle.ts', {
+  './organization': organization,
+});
+const work = load('lib/project-work.ts', { './work-lifecycle': lifecycle });
 const tag = (name) =>
   function TestPrimitive({
     children,

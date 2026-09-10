@@ -17,6 +17,19 @@ const hierarchyCode = ts.transpileModule(
   },
 ).outputText;
 const hierarchyUrl = `data:text/javascript;base64,${Buffer.from(hierarchyCode).toString('base64')}`;
+const progressCode = ts.transpileModule(
+  readFileSync(
+    new URL('../lib/project-farm-progress.ts', import.meta.url),
+    'utf8',
+  ),
+  {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+    },
+  },
+).outputText;
+const progressUrl = `data:text/javascript;base64,${Buffer.from(progressCode).toString('base64')}`;
 const compiled = ts
   .transpileModule(source, {
     compilerOptions: {
@@ -24,7 +37,8 @@ const compiled = ts
       module: ts.ModuleKind.ESNext,
     },
   })
-  .outputText.replace("'./work-hierarchy'", JSON.stringify(hierarchyUrl));
+  .outputText.replace("'./work-hierarchy'", JSON.stringify(hierarchyUrl))
+  .replace("'./project-farm-progress'", JSON.stringify(progressUrl));
 const {
   filterProjectsByScope,
   filterSubscriptionsByScope,

@@ -1,5 +1,24 @@
 import type { FarmRecord } from './farm-types';
 
+export function isFarmStageComplete(
+  record: FarmRecord,
+  key: 'installationDate' | 'commissioningDate' | 'educationDate',
+) {
+  return Boolean(
+    record[key] || record.stageCompletionConfirmed?.[key] === true,
+  );
+}
+
+export function farmStageCompletionLabel(
+  record: FarmRecord,
+  key: 'installationDate' | 'commissioningDate' | 'educationDate',
+) {
+  return (
+    record[key] ||
+    (isFarmStageComplete(record, key) ? '완료 확인 · 일자 미기록' : '미완료')
+  );
+}
+
 const stages = [
   { key: 'installationDate', label: '설치' },
   { key: 'commissioningDate', label: '시운전' },
@@ -25,7 +44,7 @@ export function summarizeProjectFarms(
     total,
     stages: stages.map((stage) => {
       const completed = records.filter((record) =>
-        Boolean(record[stage.key]),
+        isFarmStageComplete(record, stage.key),
       ).length;
       return {
         ...stage,

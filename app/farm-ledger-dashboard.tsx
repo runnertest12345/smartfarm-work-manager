@@ -6,8 +6,13 @@ import {
   ProjectFarmProgressCard,
   ProjectStageSummary,
 } from './project-farm-progress';
-import { summarizeProjectFarms } from '@/lib/project-farm-progress';
+import {
+  summarizeProjectFarms,
+  isFarmStageComplete,
+} from '@/lib/project-farm-progress';
 import { ProjectDeletionDialog } from './project-deletion-dialog';
+import { WorkDeletionDialog, DeletedWorkList } from './work-deletion-controls';
+import { isActiveWork, canManageWorkDeletion } from '@/lib/work-lifecycle';
 import { useDetailNavigation } from './use-detail-navigation';
 import type {
   DashboardView as View,
@@ -1024,10 +1029,9 @@ function ChannelIcon({
 
 function installProgress(record: FarmRecord) {
   const stages = [
-    record.productionSetupDate,
-    record.installationDate,
-    record.commissioningDate,
-    record.educationDate,
+    isFarmStageComplete(record, 'installationDate'),
+    isFarmStageComplete(record, 'commissioningDate'),
+    isFarmStageComplete(record, 'educationDate'),
   ];
   return { complete: stages.filter(Boolean).length, total: stages.length };
 }
@@ -1193,6 +1197,8 @@ export function FarmLedgerDashboard({
   const [quickDetailTaskId, setQuickDetailTaskId] = useState('');
   const [quickDetailBusy, setQuickDetailBusy] = useState(false);
   const [workQuickEditOpen, setWorkQuickEditOpen] = useState(false);
+  const [workDeletionTarget, setWorkDeletionTarget] =
+    useState<FarmWorkItem | null>(null);
   const [projectDeletionTarget, setProjectDeletionTarget] =
     useState<FarmProject | null>(null);
   const [deletedProjectToClose, setDeletedProjectToClose] = useState('');
@@ -1229,6 +1235,7 @@ export function FarmLedgerDashboard({
   const [historyForm, setHistoryForm] = useState<HistoryForm>(() =>
     emptyHistoryForm(),
   );
+  const historyExpectedVersion = useRef<number | undefined>(undefined);
   const [visitForm, setVisitForm] = useState<VisitForm>(() => emptyVisitForm());
   const [inboxForm, setInboxForm] = useState<InboxForm>(() => emptyInboxForm());
   const [draftImages, setDraftImages] = useState<ReceivedImage[]>([]);
@@ -1516,8 +1523,24 @@ export function FarmLedgerDashboard({
       )
     : [];
   const selectedWorkItem = workItemById.get(selectedWorkItemId) ?? null;
+  useEffect(() => {
+    if (
+      selectedWorkItem?.deletedAt &&
+      !workDeletionTarget &&
+      !dialog &&
+      !quickDetailTaskId &&
+      !workQuickEditOpen
+    )
+      closeDetails();
+  }, [
+    selectedWorkItem,
+    workDeletionTarget,
+    dialog,
+    quickDetailTaskId,
+    workQuickEditOpen,
+  ]);
   const selectedServiceItems = selectedWorkItems.filter(
-    (item) => item.workType === 'service',
+    (item) => isActiveWork(item) && item.workType === 'service',
   );
   const subscriptionExpiryRecord =
     recordById.get(subscriptionExpiryForm.farmRecordId) ?? null;
@@ -1571,7 +1594,10 @@ export function FarmLedgerDashboard({
     const farmProgress = summarizeProjectFarms(workspace.records, project.id);
     const records = farmProgress.records;
     const workItems = workspace.workItems.filter(
-      (item) => isProjectTask(item) && item.projectId === project.id,
+      (item) =>
+        isActiveWork(item) &&
+        isProjectTask(item) &&
+        item.projectId === project.id,
     );
     const hierarchy = summarizeWorkHierarchy(workItems);
     // Project activity includes farm records too; subtask progress uses workItems only.
@@ -1589,7 +1615,7 @@ export function FarmLedgerDashboard({
       (document) => document.isRequired,
     );
     const submittedDocuments = requiredDocuments.filter((document) =>
-      Boolean(document.submittedAt),
+      Boolean(document.submittedAt || document.status === 'approved'),
     );
     const approvedDocuments = requiredDocuments.filter(
       (document) => document.status === 'approved',
@@ -1666,10 +1692,13 @@ export function FarmLedgerDashboard({
       documentRate ?? 0,
       settlementProgress[project.settlementStatus],
     ];
-    const overallProgress = Math.round(
-      evidenceRates.reduce((sum, value) => sum + value, 0) /
-        evidenceRates.length,
-    );
+    const overallProgress =
+      project.status === 'completed'
+        ? 100
+        : Math.round(
+            evidenceRates.reduce((sum, value) => sum + value, 0) /
+              evidenceRates.length,
+          );
     const projectFarmHistory = workspace.historyEntries
       .filter((entry) => workItemIds.has(entry.workItemId))
       .sort((a, b) => b.occurredAt - a.occurredAt);
@@ -2168,6 +2197,10 @@ export function FarmLedgerDashboard({
   const visitQueue = workspace.visits
     .filter(
       (visit) =>
+        Boolean(
+          workItemById.get(visit.workItemId) &&
+          isActiveWork(workItemById.get(visit.workItemId)!),
+        ) &&
         visit.status === 'scheduled' &&
         visit.scheduledAt < startOfToday + 8 * 86400000,
     )
@@ -2270,13 +2303,15 @@ export function FarmLedgerDashboard({
     const production = records.filter(
       (record) => record.productionSetupDate,
     ).length;
-    const installation = records.filter(
-      (record) => record.installationDate,
+    const installation = records.filter((record) =>
+      isFarmStageComplete(record, 'installationDate'),
     ).length;
-    const commissioning = records.filter(
-      (record) => record.commissioningDate,
+    const commissioning = records.filter((record) =>
+      isFarmStageComplete(record, 'commissioningDate'),
     ).length;
-    const education = records.filter((record) => record.educationDate).length;
+    const education = records.filter((record) =>
+      isFarmStageComplete(record, 'educationDate'),
+    ).length;
     const subscription = snapshot.activeSubscriptions.length;
     const progress =
       averageRates(
@@ -2478,7 +2513,7 @@ export function FarmLedgerDashboard({
     }
     for (const record of workspace.records) {
       const farm = farmById.get(record.farmId);
-      if (!record.installationDate) {
+      if (!isFarmStageComplete(record, 'installationDate')) {
         issues.push({
           id: `installation-${record.id}`,
           farmId: record.farmId,
@@ -2867,10 +2902,12 @@ export function FarmLedgerDashboard({
     (issue) => !qualityFocus || qualityFocus.issueIds.includes(issue.id),
   );
   const installFollowups = overviewRecords.filter(
-    (record) => !record.commissioningDate || !record.educationDate,
+    (record) =>
+      !isFarmStageComplete(record, 'commissioningDate') ||
+      !isFarmStageComplete(record, 'educationDate'),
   ).length;
   const serviceWorkItems = workspace.workItems.filter(
-    (workItem) => workItem.workType === 'service',
+    (workItem) => isActiveWork(workItem) && workItem.workType === 'service',
   );
   const openServices = serviceWorkItems.filter(
     (workItem) => workItem.status !== 'completed',
@@ -3163,6 +3200,7 @@ export function FarmLedgerDashboard({
       quickDetailTaskId ||
       workQuickEditOpen ||
       projectDeletionTarget ||
+      workDeletionTarget ||
       submitting
     ) {
       toast.add({
@@ -3688,6 +3726,7 @@ export function FarmLedgerDashboard({
       return;
     }
     setDraftImages([]);
+    historyExpectedVersion.current = workItem.updatedAt;
     setSelectedWorkItemId(workItem.id);
     setHistoryForm(
       emptyHistoryForm(
@@ -4199,6 +4238,53 @@ export function FarmLedgerDashboard({
     });
   }
 
+  function workDeleteAction(item: FarmWorkItem, disabled = false) {
+    if (!isActiveWork(item) || !canManageWorkDeletion(item, member))
+      return null;
+    return (
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="text-red-700 hover:text-red-800"
+        disabled={disabled}
+        aria-label={`${item.title} 삭제`}
+        onClick={() => setWorkDeletionTarget(item)}
+      >
+        삭제
+      </Button>
+    );
+  }
+
+  async function confirmWorkDeletion(
+    task: FarmWorkItem,
+    deleted: boolean,
+    operationId: string,
+  ) {
+    const response = await farmLedgerFetch('/api/farm-ledger', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'work_lifecycle',
+        workItemId: task.id,
+        expectedUpdatedAt: task.updatedAt,
+        deleted,
+        operationId,
+      }),
+    });
+    const data = await readResponse(response);
+    if (!response.ok || !data.workItem)
+      throw new Error(data.error || '업무 삭제·복원을 저장하지 못했습니다.');
+    await waitForFarmLedgerSync();
+    toast.add({
+      title: deleted ? '업무를 삭제했습니다' : '업무를 복원했습니다',
+      description: deleted
+        ? '처리 이력은 보존됩니다. 업무 현황의 삭제된 업무에서 복원할 수 있습니다.'
+        : task.title,
+      type: 'success',
+    });
+  }
+
   async function submitProjectDocument(event: FormSubmitEvent) {
     event.preventDefault();
     if (!selectedProject) return;
@@ -4619,6 +4705,7 @@ export function FarmLedgerDashboard({
           ),
           history: {
             workItemId: selectedWorkItem.id,
+            expectedUpdatedAt: historyExpectedVersion.current,
             channel: historyForm.channel,
             sender: historyForm.sender,
             receivedContent: historyForm.receivedContent,
@@ -4748,7 +4835,7 @@ export function FarmLedgerDashboard({
     return {
       record,
       project: record ? projectById.get(record.projectId) : null,
-      latestWorkItem: workItemsByFarm.get(farm.id)?.[0] ?? null,
+      latestWorkItem: workItemsByFarm.get(farm.id)?.find(isActiveWork) ?? null,
       subscriptionStatus: effectiveFarmSubscriptionStatus(
         scopedRecords,
         subscriptionToday,
@@ -5934,6 +6021,12 @@ export function FarmLedgerDashboard({
                           {organization.error}
                         </p>
                       )}
+                      <DeletedWorkList
+                        tasks={workspace.workItems}
+                        member={member}
+                        contextLabel={workContextLabel}
+                        onRestore={setWorkDeletionTarget}
+                      />
                       {!organization.personal && (
                         <p className="mb-4 text-sm text-slate-600">
                           내부 업무와 계정 배정은 부서가 승인된 개인 계정으로
@@ -6742,6 +6835,7 @@ export function FarmLedgerDashboard({
 
                       {workMode === 'board' && (
                         <WorkTaskSurface
+                          deleteAction={workDeleteAction}
                           onEditingChange={setWorkQuickEditOpen}
                           farmLabel={(item) =>
                             farmById.get(item.farmId)?.name || ''
@@ -6853,6 +6947,7 @@ export function FarmLedgerDashboard({
 
                       {workMode === 'list' && (
                         <WorkTaskSurface
+                          deleteAction={workDeleteAction}
                           onEditingChange={setWorkQuickEditOpen}
                           farmLabel={(item) =>
                             farmById.get(item.farmId)?.name || ''
@@ -7829,7 +7924,7 @@ export function FarmLedgerDashboard({
                                         </div>
                                         <div>
                                           <p className="text-[11px] text-[#89938c]">
-                                            증빙 진행
+                                            프로젝트 진행
                                           </p>
                                           <p className="mt-1 font-bold">
                                             {
@@ -7854,7 +7949,10 @@ export function FarmLedgerDashboard({
                                             complete:
                                               projectCardSnapshot.records.filter(
                                                 (record) =>
-                                                  record.installationDate,
+                                                  isFarmStageComplete(
+                                                    record,
+                                                    'installationDate',
+                                                  ),
                                               ).length,
                                             rate: projectCardSnapshot.installationRate,
                                           },
@@ -7863,7 +7961,10 @@ export function FarmLedgerDashboard({
                                             complete:
                                               projectCardSnapshot.records.filter(
                                                 (record) =>
-                                                  record.commissioningDate,
+                                                  isFarmStageComplete(
+                                                    record,
+                                                    'commissioningDate',
+                                                  ),
                                               ).length,
                                             rate: projectCardSnapshot.commissioningRate,
                                           },
@@ -7872,7 +7973,10 @@ export function FarmLedgerDashboard({
                                             complete:
                                               projectCardSnapshot.records.filter(
                                                 (record) =>
-                                                  record.educationDate,
+                                                  isFarmStageComplete(
+                                                    record,
+                                                    'educationDate',
+                                                  ),
                                               ).length,
                                             rate: projectCardSnapshot.educationRate,
                                           },
@@ -9601,71 +9705,78 @@ export function FarmLedgerDashboard({
                   : 'hidden'
               }
             >
-              {selectedWorkItem && isStandaloneWork(selectedWorkItem) && (
-                <ProjectTaskDetail
-                  task={selectedWorkItem}
-                  project={projectForWorkItem(selectedWorkItem) || undefined}
-                  departmentName={
-                    organization.departments.find(
-                      (dept) => dept.id === selectedWorkItem.departmentId,
-                    )?.name
-                  }
-                  history={selectedWorkHistory}
-                  onBack={backDetail}
-                  onRecord={() => openHistoryDialog(selectedWorkItem)}
-                  parentTask={workItemById.get(
-                    selectedWorkItem.parentWorkItemId || '',
-                  )}
-                  onParent={() => {
-                    const parent = workItemById.get(
+              {selectedWorkItem &&
+                !selectedWorkItem.deletedAt &&
+                isStandaloneWork(selectedWorkItem) && (
+                  <ProjectTaskDetail
+                    deleteAction={workDeleteAction(selectedWorkItem)}
+                    task={selectedWorkItem}
+                    project={projectForWorkItem(selectedWorkItem) || undefined}
+                    departmentName={
+                      organization.departments.find(
+                        (dept) => dept.id === selectedWorkItem.departmentId,
+                      )?.name
+                    }
+                    history={selectedWorkHistory}
+                    onBack={backDetail}
+                    onRecord={() => openHistoryDialog(selectedWorkItem)}
+                    parentTask={workItemById.get(
                       selectedWorkItem.parentWorkItemId || '',
-                    );
-                    if (parent) openFarm(parent.farmId, parent.id);
-                  }}
-                  onAddChild={() => addChildTask(selectedWorkItem)}
-                  childrenContent={
-                    workHierarchy.children.get(selectedWorkItem.id)?.length ? (
-                      <section className="space-y-3 rounded-xl border bg-white p-4">
-                        <h2 className="text-lg font-bold">
-                          세부 업무 ·{' '}
-                          {
-                            workHierarchy.progress(selectedWorkItem.id)
-                              .completed
-                          }
-                          /{workHierarchy.progress(selectedWorkItem.id).total}{' '}
-                          실행 업무 완료
-                        </h2>
-                        <WorkTaskSurface
-                          onEditingChange={setWorkQuickEditOpen}
-                          farmLabel={(item) =>
-                            farmById.get(item.farmId)?.name || ''
-                          }
-                          latestSummary={(item) => ({
-                            action:
-                              latestEntryWith(item, 'actionContent')
-                                ?.actionContent || '',
-                            received:
-                              latestEntryWith(item, 'receivedContent')
-                                ?.receivedContent || '',
-                          })}
-                          items={workHierarchy.descendants(selectedWorkItem.id)}
-                          allItems={workHierarchy.descendants(
-                            selectedWorkItem.id,
-                          )}
-                          recorder={accountName || accountEmail}
-                          projectLabel={workContextLabel}
-                          onOpen={(item) => openFarm(item.farmId, item.id)}
-                          onAddChild={addChildTask}
-                          onSave={saveQuickWork}
-                          isClosed={(item) =>
-                            projectForWorkItem(item)?.status === 'completed'
-                          }
-                        />
-                      </section>
-                    ) : null
-                  }
-                />
-              )}
+                    )}
+                    onParent={() => {
+                      const parent = workItemById.get(
+                        selectedWorkItem.parentWorkItemId || '',
+                      );
+                      if (parent) openFarm(parent.farmId, parent.id);
+                    }}
+                    onAddChild={() => addChildTask(selectedWorkItem)}
+                    childrenContent={
+                      workHierarchy.children.get(selectedWorkItem.id)
+                        ?.length ? (
+                        <section className="space-y-3 rounded-xl border bg-white p-4">
+                          <h2 className="text-lg font-bold">
+                            세부 업무 ·{' '}
+                            {
+                              workHierarchy.progress(selectedWorkItem.id)
+                                .completed
+                            }
+                            /{workHierarchy.progress(selectedWorkItem.id).total}{' '}
+                            실행 업무 완료
+                          </h2>
+                          <WorkTaskSurface
+                            deleteAction={workDeleteAction}
+                            onEditingChange={setWorkQuickEditOpen}
+                            farmLabel={(item) =>
+                              farmById.get(item.farmId)?.name || ''
+                            }
+                            latestSummary={(item) => ({
+                              action:
+                                latestEntryWith(item, 'actionContent')
+                                  ?.actionContent || '',
+                              received:
+                                latestEntryWith(item, 'receivedContent')
+                                  ?.receivedContent || '',
+                            })}
+                            items={workHierarchy.descendants(
+                              selectedWorkItem.id,
+                            )}
+                            allItems={workHierarchy.descendants(
+                              selectedWorkItem.id,
+                            )}
+                            recorder={accountName || accountEmail}
+                            projectLabel={workContextLabel}
+                            onOpen={(item) => openFarm(item.farmId, item.id)}
+                            onAddChild={addChildTask}
+                            onSave={saveQuickWork}
+                            isClosed={(item) =>
+                              projectForWorkItem(item)?.status === 'completed'
+                            }
+                          />
+                        </section>
+                      ) : null
+                    }
+                  />
+                )}
               {selectedProject && selectedProjectSnapshot && (
                 <section aria-label="프로젝트 전체 상세" className="w-full">
                   <div className="mb-3 flex min-h-11 flex-wrap items-center gap-2 text-sm">
@@ -9802,9 +9913,12 @@ export function FarmLedgerDashboard({
                       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                         {[
                           {
-                            label: '증빙기반 진행률',
+                            label: '프로젝트 진행률',
                             value: `${selectedProjectSnapshot.overallProgress}%`,
-                            note: `현재 ${FARM_PROJECT_STAGE_LABELS[selectedProject.currentStage]}`,
+                            note:
+                              selectedProject.status === 'completed'
+                                ? '완료 확정 사업 · 100%'
+                                : `현재 ${FARM_PROJECT_STAGE_LABELS[selectedProject.currentStage]} · 단계별 증빙 평균`,
                             icon: TrendingUp,
                           },
                           {
@@ -9889,8 +10003,8 @@ export function FarmLedgerDashboard({
                             <div className="mb-4">
                               <h3 className="font-bold">설치·운영 완료율</h3>
                               <p className="mt-1 text-xs text-[#7d8981]">
-                                참여 농가 중 완료일이 입력된 농가와 현재 유효한
-                                구독을 기준으로 계산합니다.
+                                완료일 또는 별도 완료 확인이 있는 농가와 현재
+                                유효한 구독을 기준으로 계산합니다.
                               </p>
                             </div>
                             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -9899,30 +10013,42 @@ export function FarmLedgerDashboard({
                                   label: '설치',
                                   complete:
                                     selectedProjectSnapshot.records.filter(
-                                      (record) => record.installationDate,
+                                      (record) =>
+                                        isFarmStageComplete(
+                                          record,
+                                          'installationDate',
+                                        ),
                                     ).length,
                                   rate: selectedProjectSnapshot.installationRate,
-                                  note: '설치일 입력 기준',
+                                  note: '설치일 또는 완료 확인 기준',
                                   icon: CalendarCheck2,
                                 },
                                 {
                                   label: '시운전',
                                   complete:
                                     selectedProjectSnapshot.records.filter(
-                                      (record) => record.commissioningDate,
+                                      (record) =>
+                                        isFarmStageComplete(
+                                          record,
+                                          'commissioningDate',
+                                        ),
                                     ).length,
                                   rate: selectedProjectSnapshot.commissioningRate,
-                                  note: '시운전일 입력 기준',
+                                  note: '시운전일 또는 완료 확인 기준',
                                   icon: Wrench,
                                 },
                                 {
                                   label: '교육',
                                   complete:
                                     selectedProjectSnapshot.records.filter(
-                                      (record) => record.educationDate,
+                                      (record) =>
+                                        isFarmStageComplete(
+                                          record,
+                                          'educationDate',
+                                        ),
                                     ).length,
                                   rate: selectedProjectSnapshot.educationRate,
-                                  note: '교육일 입력 기준',
+                                  note: '교육일 또는 완료 확인 기준',
                                   icon: TrendingUp,
                                 },
                                 {
@@ -10289,6 +10415,7 @@ export function FarmLedgerDashboard({
                         농가 구독료 입금은 구독·입금에서 관리합니다.
                       </p>
                       <WorkTaskSurface
+                        deleteAction={workDeleteAction}
                         onEditingChange={setWorkQuickEditOpen}
                         farmLabel={(item) =>
                           farmById.get(item.farmId)?.name || ''
@@ -11143,6 +11270,7 @@ export function FarmLedgerDashboard({
                                   <Plus />
                                   진행 기록 추가
                                 </Button>
+                                {workDeleteAction(selectedWorkItem)}
                               </div>
                               <div className="mt-5 grid gap-3 md:grid-cols-2">
                                 <div className="rounded-2xl border border-[#dce7dc] bg-white p-4">
@@ -11690,6 +11818,13 @@ export function FarmLedgerDashboard({
           </section>
         </div>
 
+        {workDeletionTarget && (
+          <WorkDeletionDialog
+            task={workDeletionTarget}
+            onConfirm={confirmWorkDeletion}
+            onClose={() => setWorkDeletionTarget(null)}
+          />
+        )}
         {projectDeletionTarget && (
           <ProjectDeletionDialog
             key={projectDeletionTarget.id}

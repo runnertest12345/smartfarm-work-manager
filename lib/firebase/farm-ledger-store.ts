@@ -86,6 +86,12 @@ import {
 import { resolveTaskAssignment } from './organization-store';
 import { projectLifecyclePatch } from '@/lib/project-lifecycle';
 import {
+  assertWorkActive,
+  canManageWorkDeletion,
+  isActiveWork,
+} from '@/lib/work-lifecycle';
+import { readMember } from '@/lib/organization';
+import {
   calculateSubscriptionPayment,
   type SubscriptionPaymentRequest,
 } from '@/lib/subscription-payment';
@@ -1192,6 +1198,7 @@ async function updateProject(projectId: string, input: FarmProjectInput) {
     ).size;
     const openWork = workspace.workItems.some(
       (item) =>
+        isActiveWork(item) &&
         (recordIds.has(item.farmRecordId) ||
           (isProjectTask(item) && item.projectId === projectId)) &&
         item.status !== 'completed',
@@ -1267,6 +1274,157 @@ async function changeProjectDeletion(
     transaction.update(reference, patch);
     setCreated(transaction, 'projectUpdates', audit);
     return { project: { ...existing, ...patch } };
+  });
+}
+
+async function changeWorkDeletion(
+  workItemId: string,
+  expectedUpdatedAt: number,
+  deleted: boolean,
+  operationId: string,
+) {
+  const user = requireSignedInUser();
+  const { db } = getFirebaseServices();
+  return runTransaction(db, async (transaction) => {
+    const reference = documentRef('workItems', workItemId);
+    const snapshot = await transaction.get(reference);
+    const actor = await transaction.get(doc(db, 'appMembers', user.uid));
+    const auditRef = documentRef('historyEntries', operationId);
+    const replay = await transaction.get(auditRef);
+    if (!snapshot.exists()) throw new Error('업무를 찾을 수 없습니다.');
+    const existing = snapshot.data() as FarmWorkItem;
+    if (
+      !actor.exists() ||
+      !canManageWorkDeletion(
+        existing,
+        readMember(user.uid, actor.data()),
+        firebaseWorkspaceId,
+      )
+    )
+      throw new Error(
+        '관리자 또는 해당 업무 등록자만 삭제·복원할 수 있습니다. 입금·구독 증빙은 삭제할 수 없습니다.',
+      );
+    const action = deleted ? 'delete' : 'restore';
+    if (replay.exists()) {
+      const saved = replay.data();
+      if (
+        saved.workItemId !== workItemId ||
+        saved.workLifecycleAction !== action ||
+        saved.createdByUid !== user.uid
+      )
+        throw new Error(
+          '다른 요청에 사용된 번호입니다. 창을 다시 열어 주세요.',
+        );
+      return { workItem: existing };
+    }
+    if (existing.updatedAt !== expectedUpdatedAt)
+      throw new Error(
+        '다른 변경이 먼저 저장되었습니다. 최신 업무를 확인한 뒤 다시 시도해 주세요.',
+      );
+    if (deleted === Boolean(existing.deletedAt))
+      throw new Error(
+        deleted ? '이미 삭제된 업무입니다.' : '이미 복원된 업무입니다.',
+      );
+    if (existing.childWorkItemIds?.length || existing.openChildCount)
+      throw new Error(
+        '세부 업무가 남아 있습니다. 완료된 세부 업무도 먼저 삭제한 뒤 상위 업무를 삭제해 주세요.',
+      );
+    let parent: FarmWorkItem | undefined;
+    if (existing.parentWorkItemId) {
+      const parentSnapshot = await transaction.get(
+        documentRef('workItems', existing.parentWorkItemId),
+      );
+      if (!parentSnapshot.exists())
+        throw new Error('상위 업무를 찾을 수 없습니다.');
+      parent = parentSnapshot.data() as FarmWorkItem;
+      if (!isActiveWork(parent))
+        throw new Error('상위 업무를 먼저 복원해 주세요.');
+      if (!sameWorkContext(parent, existing) || !isStandaloneWork(parent))
+        throw new Error('상위·세부 업무 연결을 확인해 주세요.');
+      if (Boolean(parent.childWorkItemIds?.includes(workItemId)) !== deleted)
+        throw new Error(
+          '상위·세부 업무 연결이 변경되었습니다. 새로고침 후 확인해 주세요.',
+        );
+      if (
+        !deleted &&
+        parent.status === 'completed' &&
+        existing.status !== 'completed'
+      )
+        throw new Error('완료된 상위 업무를 먼저 다시 열어 주세요.');
+    }
+    if (!deleted) {
+      let projectId = existing.projectId || '';
+      if (existing.farmRecordId) {
+        const record = await transaction.get(
+          documentRef('records', existing.farmRecordId),
+        );
+        if (!record.exists())
+          throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
+        projectId = record.data().projectId;
+      }
+      if (projectId) {
+        const project = await transaction.get(
+          documentRef('projects', projectId),
+        );
+        if (!project.exists() || project.data().deletedAt)
+          throw new Error('프로젝트를 먼저 복구해 주세요.');
+        if (
+          project.data().status === 'completed' &&
+          existing.status !== 'completed'
+        )
+          throw new Error('완료된 프로젝트를 먼저 다시 열어 주세요.');
+      }
+    }
+    const now = Math.max(
+      Date.now(),
+      existing.updatedAt + 1,
+      (parent?.updatedAt || 0) + 1,
+    );
+    const patch = {
+      deletedAt: deleted ? now : 0,
+      deletedByUid: deleted ? user.uid : '',
+      workLifecycleEntryId: operationId,
+      updatedAt: now,
+      updatedByUid: user.uid,
+      lastActivityAt: now,
+    };
+    if (parent) {
+      const ids = parent.childWorkItemIds || [];
+      const nextIds = deleted
+        ? ids.filter((id) => id !== workItemId)
+        : [...ids, workItemId];
+      const count =
+        (parent.openChildCount || 0) +
+        (existing.status === 'completed' ? 0 : deleted ? -1 : 1);
+      if (nextIds.length > 500 || count < 0 || count > nextIds.length)
+        throw new Error('세부 업무 연결 수를 확인해 주세요.');
+      transaction.update(documentRef('workItems', parent.id), {
+        childWorkItemIds: nextIds,
+        openChildCount: count,
+        lastChildMutationId: workItemId,
+        updatedAt: now,
+        lastActivityAt: now,
+        updatedByUid: user.uid,
+      });
+    }
+    transaction.update(reference, patch);
+    setCreated(transaction, 'historyEntries', {
+      id: operationId,
+      workItemId,
+      workLifecycleAction: action,
+      channel: 'system',
+      sender: '',
+      receivedContent: '',
+      amount: 0,
+      actionContent: deleted
+        ? '업무를 삭제했습니다. 처리 이력과 첨부파일은 보존되며 삭제된 업무에서 복원할 수 있습니다.'
+        : '업무를 원래 상태와 연결로 복원했습니다.',
+      recorder: readMember(user.uid, actor.data()).displayName,
+      occurredAt: now,
+      referenceUrl: '',
+      createdAt: now,
+    });
+    return { workItem: { ...existing, ...patch } };
   });
 }
 
@@ -2614,6 +2772,7 @@ async function prepareParentMutation(
     );
     if (!snapshot.exists()) throw new Error('상위 업무를 찾을 수 없습니다.');
     const ancestor = snapshot.data() as FarmWorkItem;
+    assertWorkActive(ancestor);
     if (!isStandaloneWork(ancestor) || !sameWorkContext(ancestor, workItem))
       throw new Error(
         '같은 프로젝트 또는 내부 부서의 업무 아래에만 등록할 수 있습니다.',
@@ -3006,6 +3165,7 @@ async function addHistoryEntry(
     (item) => item.id === input.workItemId,
   );
   if (!existing) throw new Error('업무를 찾을 수 없습니다.');
+  assertWorkActive(existing);
   if (
     input.expectedUpdatedAt !== undefined &&
     input.expectedUpdatedAt !== existing.updatedAt
@@ -3267,6 +3427,7 @@ async function addHistoryEntry(
       }
     }
     const latest = await transaction.get(documentRef('workItems', existing.id));
+    if (latest.exists()) assertWorkActive(latest.data() as FarmWorkItem);
     if (
       !latest.exists() ||
       latest.data().updatedAt !== existing.updatedAt ||
@@ -3319,6 +3480,7 @@ async function saveVisit(input: FarmWorkVisitInput) {
     (item) => item.id === input.workItemId,
   );
   if (!workItem) throw new Error('업무를 찾을 수 없습니다.');
+  assertWorkActive(workItem);
   if (workItem.status === 'completed') {
     throw new Error(
       '완료된 업무에는 현장 방문을 추가하거나 수정할 수 없습니다.',
@@ -3467,6 +3629,7 @@ async function toggleChecklist(
   if (!existing) throw new Error('체크리스트 항목을 찾을 수 없습니다.');
   const workItem = workspace.workItems.find((item) => item.id === workItemId);
   if (!workItem) throw new Error('업무를 찾을 수 없습니다.');
+  assertWorkActive(workItem);
   if (workItem.status === 'completed') {
     throw new Error('완료된 업무의 체크리스트는 변경할 수 없습니다.');
   }
@@ -3563,6 +3726,21 @@ function parseChecklist(value: unknown) {
 async function mutateFarmLedger(method: string, body: JsonObject) {
   const kind = typeof body.kind === 'string' ? body.kind : '';
   if (!kind) throw new Error('저장할 정보 종류를 확인해 주세요.');
+
+  if (kind === 'work_lifecycle' && method === 'PATCH') {
+    if (
+      typeof body.deleted !== 'boolean' ||
+      !Number.isSafeInteger(body.expectedUpdatedAt) ||
+      Number(body.expectedUpdatedAt) <= 0
+    )
+      throw new Error('업무 삭제·복원 요청을 확인해 주세요.');
+    return changeWorkDeletion(
+      requiredId(body.workItemId, '업무 ID'),
+      Number(body.expectedUpdatedAt),
+      body.deleted,
+      requiredId(body.operationId, '요청 ID'),
+    );
+  }
 
   if (kind === 'project_lifecycle' && method === 'PATCH') {
     if (

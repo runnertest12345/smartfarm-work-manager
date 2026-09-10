@@ -545,6 +545,7 @@ export function WorkTaskSurface({
   isClosed = () => false,
   searching = false,
   onEditingChange,
+  deleteAction,
 }: {
   items: FarmWorkItem[];
   allItems: FarmWorkItem[];
@@ -559,6 +560,7 @@ export function WorkTaskSurface({
   isClosed?: (item: FarmWorkItem) => boolean;
   searching?: boolean;
   onEditingChange?: (open: boolean) => void;
+  deleteAction?: (item: FarmWorkItem, disabled?: boolean) => ReactNode;
 }) {
   const tree = buildWorkHierarchy(allItems);
   const projectLabel = (item: FarmWorkItem) =>
@@ -575,6 +577,21 @@ export function WorkTaskSurface({
   const surfaceElement = useRef<HTMLDivElement>(null);
   const editorTrigger = useRef<HTMLElement | null>(null);
   const editorOpen = Boolean(editing);
+  useEffect(() => {
+    if (
+      !editing ||
+      allItems.some((item) => item.id === editing.id && !item.deletedAt)
+    )
+      return;
+    // Close an editor whose task was removed by the live subscription.
+    let current = true;
+    Promise.resolve().then(() => {
+      if (current) setEditing(null);
+    });
+    return () => {
+      current = false;
+    };
+  }, [allItems, editing]);
   useEffect(() => {
     if (!editorOpen) return;
     onEditingChange?.(true);
@@ -676,6 +693,7 @@ export function WorkTaskSurface({
           세부 업무
         </Button>
       )}
+      {deleteAction?.(item, Boolean(savingId || editing))}
     </div>
   );
   const historySummary = (item: FarmWorkItem) => {

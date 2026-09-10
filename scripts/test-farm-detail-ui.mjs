@@ -79,7 +79,10 @@ test('A/S 목록은 서비스만 선택하며 일반 업무·입금 이력은 �
     'installation',
   ].map((workType, i) => ({ id: `w${i}`, workType }));
   assert.equal(
-    selected('selectedServiceItems', { selectedWorkItems })
+    selected('selectedServiceItems', {
+      selectedWorkItems,
+      isActiveWork: (work) => !work.deletedAt,
+    })
       .map((w) => w.id)
       .join(','),
     'w0',

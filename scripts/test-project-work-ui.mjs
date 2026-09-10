@@ -75,7 +75,11 @@ function load(path, aliases = {}) {
   return module.exports;
 }
 const types = load('../lib/farm-types.ts');
-const work = load('../lib/project-work.ts');
+const organization = load('../lib/organization.ts');
+const lifecycle = load('../lib/work-lifecycle.ts', {
+  './organization': organization,
+});
+const work = load('../lib/project-work.ts', { './work-lifecycle': lifecycle });
 const images = load('../app/received-images.tsx', {
   '@/lib/received-images': {
     MAX_RECEIVED_IMAGES: 3,

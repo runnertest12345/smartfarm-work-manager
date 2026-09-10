@@ -29,7 +29,13 @@ function load(path, aliases = {}) {
 }
 const types = load('lib/farm-types.ts');
 const hierarchy = load('lib/work-hierarchy.ts');
-const projectWork = load('lib/project-work.ts');
+const organization = load('lib/organization.ts');
+const lifecycle = load('lib/work-lifecycle.ts', {
+  './organization': organization,
+});
+const projectWork = load('lib/project-work.ts', {
+  './work-lifecycle': lifecycle,
+});
 const { buildWorkBoardGroups } = load('lib/work-board.ts', {
   './work-hierarchy': hierarchy,
   './project-work': projectWork,

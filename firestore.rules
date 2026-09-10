@@ -146,7 +146,75 @@ service cloud.firestore {
             && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.id == request.resource.data.projectId)))
         || (name in ['blockerEpisodes', 'visits', 'checklistItems', 'historyEntries']
           && request.resource.data.workItemId is string
-          && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workItems/$(request.resource.data.workItemId)).data.id == request.resource.data.workItemId);
+          && validWorkRecord(workspaceId, name, creating));
+    }
+
+    function workRelations(workspaceId, data, creating) {
+      return data.farmRecordId is string && (data.farmRecordId != ''
+        ? getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/farmRecords/$(data.farmRecordId)).data.id == data.farmRecordId
+        : (data.farmId == '' && data.workType in ['communication', 'installation', 'service', 'note']
+          && (data.get('scope', '') == 'internal' ? data.get('projectId', '') == ''
+            : data.projectId is string && data.projectId != ''
+              && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(data.projectId)).data.id == data.projectId
+              && (!creating || getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(data.projectId)).data.get('deletedAt', 0) == 0))));
+    }
+
+    function workUpdate(workspaceId, documentId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      return after.get('deletedAt', 0) != before.get('deletedAt', 0)
+        ? workLifecycleChange(workspaceId, documentId, before, after)
+          && (after.get('parentWorkItemId', '') == '' || linkedParent(workspaceId, documentId, before, after, false))
+        : before.get('deletedAt', 0) == 0
+          && !after.diff(before).affectedKeys().hasAny(['deletedAt', 'deletedByUid', 'workLifecycleEntryId', 'workType'])
+          && validWorkTree(workspaceId, documentId, false) && validWorkAssignment(workspaceId, false)
+          && workRelations(workspaceId, after, false);
+    }
+
+    function validWorkRecord(workspaceId, name, creating) {
+      let data = request.resource.data;
+      let workPath = /databases/$(database)/documents/workspaces/$(workspaceId)/workItems/$(data.workItemId);
+      let work = getAfter(workPath).data;
+      return (creating || resource.data.workItemId == data.workItemId) && work.id == data.workItemId && (
+        (work.get('deletedAt', 0) == 0 && !data.keys().hasAny(['workLifecycleAction']))
+        || (name == 'historyEntries' && data.get('workLifecycleAction', '') in ['delete', 'restore']
+          && work.get('workLifecycleEntryId', '') == data.id
+          && get(workPath).data.get('workLifecycleEntryId', '') != data.id
+          && data.workLifecycleAction == (work.get('deletedAt', 0) > 0 ? 'delete' : 'restore')
+          && data.channel == 'system' && data.amount == 0
+          && data.createdAt == work.updatedAt && data.occurredAt == work.updatedAt
+          && work.updatedByUid == request.auth.uid));
+    }
+
+    function restorableWorkProject(workspaceId, work) {
+      let projectId = work.farmRecordId != ''
+        ? get(/databases/$(database)/documents/workspaces/$(workspaceId)/farmRecords/$(work.farmRecordId)).data.projectId
+        : work.projectId;
+      let project = getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(projectId)).data;
+      return project.get('deletedAt', 0) == 0 && (work.status == 'completed' || project.status != 'completed');
+    }
+
+    function workLifecycleChange(workspaceId, documentId, before, after) {
+      let auditId = after.get('workLifecycleEntryId', '');
+      let auditPath = /databases/$(database)/documents/workspaces/$(workspaceId)/historyEntries/$(auditId);
+      let audit = getAfter(auditPath).data;
+      let deleting = after.get('deletedAt', 0) > 0;
+      return personalMember(workspaceId, request.auth.uid)
+        && (before.createdByUid == request.auth.uid || get(/databases/$(database)/documents/appMembers/$(request.auth.uid)).data.get('admin', false) == true)
+        && !(before.workType in ['payment', 'subscription'])
+        && before.get('childWorkItemIds', []).size() == 0 && before.get('openChildCount', 0) == 0
+        && auditId is string && auditId != '' && !exists(auditPath)
+        && after.diff(before).affectedKeys().hasOnly(['deletedAt', 'deletedByUid', 'workLifecycleEntryId', 'updatedAt', 'updatedByUid', 'lastActivityAt'])
+        && after.updatedAt > before.updatedAt && after.lastActivityAt == after.updatedAt
+        && after.updatedAt <= request.time.toMillis() + 300000 && after.updatedAt >= request.time.toMillis() - 300000
+        && after.deletedAt is int && after.deletedAt >= 0
+        && ((deleting && before.get('deletedAt', 0) == 0 && after.deletedAt == after.updatedAt && after.deletedByUid == request.auth.uid)
+          || (!deleting && before.get('deletedAt', 0) > 0 && after.deletedByUid == ''
+            && (after.get('scope', '') == 'internal' || restorableWorkProject(workspaceId, after))))
+        && audit.id == auditId && audit.workItemId == documentId
+        && audit.workLifecycleAction == (deleting ? 'delete' : 'restore')
+        && audit.channel == 'system' && audit.amount == 0
+        && audit.createdAt == after.updatedAt && audit.occurredAt == after.updatedAt && audit.createdByUid == request.auth.uid;
     }
 
     // Old clients must not erase a deletion marker by saving an entire project.
@@ -197,7 +265,7 @@ service cloud.firestore {
     }
 
     function openTask(data) {
-      return data.get('status', 'open') == 'completed' ? 0 : 1;
+      return data.get('deletedAt', 0) > 0 || data.get('status', 'open') == 'completed' ? 0 : 1;
     }
 
     function childCounterChange(workspaceId, documentId, before, after) {
@@ -213,7 +281,12 @@ service cloud.firestore {
         && sameTaskContext(child, after)
         && after.get('openChildCount', 0) == before.get('openChildCount', 0) + openTask(child) - openTask(oldChild)
         && (existed
-          ? oldChild.get('parentWorkItemId', '') == documentId && newIds == oldIds && childId in newIds
+          ? oldChild.get('parentWorkItemId', '') == documentId && (
+            (oldChild.get('deletedAt', 0) == 0 && child.get('deletedAt', 0) > 0
+              && childId in oldIds && !(childId in newIds) && oldIds.hasAll(newIds) && newIds.size() == oldIds.size() - 1)
+            || (oldChild.get('deletedAt', 0) > 0 && child.get('deletedAt', 0) == 0
+              && !(childId in oldIds) && childId in newIds && newIds.hasAll(oldIds) && newIds.size() == oldIds.size() + 1)
+            || (oldChild.get('deletedAt', 0) == 0 && child.get('deletedAt', 0) == 0 && newIds == oldIds && childId in newIds))
           : !(childId in oldIds) && childId in newIds && newIds.hasAll(oldIds) && newIds.size() == oldIds.size() + 1);
     }
 
@@ -223,16 +296,18 @@ service cloud.firestore {
       let parent = get(path).data;
       let nextParent = getAfter(path).data;
       let delta = openTask(after) - (creating ? 0 : openTask(before));
+      let lifecycle = before.get('deletedAt', 0) != after.get('deletedAt', 0);
       return parentId != documentId
         && parent.id == parentId
         && parent.get('farmRecordId', '') == '' && after.farmRecordId == ''
         && after.workType in ['communication', 'installation', 'service', 'note']
         && parent.workType in ['communication', 'installation', 'service', 'note']
         && sameTaskContext(parent, after)
-        && documentId in nextParent.get('childWorkItemIds', [])
+        && parent.get('deletedAt', 0) == 0 && nextParent.get('deletedAt', 0) == 0
+        && (after.get('deletedAt', 0) > 0 ? !(documentId in nextParent.get('childWorkItemIds', [])) : documentId in nextParent.get('childWorkItemIds', []))
         && (openTask(after) == 0 || nextParent.get('status', 'open') != 'completed')
         && (!creating || parent.get('status', 'open') != 'completed')
-        && ((delta == 0 && !creating)
+        && ((delta == 0 && !creating && !lifecycle)
           || (nextParent.get('lastChildMutationId', '') == documentId
             && nextParent.get('openChildCount', 0) == parent.get('openChildCount', 0) + delta));
     }
@@ -313,9 +388,11 @@ service cloud.firestore {
         && validCreate(documentId)
         && (collectionName != 'farms' || validFarmImages(workspaceId, documentId, true))
         && (collectionName != 'projects' || validProjectLifecycle(workspaceId, documentId, true))
-        && (collectionName != 'workItems' || validWorkTree(workspaceId, documentId, true))
-        && (collectionName != 'workItems' || validWorkAssignment(workspaceId, true))
-        && validRelations(workspaceId, collectionName, true);
+        && (collectionName == 'workItems'
+          ? !request.resource.data.keys().hasAny(['deletedAt', 'deletedByUid', 'workLifecycleEntryId'])
+            && validWorkTree(workspaceId, documentId, true) && validWorkAssignment(workspaceId, true)
+            && workRelations(workspaceId, request.resource.data, true)
+          : validRelations(workspaceId, collectionName, true));
 
       allow update: if activeMember(workspaceId)
         && knownCollection(collectionName)
@@ -323,9 +400,7 @@ service cloud.firestore {
         && validUpdate(documentId)
         && (collectionName != 'farms' || validFarmImages(workspaceId, documentId, false))
         && (collectionName != 'projects' || validProjectLifecycle(workspaceId, documentId, false))
-        && (collectionName != 'workItems' || validWorkTree(workspaceId, documentId, false))
-        && (collectionName != 'workItems' || validWorkAssignment(workspaceId, false))
-        && validRelations(workspaceId, collectionName, false);
+        && (collectionName == 'workItems' ? workUpdate(workspaceId, documentId) : validRelations(workspaceId, collectionName, false));
 
       allow delete: if false;
     }

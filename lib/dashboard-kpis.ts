@@ -8,6 +8,7 @@ import type {
 } from './farm-types';
 
 import { summarizeWorkHierarchy } from './work-hierarchy';
+import { isFarmStageComplete } from './project-farm-progress';
 
 export type ProjectTypeScope = 'all' | FarmProjectType;
 
@@ -119,15 +120,20 @@ export function summarizeProjectKpis(
       0,
     ),
     installationRate: percent(
-      records.filter((record) => record.installationDate).length,
+      records.filter((record) =>
+        isFarmStageComplete(record, 'installationDate'),
+      ).length,
       records.length,
     ),
     commissioningRate: percent(
-      records.filter((record) => record.commissioningDate).length,
+      records.filter((record) =>
+        isFarmStageComplete(record, 'commissioningDate'),
+      ).length,
       records.length,
     ),
     educationRate: percent(
-      records.filter((record) => record.educationDate).length,
+      records.filter((record) => isFarmStageComplete(record, 'educationDate'))
+        .length,
       records.length,
     ),
     subscriptions,

@@ -1,4 +1,5 @@
 import type { FarmWorkItem, FarmRecord, FarmHistoryEntry } from './farm-types';
+import { isActiveWork } from './work-lifecycle';
 
 /** Imported replacement results remain in the farm ledger, not the work queue. */
 export function isFarmBoxReplacementHistory(
@@ -31,6 +32,7 @@ export function isOperationalWork(
   item: FarmWorkItem,
   history: FarmHistoryEntry[] = [],
 ) {
+  if (!isActiveWork(item)) return false;
   if (item.workType === 'payment' || item.workType === 'subscription')
     return false;
   if (isFarmBoxReplacementHistory(item, history)) return false;
@@ -97,6 +99,7 @@ export function sameWorkContext(a: FarmWorkItem, b: FarmWorkItem) {
 
 export function isHeadPriority(item: FarmWorkItem) {
   return (
+    isActiveWork(item) &&
     item.status !== 'completed' &&
     item.headAssigned === true &&
     Boolean(item.assigneeUid && item.assignedByUid)

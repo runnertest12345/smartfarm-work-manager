@@ -1,4 +1,119 @@
 import assert from 'node:assert/strict';
+async function deleteOrRestoreTask(
+  h,
+  task,
+  deleted = true,
+  operationId = crypto.randomUUID(),
+) {
+  h.sync();
+  return h.api.patch({
+    kind: 'work_lifecycle',
+    workItemId: task.id,
+    expectedUpdatedAt: task.updatedAt,
+    deleted,
+    operationId,
+  });
+}
+
+test('업무 삭제·복원은 원본 상태·이력·첨부를 보존하고 실패·중복 요청에 안전하다', async () => {
+  const h = organizationHarness('head');
+  const task = (await h.api.post(internalWork(h))).workItem;
+  const histories = h.list('historyEntries');
+  h.fail();
+  await assert.rejects(
+    deleteOrRestoreTask(h, task, true, 'delete-task-failure'),
+    /Simulated/,
+  );
+  assert.equal(h.list('workItems')[0].deletedAt, undefined);
+  assert.deepEqual(h.list('historyEntries'), histories);
+  const result = await deleteOrRestoreTask(
+    h,
+    task,
+    true,
+    'delete-task-success',
+  );
+  assert.ok(result.workItem.deletedAt);
+  assert.equal(result.workItem.status, task.status);
+  assert.equal(result.workItem.title, task.title);
+  await deleteOrRestoreTask(h, task, true, 'delete-task-success');
+  assert.equal(h.list('historyEntries').length, histories.length + 1);
+  await assert.rejects(changeTask(h, task.id, 'in_progress'), /삭제된/);
+  await assert.rejects(
+    h.api.post(internalWork(h, 'deleted-parent-new-child', task.id)),
+    /삭제된/,
+  );
+  const restored = await deleteOrRestoreTask(h, result.workItem, false);
+  assert.equal(restored.workItem.deletedAt, 0);
+  assert.equal(restored.workItem.status, task.status);
+  for (const original of histories)
+    assert.deepEqual(
+      h.list('historyEntries').find((x) => x.id === original.id),
+      original,
+    );
+  assert.equal(h.list('historyEntries').length, histories.length + 2);
+  assert.equal(h.list('subscriptionEvents').length, 0);
+});
+
+test('등록자·관리자만 삭제하고 입금·타인·비활성·오래된 초안은 거부한다', async () => {
+  for (const actor of ['head', 'staff', 'admin']) {
+    const h = organizationHarness(actor);
+    const task = (await h.api.post(internalWork(h))).workItem;
+    h.put('workItems', { ...task, createdByUid: 'head' });
+    h.sync();
+    if (actor === 'staff')
+      await assert.rejects(deleteOrRestoreTask(h, task), /등록자/);
+    else {
+      await assert.rejects(
+        deleteOrRestoreTask(h, { ...task, updatedAt: task.updatedAt - 1 }),
+        /다른 변경/,
+      );
+      await deleteOrRestoreTask(h, task);
+    }
+  }
+  const h = organizationHarness('admin');
+  const task = (await h.api.post(internalWork(h))).workItem;
+  for (const workType of ['payment', 'subscription']) {
+    h.put('workItems', { ...task, workType });
+    await assert.rejects(deleteOrRestoreTask(h, task), /증빙/);
+  }
+  h.put('workItems', task);
+  h.putMember({ ...h.getMember('admin'), active: false });
+  await assert.rejects(deleteOrRestoreTask(h, task), /등록자/);
+});
+
+test('완료 자식도 먼저 삭제하고 부모·자식 순서로 복원하며 카운터를 복구한다', async () => {
+  for (const completed of [false, true]) {
+    const h = organizationHarness('head');
+    const parent = (await h.api.post(internalWork(h))).workItem;
+    h.sync();
+    let child = (
+      await h.api.post(internalWork(h, 'delete-child-create', parent.id))
+    ).workItem;
+    if (completed) {
+      await changeTask(h, child.id, 'completed');
+      child = h.list('workItems').find((x) => x.id === child.id);
+    }
+    const current = (id) => h.list('workItems').find((x) => x.id === id);
+    await assert.rejects(
+      deleteOrRestoreTask(h, current(parent.id)),
+      /세부 업무/,
+    );
+    await deleteOrRestoreTask(h, child);
+    assert.deepEqual(current(parent.id).childWorkItemIds, []);
+    assert.equal(current(parent.id).openChildCount, 0);
+    await deleteOrRestoreTask(h, current(parent.id));
+    await assert.rejects(
+      deleteOrRestoreTask(h, current(child.id), false),
+      /상위 업무를 먼저 복원/,
+    );
+    await deleteOrRestoreTask(h, current(parent.id), false);
+    await deleteOrRestoreTask(h, current(child.id), false);
+    assert.deepEqual(current(parent.id).childWorkItemIds, [child.id]);
+    assert.equal(current(parent.id).openChildCount, completed ? 0 : 1);
+    assert.equal(current(child.id).parentWorkItemId, parent.id);
+  }
+});
+
 function projectWork(h, parentId = '', operationId = '') {
   const base = h.body();
   return {
@@ -203,6 +318,7 @@ const scripts = new Map(
     'lib/subscription-payment.ts',
     'lib/subscription-renewal-report.ts',
     'lib/project-work.ts',
+    'lib/work-lifecycle.ts',
     'lib/organization.ts',
     'lib/login-identity.ts',
     'lib/firebase/organization-store.ts',
@@ -430,7 +546,7 @@ function harness(
         requireSignedInUser: () => actor,
       },
     },
-    '\nexports.seedWorkspace = value => { latestWorkspace = value; }; exports.post = body => mutateFarmLedger("POST", body);',
+    '\nexports.seedWorkspace = value => { latestWorkspace = value; }; exports.post = body => mutateFarmLedger("POST", body); exports.patch = body => mutateFarmLedger("PATCH", body);',
     { Date: FixedDate, console: { error() {} } },
   );
   const put = (collection, value) =>
@@ -1102,7 +1218,12 @@ test('공개 자체 가입 경로가 없으며 본인의 암호 변경 안내만
     emailVerified: true,
   });
   assert.equal(h.organization.requestMembership, undefined);
-  h.putMember({ id: 'new-person', active: true, passwordChangeRequired: true, updatedAt: 1 });
+  h.putMember({
+    id: 'new-person',
+    active: true,
+    passwordChangeRequired: true,
+    updatedAt: 1,
+  });
   await h.organization.acknowledgePasswordChange();
   const saved = h.getMember('new-person');
   assert.equal(saved.active, true);

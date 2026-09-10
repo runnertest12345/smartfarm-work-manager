@@ -17,6 +17,10 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import type { ProjectFarmProgress } from '@/lib/project-farm-progress';
+import {
+  isFarmStageComplete,
+  farmStageCompletionLabel,
+} from '@/lib/project-farm-progress';
 
 export function ProjectStageFigures({
   stage,
@@ -126,8 +130,8 @@ export function ProjectFarmProgressCard({
             </span>
           </h2>
           <p className="mt-1 text-sm text-slate-600">
-            완료율 = 완료일이 입력된 농가 ÷ 참여 농가. 완료일이 없으면 미완료로
-            집계합니다.
+            완료율 = 완료일 또는 별도 완료 확인이 있는 농가 ÷ 참여 농가. 실제
+            완료일이 없는 경우 ‘일자 미기록’으로 표시합니다.
           </p>
         </div>
         <Button
@@ -191,15 +195,17 @@ export function ProjectFarmProgressCard({
                       <TableCell
                         key={stage.key}
                         className={
-                          record[stage.key]
+                          isFarmStageComplete(record, stage.key)
                             ? 'text-emerald-800'
                             : 'font-semibold text-amber-800'
                         }
                       >
-                        {record[stage.key] ? (
+                        {isFarmStageComplete(record, stage.key) ? (
                           <>
                             <span className="block">완료</span>
-                            <span className="text-sm">{record[stage.key]}</span>
+                            <span className="text-sm">
+                              {farmStageCompletionLabel(record, stage.key)}
+                            </span>
                           </>
                         ) : (
                           '미완료'

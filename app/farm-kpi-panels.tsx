@@ -173,7 +173,7 @@ export function ProjectKpiPanel({
     {
       label: '설치 · 시운전 · 교육',
       value: `${rateLabel(summary.installationRate)} / ${rateLabel(summary.commissioningRate)} / ${rateLabel(summary.educationRate)}`,
-      note: '사업 참여별 완료일 입력 기준',
+      note: '사업 참여별 완료일 또는 별도 완료 확인 기준',
       compact: true,
     },
     {

@@ -116,15 +116,22 @@ function check(
         ...(query ? { query } : {}),
       },
       ...(before ? { resource: { data: before } } : {}),
-      functionMocks: ['get', 'getAfter'].flatMap((fn) =>
-        Object.entries(fn === 'get' ? mockDocs : { ...mockDocs, ...after }).map(
-          ([key, value]) => ({
+      functionMocks: [
+        ...['get', 'getAfter'].flatMap((fn) =>
+          Object.entries(
+            fn === 'get' ? mockDocs : { ...mockDocs, ...after },
+          ).map(([key, value]) => ({
             function: fn,
             args: [{ exactValue: key }],
             result: { value: { data: value } },
-          }),
+          })),
         ),
-      ),
+        ...Object.keys({ ...mockDocs, ...after }).map((key) => ({
+          function: 'exists',
+          args: [{ exactValue: key }],
+          result: { value: Boolean(mockDocs[key]) },
+        })),
+      ],
     },
   });
 }
@@ -492,6 +499,270 @@ check('internal child cannot link another department', 'DENY', {
     },
   },
 });
+
+// Each write of a lifecycle transaction is checked separately, with exact paths.
+const lifecycleAuditId = 'work-delete-audit';
+function lifecycleCase(name, expectation = 'ALLOW', extra = {}) {
+  const actor = extra.actor || head;
+  const supplied = extra.before || work;
+  const before = supplied.deletedAt
+    ? { ...supplied, workLifecycleEntryId: 'previous-lifecycle-audit' }
+    : supplied;
+  const restoring = Boolean(before.deletedAt);
+  const data = {
+    ...before,
+    deletedAt: restoring ? 0 : now + 1,
+    deletedByUid: restoring ? '' : actor.id,
+    workLifecycleEntryId: lifecycleAuditId,
+    updatedAt: now + 1,
+    lastActivityAt: now + 1,
+    updatedByUid: actor.id,
+    ...extra.patch,
+  };
+  const audit = {
+    id: lifecycleAuditId,
+    workItemId: before.id,
+    workLifecycleAction: restoring ? 'restore' : 'delete',
+    channel: 'system',
+    amount: 0,
+    createdAt: now + 1,
+    occurredAt: now + 1,
+    updatedAt: now + 1,
+    createdByUid: actor.id,
+    updatedByUid: actor.id,
+    ...extra.auditPatch,
+  };
+  const reads = { [path('workItems', before.id)]: before, ...extra.reads };
+  const after = {
+    [path('workItems', before.id)]: data,
+    [path('historyEntries', lifecycleAuditId)]: audit,
+    ...extra.after,
+  };
+  check(name, expectation, {
+    actor,
+    method: 'update',
+    target: path('workItems', before.id),
+    before,
+    data,
+    reads,
+    after,
+  });
+  if (extra.checkAudit)
+    check(name + ' audit', 'ALLOW', {
+      actor,
+      target: path('historyEntries', lifecycleAuditId),
+      data: audit,
+      reads,
+      after,
+    });
+  return { before, data, audit, reads, after };
+}
+const deletedWork = lifecycleCase(
+  'creator can delete with immutable audit',
+  'ALLOW',
+  { checkAudit: true },
+).data;
+lifecycleCase('admin can delete another creator task', 'ALLOW', {
+  actor: admin,
+});
+lifecycleCase('assignee alone cannot delete', 'DENY', { actor: staff });
+lifecycleCase('other employee cannot delete', 'DENY', { actor: other });
+lifecycleCase('shared account cannot delete', 'DENY', { actor: shared });
+lifecycleCase('inactive creator cannot delete', 'DENY', {
+  reads: { [memberPath(head.id)]: { ...head, active: false } },
+});
+lifecycleCase('other workspace admin cannot delete', 'DENY', {
+  actor: outsider,
+  reads: { [memberPath(outsider.id)]: { ...outsider, admin: true } },
+});
+lifecycleCase('deletion requires audit', 'DENY', {
+  after: { [path('historyEntries', lifecycleAuditId)]: {} },
+});
+lifecycleCase('deletion cannot reuse existing audit', 'DENY', {
+  reads: {
+    [path('historyEntries', lifecycleAuditId)]: { id: lifecycleAuditId },
+  },
+});
+lifecycleCase('deletion cannot alter task title', 'DENY', {
+  patch: { title: 'changed' },
+});
+lifecycleCase('deletion cannot forge actor', 'DENY', {
+  patch: { deletedByUid: staff.id },
+});
+lifecycleCase('deletion requires fresh version', 'DENY', {
+  patch: { updatedAt: now },
+});
+for (const workType of ['payment', 'subscription'])
+  lifecycleCase(workType + ' evidence cannot be deleted', 'DENY', {
+    before: {
+      ...work,
+      scope: '',
+      workType,
+      farmId: 'farm',
+      farmRecordId: 'record',
+    },
+    reads: { [path('farmRecords', 'record')]: { id: 'record' } },
+  });
+lifecycleCase('parent with completed children cannot be deleted', 'DENY', {
+  before: { ...work, childWorkItemIds: ['child'], openChildCount: 0 },
+});
+lifecycleCase('restore original task', 'ALLOW', {
+  before: { ...deletedWork, updatedAt: now },
+  checkAudit: true,
+});
+check('deleted task rejects ordinary edits', 'DENY', {
+  method: 'update',
+  before: deletedWork,
+  data: { ...deletedWork, title: 'changed', updatedAt: now + 2 },
+});
+check('old client cannot strip tombstone', 'DENY', {
+  method: 'update',
+  before: deletedWork,
+  data: { ...work, updatedAt: now + 2 },
+});
+check('task creation cannot start deleted', 'DENY', {
+  data: { ...work, deletedAt: now },
+});
+for (const name of [
+  'historyEntries',
+  'visits',
+  'checklistItems',
+  'blockerEpisodes',
+]) {
+  check('deleted task blocks new ' + name, 'DENY', {
+    target: path(name, 'blocked-record'),
+    data: {
+      id: 'blocked-record',
+      workItemId: work.id,
+      createdAt: now,
+      updatedAt: now,
+      createdByUid: head.id,
+      updatedByUid: head.id,
+    },
+    after: { [path('workItems', work.id)]: deletedWork },
+  });
+}
+for (const completed of [false, true]) {
+  const originalChild = { ...child, status: completed ? 'completed' : 'open' };
+  const parentBefore = {
+    ...work,
+    childWorkItemIds: [child.id],
+    openChildCount: completed ? 0 : 1,
+  };
+  const parentAfter = {
+    ...parentBefore,
+    childWorkItemIds: [],
+    openChildCount: 0,
+    lastChildMutationId: child.id,
+    updatedAt: now + 1,
+  };
+  const c = lifecycleCase(
+    `delete ${completed ? 'completed' : 'open'} child`,
+    'ALLOW',
+    {
+      before: originalChild,
+      reads: { [path('workItems', work.id)]: parentBefore },
+      after: { [path('workItems', work.id)]: parentAfter },
+      checkAudit: true,
+    },
+  );
+  check('delete child updates parent membership ' + completed, 'ALLOW', {
+    method: 'update',
+    before: parentBefore,
+    data: parentAfter,
+    reads: c.reads,
+    after: c.after,
+  });
+  const restoringParent = {
+    ...parentBefore,
+    lastChildMutationId: child.id,
+    updatedAt: now + 2,
+  };
+  const r = lifecycleCase('restore child ' + completed, 'ALLOW', {
+    before: { ...c.data, updatedAt: now },
+    reads: { [path('workItems', work.id)]: parentAfter },
+    after: { [path('workItems', work.id)]: restoringParent },
+  });
+  check('restore child updates parent membership ' + completed, 'ALLOW', {
+    method: 'update',
+    before: parentAfter,
+    data: restoringParent,
+    reads: r.reads,
+    after: r.after,
+  });
+  lifecycleCase(
+    'child cannot delete without parent removal ' + completed,
+    'DENY',
+    {
+      before: originalChild,
+      reads: { [path('workItems', work.id)]: parentBefore },
+    },
+  );
+  lifecycleCase(
+    'child cannot restore below deleted parent ' + completed,
+    'DENY',
+    {
+      before: { ...c.data, updatedAt: now },
+      reads: {
+        [path('workItems', work.id)]: { ...parentAfter, deletedAt: now },
+      },
+      after: {
+        [path('workItems', work.id)]: { ...restoringParent, deletedAt: now },
+      },
+    },
+  );
+}
+
+for (const [workType, nextType] of [
+  ['payment', 'note'],
+  ['subscription', 'service'],
+]) {
+  const before = {
+    ...work,
+    scope: '',
+    workType,
+    farmId: 'farm',
+    farmRecordId: 'record',
+  };
+  check(
+    'financial task cannot change type to bypass deletion ' + workType,
+    'DENY',
+    {
+      method: 'update',
+      before,
+      data: { ...before, workType: nextType, updatedAt: now + 1 },
+      reads: { [path('farmRecords', 'record')]: { id: 'record' } },
+    },
+  );
+}
+for (const name of ['visits', 'checklistItems', 'blockerEpisodes']) {
+  const before = {
+    id: 'retained-record',
+    workItemId: work.id,
+    createdAt: now,
+    updatedAt: now,
+    createdByUid: head.id,
+    updatedByUid: head.id,
+  };
+  const reads = {
+    [path('workItems', work.id)]: deletedWork,
+    [path('workItems', 'active-task')]: { ...work, id: 'active-task' },
+  };
+  check('deleted related record cannot be edited ' + name, 'DENY', {
+    method: 'update',
+    target: path(name, before.id),
+    before,
+    data: { ...before, updatedAt: now + 1 },
+    reads,
+  });
+  check('deleted related record cannot be relinked ' + name, 'DENY', {
+    method: 'update',
+    target: path(name, before.id),
+    before,
+    data: { ...before, workItemId: 'active-task', updatedAt: now + 1 },
+    reads,
+  });
+}
 
 try {
   const options = { project: 'smartfarm-work-manager', nonInteractive: true };

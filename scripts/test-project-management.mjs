@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
+import { webcrypto } from 'node:crypto';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
@@ -49,6 +50,7 @@ function loadCode(code, aliases = {}, globals = {}) {
       exports: module.exports,
       Error,
       Date,
+      crypto: webcrypto,
       ...globals,
       require: (name) =>
         name === 'react' ? hooks : aliases[name] || require(name),
@@ -118,6 +120,7 @@ const alerts = Object.fromEntries(
   ].map((name) => [name, tag('div')]),
 );
 const aliases = {
+  '@/lib/project-farm-progress': load('lib/project-farm-progress.ts'),
   '@/components/ui/button': { Button: button },
   '@/components/ui/input': { Input: input },
   '@/components/ui/table': table,
@@ -136,6 +139,13 @@ const { ProjectDeletionDialog } = load(
   aliases,
 );
 const { ProjectYearSelector } = load('app/farm-kpi-panels.tsx', aliases);
+const lifecycle = load('lib/work-lifecycle.ts', {
+  './organization': load('lib/organization.ts'),
+});
+const { WorkDeletionDialog, DeletedWorkList } = load(
+  'app/work-deletion-controls.tsx',
+  { ...aliases, '@/lib/work-lifecycle': lifecycle },
+);
 const render = (component, props) => {
   cursor = 0;
   return component(props);
@@ -576,11 +586,145 @@ test('추가 팝업 너비가 문자열로 전달되어 설치된 스타일 병�
     /<DialogContent className="max-h-\[92dvh\].*sm:max-w-\[1100px\]/,
   );
 });
+test('업무 삭제는 세부 업무를 먼저 정리하고 확인·복원·중복 저장 방지를 제공한다', async () => {
+  reset();
+  const task = {
+    id: 'work1',
+    title: '검토 업무',
+    workType: 'communication',
+    status: 'open',
+    childWorkItemIds: ['child'],
+  };
+  let tree = render(WorkDeletionDialog, {
+    task,
+    onClose() {},
+    onConfirm() {
+      throw new Error('must not run');
+    },
+  });
+  assert.equal(
+    find(tree, (node) => node.type === alerts.AlertDialogAction).props.disabled,
+    true,
+  );
+  reset();
+  let closed = 0,
+    done;
+  const sent = [];
+  const props = {
+    task: { ...task, childWorkItemIds: [] },
+    onClose: () => closed++,
+    onConfirm: async (...args) => {
+      sent.push(args);
+      await new Promise((resolve) => (done = resolve));
+    },
+  };
+  tree = render(WorkDeletionDialog, props);
+  const action = find(tree, (node) => node.type === alerts.AlertDialogAction);
+  const saving = action.props.onClick();
+  await action.props.onClick();
+  tree = render(WorkDeletionDialog, props);
+  let canceled = false;
+  find(tree, (node) => node.type === alerts.AlertDialog).props.onOpenChange(
+    false,
+    { cancel: () => (canceled = true) },
+  );
+  assert.equal(canceled, true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0][1], true);
+  assert.ok(sent[0][2]);
+  done();
+  await saving;
+  assert.equal(closed, 1);
+  reset();
+  let restored;
+  tree = render(WorkDeletionDialog, {
+    task: { ...task, deletedAt: 10, childWorkItemIds: [] },
+    onClose() {},
+    onConfirm: async (...args) => (restored = args),
+  });
+  await find(
+    tree,
+    (node) => node.type === alerts.AlertDialogAction,
+  ).props.onClick();
+  assert.equal(restored[1], false);
+});
+
+test('삭제된 업무 목록은 관리자·등록자에게만 복원을 보여주며 금융 증빙은 제외한다', () => {
+  const member = {
+    id: 'creator',
+    active: true,
+    email: 'creator@example.test',
+    workspaceId: 'ws',
+  };
+  const tasks = [
+    {
+      id: 'task1',
+      title: '지운 업무',
+      status: 'waiting',
+      workType: 'communication',
+      createdByUid: member.id,
+      deletedAt: 10,
+    },
+    { id: 'task2', title: '원래 업무', status: 'open' },
+  ];
+  for (const [person, count] of [
+    [member, 1],
+    [{ ...member, id: 'assignee' }, 0],
+    [{ ...member, id: 'admin', admin: true }, 1],
+    [{ ...member, active: false }, 0],
+  ]) {
+    reset();
+    const tree = render(DeletedWorkList, {
+      tasks,
+      member: person,
+      contextLabel: () => '내부 업무',
+      onRestore() {},
+    });
+    assert.equal(
+      nodes(tree).filter((node) => node.type === button).length,
+      count,
+    );
+    assert.ok(!renderToStaticMarkup(tree).includes('원래 업무'));
+  }
+  assert.equal(
+    lifecycle.canManageWorkDeletion(
+      { ...tasks[0], workType: 'payment' },
+      { ...member, admin: true },
+    ),
+    false,
+  );
+});
+
+test('날짜 없는 완료 확인도 설치·시운전·교육 KPI와 상세에 반영하되 실제 날짜는 만들지 않는다', () => {
+  reset();
+  const record = farmRecord('a', {
+    stageCompletionConfirmed: {
+      installationDate: true,
+      commissioningDate: true,
+      educationDate: true,
+      confirmedAt: 10,
+      source: '사용자 확인',
+    },
+  });
+  const summary = summarizeProjectFarms([record], 'p1');
+  assert.ok(
+    summary.stages.every(
+      (stage) => stage.rate === 100 && stage.remaining === 0,
+    ),
+  );
+  assert.equal(record.installationDate, '');
+  const props = { progress: summary, farmName: () => '농가' };
+  let tree = render(ProjectFarmProgressCard, props);
+  find(tree, (node) => node.type === button).props.onClick();
+  tree = render(ProjectFarmProgressCard, props);
+  assert.match(renderToStaticMarkup(tree), /완료 확인 · 일자 미기록/);
+});
+
 test('삭제는 서버 최신 문서의 트랜잭션과 감사 기록만 쓰고 연결 컬렉션은 보존한다', () => {
   const store = source('lib/firebase/farm-ledger-store.ts');
   const deletion = store.slice(
     store.indexOf('async function changeProjectDeletion'),
-    store.indexOf('async function createProjectDocument'),
+    store.indexOf('async function changeWorkDeletion'),
   );
   assert.match(deletion, /runTransaction/);
   assert.match(deletion, /transaction.get\(reference\)/);

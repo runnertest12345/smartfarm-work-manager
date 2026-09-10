@@ -418,6 +418,14 @@ export interface FarmRecord {
   installationDate: string;
   commissioningDate: string;
   educationDate: string;
+  /** Verified completion without inventing the original completion dates. */
+  stageCompletionConfirmed?: {
+    installationDate?: boolean;
+    commissioningDate?: boolean;
+    educationDate?: boolean;
+    confirmedAt: number;
+    source: string;
+  };
   internetType: string;
   warrantyYears: number;
   warrantyExpiresAt: string;
@@ -505,6 +513,10 @@ export interface FarmSubscriptionExpiryCorrectionInput {
 
 export interface FarmWorkItem {
   id: string;
+  createdByUid?: string;
+  deletedAt?: number;
+  deletedByUid?: string;
+  workLifecycleEntryId?: string;
   scope?: 'internal';
   assigneeUid?: string;
   assignedByUid?: string;
@@ -652,6 +664,7 @@ export interface FarmInboxItemInput {
 
 export interface FarmHistoryEntry {
   id: string;
+  workLifecycleAction?: 'delete' | 'restore';
   workRequestFingerprint?: string;
   previousWorkStatus?: FarmWorkStatus;
   newWorkStatus?: FarmWorkStatus;

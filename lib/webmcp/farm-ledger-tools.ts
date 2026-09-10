@@ -1,4 +1,5 @@
 'use client';
+import { isActiveWork } from '@/lib/work-lifecycle';
 
 import type { FarmLedgerWorkspace, FarmHistoryChannel } from '@/lib/farm-types';
 import {
@@ -81,10 +82,10 @@ export function registerFarmLedgerTools(
           farms: workspace.farms.length,
           subscribedFarms: subscribedFarmIds.size,
           openWorkItems: workspace.workItems.filter(
-            (item) => item.status !== 'completed',
+            (item) => isActiveWork(item) && item.status !== 'completed',
           ).length,
           blockedWorkItems: workspace.workItems.filter(
-            (item) => item.status === 'waiting',
+            (item) => isActiveWork(item) && item.status === 'waiting',
           ).length,
           unprocessedInboxItems: workspace.inboxItems.filter(
             (item) => item.status === 'unprocessed',
