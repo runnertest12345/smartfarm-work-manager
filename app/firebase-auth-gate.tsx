@@ -1,20 +1,18 @@
 'use client';
 
 import { type SubmitEvent, useEffect, useRef, useState } from 'react';
+import Image from 'next/image';
 import {
-  GoogleAuthProvider,
   onIdTokenChanged,
   reload,
   sendEmailVerification,
-  sendPasswordResetEmail,
   signInWithEmailAndPassword,
-  signInWithPopup,
   signOut,
   updatePassword,
   type User,
 } from 'firebase/auth';
 import { doc, onSnapshot } from 'firebase/firestore';
-import { Leaf, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -47,14 +45,18 @@ function AuthCard({ children }: { children: React.ReactNode }) {
   return (
     <main className="grid min-h-screen place-items-center bg-slate-100 px-5 py-10 text-slate-900">
       <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
-        <div className="mb-7 flex items-center gap-3">
-          <div className="grid size-11 place-items-center rounded-xl bg-[#2f7b59] text-white">
-            <Leaf />
-          </div>
-          <div>
-            <p className="font-bold">팜로그</p>
-            <p className="text-sm text-slate-600">스마트팜 업무관리</p>
-          </div>
+        <div className="mb-7 flex items-center gap-4">
+          <Image
+            src="/farmos-ci.png"
+            alt="FarmOS 파모스"
+            width={2480}
+            height={2266}
+            unoptimized
+            className="h-auto w-20 shrink-0 object-contain sm:w-24"
+          />
+          <p className="break-keep text-base font-semibold leading-7 text-slate-700">
+            파모스 업무관리 프로그램
+          </p>
         </div>
         {children}
       </section>
@@ -68,11 +70,12 @@ export function FirebaseAuthGate() {
   );
   const [user, setUser] = useState<User | null>(null);
   const [member, setMember] = useState<AppMember | null>(null);
-  const [mode, setMode] = useState<'login' | 'email_login' | 'shared'>('login');
+  const [mode, setMode] = useState<'login' | 'shared'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [registrationHelpOpen, setRegistrationHelpOpen] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordChangedUid, setPasswordChangedUid] = useState('');
@@ -203,11 +206,7 @@ export function FirebaseAuthGate() {
       const { auth } = getFirebaseServices();
       await signInWithEmailAndPassword(
         auth,
-        mode === 'shared'
-          ? SHARED_ACCESS_EMAIL
-          : mode === 'email_login'
-            ? email.trim()
-            : loginEmail(email),
+        mode === 'shared' ? SHARED_ACCESS_EMAIL : loginEmail(email),
         password,
       );
       setPassword('');
@@ -383,15 +382,14 @@ export function FirebaseAuthGate() {
     return (
       <AuthCard>
         <h1 className="text-xl font-bold">
-          {mode === 'shared' ? '기존 공용 접속' : '개인 계정 로그인'}
+          {mode === 'shared' ? '기존 공용 접속' : '로그인'}
         </h1>
-        <p className="mt-2 text-sm leading-6 text-slate-600">
-          {mode === 'shared'
-            ? '공용 접속에서는 개인 업무 배정과 부서장 지시 기능을 사용할 수 없습니다.'
-            : mode === 'email_login'
-              ? '기존 이메일 계정으로 로그인합니다.'
-              : '이메일 없이 아이디로 담당 업무와 부서장 지시를 확인합니다.'}
-        </p>
+        {mode === 'shared' && (
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            공용 접속에서는 개인 업무 배정과 부서장 지시 기능을 사용할 수
+            없습니다.
+          </p>
+        )}
         <p className="mt-2 text-sm text-slate-600">
           외부 회원가입은 제공하지 않습니다. 계정은 러너·평화에게 문의해 주세요.
         </p>
@@ -401,12 +399,10 @@ export function FirebaseAuthGate() {
         >
           {mode !== 'shared' && (
             <div>
-              <Label htmlFor="auth-email">
-                {mode === 'email_login' ? '이메일' : '아이디'}
-              </Label>
+              <Label htmlFor="auth-email">아이디</Label>
               <Input
                 id="auth-email"
-                type={mode === 'email_login' ? 'email' : 'text'}
+                type="text"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 required
@@ -414,11 +410,7 @@ export function FirebaseAuthGate() {
                 autoComplete="username"
                 autoCapitalize="none"
                 spellCheck={false}
-                placeholder={
-                  mode === 'email_login'
-                    ? '기존 이메일'
-                    : '예: 평화 (한글·영문·숫자·밑줄 2~10자)'
-                }
+                placeholder="예: 러너 (초기 비밀번호: 1234567)"
               />
             </div>
           )}
@@ -447,58 +439,30 @@ export function FirebaseAuthGate() {
             type="button"
             variant="ghost"
             disabled={busy}
-            onClick={() =>
-              void run(async () => {
-                if (mode !== 'email_login')
-                  throw new Error(
-                    '아이디 계정은 관리자에게 비밀번호 재설정을 요청해 주세요. 이메일은 필요하지 않습니다.',
-                  );
-                if (!email.trim()) throw new Error('이메일을 입력해 주세요.');
-                if (loginIdFromEmail(email.trim()))
-                  throw new Error(
-                    '아이디 계정은 관리자에게 비밀번호 재설정을 요청해 주세요.',
-                  );
-                await sendPasswordResetEmail(
-                  getFirebaseServices().auth,
-                  email.trim(),
-                );
-              }, '등록된 이메일이라면 비밀번호 재설정 메일이 발송됩니다.')
-            }
+            aria-expanded={registrationHelpOpen}
+            aria-controls="registration-request-help"
+            onClick={() => setRegistrationHelpOpen((open) => !open)}
           >
-            비밀번호 찾기
+            회원가입 요청
           </Button>
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          className="mt-2 w-full"
-          disabled={busy}
-          onClick={() => {
-            setMode(mode === 'email_login' ? 'login' : 'email_login');
-            setEmail('');
-            setPassword('');
-            setMessage('');
-          }}
-        >
-          {mode === 'email_login'
-            ? '아이디 로그인으로'
-            : '기존 이메일 계정 로그인'}
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          className="mt-4 w-full"
-          disabled={busy}
-          onClick={() =>
-            void run(async () => {
-              const provider = new GoogleAuthProvider();
-              provider.setCustomParameters({ prompt: 'select_account' });
-              await signInWithPopup(getFirebaseServices().auth, provider);
-            })
-          }
-        >
-          기존 Google 계정 로그인
-        </Button>
+        {registrationHelpOpen && (
+          <section
+            id="registration-request-help"
+            aria-label="회원가입 요청 안내"
+            className="mt-3 space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6"
+          >
+            <h2 className="font-semibold">회원가입 요청 안내</h2>
+            <p>
+              이름·부서·희망 아이디를 러너 또는 평화에게 전달해 주세요. 담당자가
+              확인한 후 계정을 등록합니다.
+            </p>
+            <p className="text-slate-600">
+              이 화면에서는 요청이 자동 전송되거나 계정이 생성되지 않습니다.
+              비밀번호 재설정도 담당자에게 문의해 주세요.
+            </p>
+          </section>
+        )}
         <Button
           type="button"
           variant="ghost"
@@ -510,7 +474,7 @@ export function FirebaseAuthGate() {
             setMessage('');
           }}
         >
-          {mode === 'shared' ? '개인 계정 로그인으로' : '기존 공용 접속'}
+          {mode === 'shared' ? '로그인으로' : '기존 공용 접속'}
         </Button>
       </AuthCard>
     );

@@ -1,6 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent,
+  type ReactNode,
+} from 'react';
 import {
   GripVertical,
   ChevronDown,
@@ -61,6 +67,7 @@ import {
 } from '@/lib/farm-types';
 import { isStandaloneWork, isHeadPriority } from '@/lib/project-work';
 import { buildWorkHierarchy } from '@/lib/work-hierarchy';
+import { buildWorkBoardGroups, workBoardDropIntent } from '@/lib/work-board';
 import { ReceivedContentInput } from './received-images';
 import type { ReceivedImage } from '@/lib/received-images';
 import { WorkBoard } from './work-board';
@@ -574,9 +581,13 @@ export function WorkTaskSurface({
   const [over, setOver] = useState<FarmWorkStatus | null>(null);
   const [savingId, setSavingId] = useState('');
   const [notice, setNotice] = useState('');
+  const [moveChoice, setMoveChoice] = useState<{
+    id: string;
+    status: FarmWorkStatus;
+  } | null>(null);
   const surfaceElement = useRef<HTMLDivElement>(null);
   const editorTrigger = useRef<HTMLElement | null>(null);
-  const editorOpen = Boolean(editing);
+  const editorOpen = Boolean(editing || moveChoice);
   useEffect(() => {
     if (
       !editing ||
@@ -585,7 +596,7 @@ export function WorkTaskSurface({
       return;
     // Close an editor whose task was removed by the live subscription.
     let current = true;
-    Promise.resolve().then(() => {
+    void Promise.resolve().then(() => {
       if (current) setEditing(null);
     });
     return () => {
@@ -615,8 +626,9 @@ export function WorkTaskSurface({
         : null;
     setEditing({ id: item.id, status });
   }
-  function openItem(item: FarmWorkItem) {
-    if (editing || savingId) {
+  function openItem(item: FarmWorkItem, clickedAt: number) {
+    if (clickedAt - lastDrag.current <= 500) return;
+    if (editing || savingId || moveChoice) {
       setNotice(
         '작성 중인 내용을 적용하거나 취소한 뒤 다른 업무를 열어 주세요.',
       );
@@ -637,24 +649,6 @@ export function WorkTaskSurface({
       else next.add(id);
       return next;
     });
-  const editor = (item: FarmWorkItem) =>
-    editing?.id === item.id ? (
-      <WorkQuickEditor
-        popup
-        returnFocus={() =>
-          editorTrigger.current?.isConnected
-            ? editorTrigger.current
-            : surfaceElement.current
-        }
-        key={`${item.id}-${editing.status || ''}`}
-        task={item}
-        initialStatus={editing.status}
-        statusLocked={!canEdit(item)}
-        recorder={recorder}
-        onSave={onSave}
-        onCancel={() => setEditing(null)}
-      />
-    ) : null;
   const status = (item: FarmWorkItem) => (
     <span
       className={`inline-block rounded-full px-2.5 py-1 text-sm font-medium ${statusColors[item.status]}`}
@@ -669,7 +663,7 @@ export function WorkTaskSurface({
         size="sm"
         variant="outline"
         aria-label={`${item.title} 빠른 수정`}
-        disabled={Boolean(savingId || editing)}
+        disabled={Boolean(savingId || editing || moveChoice)}
         onClick={() => beginEdit(item)}
       >
         <Pencil className="size-4" />
@@ -685,7 +679,7 @@ export function WorkTaskSurface({
             item.status === 'completed' ||
             isClosed(item) ||
             !canEdit(item) ||
-            Boolean(savingId || editing)
+            Boolean(savingId || editing || moveChoice)
           }
           onClick={() => onAddChild(item)}
         >
@@ -693,7 +687,7 @@ export function WorkTaskSurface({
           세부 업무
         </Button>
       )}
-      {deleteAction?.(item, Boolean(savingId || editing))}
+      {deleteAction?.(item, Boolean(savingId || editing || moveChoice))}
     </div>
   );
   const historySummary = (item: FarmWorkItem) => {
@@ -726,32 +720,50 @@ export function WorkTaskSurface({
       </p>
     );
   };
+  function beginDrag(
+    item: FarmWorkItem,
+    event: DragEvent<HTMLElement>,
+    occurredAt: number,
+  ) {
+    event.stopPropagation();
+    if (
+      editing ||
+      savingId ||
+      moveChoice ||
+      dragLock.current ||
+      !canEdit(item)
+    ) {
+      event.preventDefault();
+      return;
+    }
+    lastDrag.current = occurredAt;
+    editorTrigger.current = surfaceElement.current;
+    setNotice('');
+    setDragged(item);
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-farmlog-work', item.id);
+  }
+  function endDrag(occurredAt: number) {
+    setDragged(null);
+    setOver(null);
+    lastDrag.current = occurredAt;
+  }
   const handle = (item: FarmWorkItem) => {
-    // A family is positioned by its executable tasks, not by a bulk status write.
-    if (tree.children.get(item.id)?.length || item.childWorkItemIds?.length)
+    // Root families use a chooser. Nested parents keep the explicit status editor.
+    if (
+      item.parentWorkItemId &&
+      (tree.children.get(item.id)?.length || item.childWorkItemIds?.length)
+    )
       return null;
     return (
       <button
         type="button"
-        draggable={!savingId && !editing && canEdit(item)}
+        draggable={!savingId && !editing && !moveChoice && canEdit(item)}
         aria-label={`${item.title} 이동 또는 상태 선택`}
-        title="드래그로 상태 이동 · 클릭하여 상태 선택"
-        onDragStart={(event) => {
-          if (editing || savingId || !canEdit(item)) {
-            event.preventDefault();
-            return;
-          }
-          lastDrag.current = Date.now();
-          setDragged(item);
-          event.dataTransfer.effectAllowed = 'move';
-          event.dataTransfer.setData('application/x-farmlog-work', item.id);
-        }}
-        onDragEnd={() => {
-          setDragged(null);
-          setOver(null);
-          lastDrag.current = Date.now();
-        }}
-        disabled={Boolean(savingId || editing) || !canEdit(item)}
+        title="드래그로 상태 이동 · 클릭하여 빠른 수정"
+        onDragStart={(event) => beginDrag(item, event, Date.now())}
+        onDragEnd={() => endDrag(Date.now())}
+        disabled={Boolean(savingId || editing || moveChoice) || !canEdit(item)}
         onClick={() => {
           if (Date.now() - lastDrag.current > 500) beginEdit(item);
         }}
@@ -766,7 +778,14 @@ export function WorkTaskSurface({
     setDragged(null);
     setOver(null);
     lastDrag.current = occurredAt;
-    if (!item || item.status === status || dragLock.current) return;
+    if (!item || dragLock.current || savingId || moveChoice) return;
+    const current = tree.byId.get(item.id);
+    if (!current || current.deletedAt || current.updatedAt !== item.updatedAt) {
+      setNotice(
+        '업무가 변경되었거나 삭제되었습니다. 최신 내용을 확인하고 다시 이동해 주세요.',
+      );
+      return;
+    }
     if (!canEdit(item)) {
       setNotice('완료된 사업 또는 상위 업무를 먼저 다시 열어 주세요.');
       return;
@@ -775,6 +794,33 @@ export function WorkTaskSurface({
       setNotice('작성 중인 빠른 수정을 적용하거나 취소한 뒤 이동해 주세요.');
       return;
     }
+    const group = buildWorkBoardGroups(allItems).find(
+      (group) => group.item.id === item.id,
+    );
+    if (group) {
+      const intent = workBoardDropIntent(group, status);
+      if (intent === 'blocked') {
+        setNotice(
+          '세부 업무 연결을 확인한 후 이동해 주세요. 상태는 변경하지 않았습니다.',
+        );
+        return;
+      }
+      if (intent === 'none') return;
+      if (intent === 'confirm' || intent === 'reopen') {
+        beginEdit(item, intent === 'confirm' ? 'completed' : 'in_progress');
+        setNotice(
+          intent === 'confirm'
+            ? '세부 업무가 모두 완료되었습니다. 상위 업무의 최종 완료를 확인하고 적용해 주세요.'
+            : '완료된 상위 업무를 먼저 다시 열어 주세요. 세부 업무는 자동으로 변경하지 않습니다.',
+        );
+        return;
+      }
+      if (intent === 'choose') {
+        setMoveChoice({ id: item.id, status });
+        return;
+      }
+    }
+    if (item.status === status) return;
     if (status === 'waiting' || item.status === 'waiting') {
       beginEdit(item, status);
       setNotice('대기 사유 또는 해제 내용을 입력하고 적용해 주세요.');
@@ -835,11 +881,31 @@ export function WorkTaskSurface({
         .some((parent) => collapsed.has(parent.id) && visible.has(parent.id))
     )
       visit(item, 0);
+  const movingGroup = moveChoice
+    ? buildWorkBoardGroups(allItems).find(
+        (group) => group.item.id === moveChoice.id,
+      )
+    : undefined;
+  const moveOptions =
+    movingGroup?.rows.slice(1).filter(({ item }) => {
+      if (item.status === moveChoice?.status) return false;
+      const hasChildren = Boolean(
+        tree.children.get(item.id)?.length || item.childWorkItemIds?.length,
+      );
+      return (
+        !hasChildren ||
+        (moveChoice?.status === 'completed' &&
+          !(item.openChildCount || 0) &&
+          tree
+            .descendants(item.id)
+            .every((child) => child.status === 'completed'))
+      );
+    }) ?? [];
   return (
     <div ref={surfaceElement} tabIndex={-1} className="space-y-3">
       <p className="text-sm text-slate-600">
         {mode === 'board'
-          ? '업무명만 간단히 표시합니다. 상세 보기를 펼치면 담당자·기한·세부 업무와 빠른 수정을 사용할 수 있습니다. 세부 상태에 따라 카드가 자동 배치되며, 펼친 카드의 손잡이로 실행 업무를 이동할 수 있습니다.'
+          ? '프로젝트명과 업무명을 표시합니다. 카드 제목이나 손잡이를 잡아 원하는 상태 열로 옮기세요. 세부 업무가 있으면 이동할 업무를 선택합니다. 상세 보기에서 담당자·기한·처리 내용을 확인하고 수정할 수 있습니다.'
           : '업무를 펼쳐 세부 업무를 확인하고, 현재 목록에서 바로 수정하세요.'}
       </p>
       {notice && (
@@ -850,15 +916,102 @@ export function WorkTaskSurface({
           {notice}
         </output>
       )}
-      {editing &&
-        tree.byId.get(editing.id) &&
-        editor(tree.byId.get(editing.id)!)}
+      {editing && tree.byId.get(editing.id) && (
+        <WorkQuickEditor
+          popup
+          returnFocus={() =>
+            editorTrigger.current?.isConnected
+              ? editorTrigger.current
+              : surfaceElement.current
+          }
+          key={`${editing.id}-${editing.status || ''}`}
+          task={tree.byId.get(editing.id)!}
+          initialStatus={editing.status}
+          statusLocked={!canEdit(tree.byId.get(editing.id)!)}
+          recorder={recorder}
+          onSave={onSave}
+          onCancel={() => setEditing(null)}
+        />
+      )}
+      {moveChoice && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setMoveChoice(null);
+          }}
+        >
+          <DialogContent
+            className="sm:max-w-xl"
+            finalFocus={() => surfaceElement.current}
+            showCloseButton={false}
+          >
+            <DialogHeader>
+              <DialogTitle>이동할 세부 업무 선택</DialogTitle>
+              <DialogDescription>
+                ‘{movingGroup?.item.title || '업무'}’에서{' '}
+                {FARM_WORK_STATUS_LABELS[moveChoice.status]}(으)로 변경할 업무를
+                선택하세요. 선택한 업무만 수정하며, 상위 카드의 위치는 세부 업무
+                상태에 따라 결정됩니다.
+              </DialogDescription>
+            </DialogHeader>
+            {!movingGroup || movingGroup.missing ? (
+              <output>
+                업무가 삭제되었거나 연결이 변경되었습니다. 창을 닫고 최신 내용을
+                확인해 주세요.
+              </output>
+            ) : (
+              <div
+                className="max-h-[50vh] space-y-2 overflow-y-auto"
+                aria-label="이동할 세부 업무"
+              >
+                {moveOptions.map(({ item, depth }) => (
+                  <Button
+                    key={item.id}
+                    aria-label={`${item.title} ${FARM_WORK_STATUS_LABELS[moveChoice.status]}로 이동`}
+                    variant="outline"
+                    className="h-auto min-h-12 w-full justify-between gap-3 whitespace-normal py-3 text-left"
+                    disabled={!canEdit(item)}
+                    onClick={() => {
+                      setMoveChoice(null);
+                      beginEdit(item, moveChoice.status);
+                    }}
+                  >
+                    <span className="min-w-0 break-words">
+                      {depth > 1 ? '↳ ' : ''}
+                      {item.title}
+                      <span className="mt-1 block text-xs font-normal text-slate-500">
+                        {item.owner || '담당자 미지정'}
+                        {!canEdit(item)
+                          ? ' · 완료된 상위 업무를 먼저 다시 열어 주세요'
+                          : ''}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-xs">
+                      {FARM_WORK_STATUS_LABELS[item.status]} →{' '}
+                      {FARM_WORK_STATUS_LABELS[moveChoice.status]}
+                    </span>
+                  </Button>
+                ))}
+                {moveOptions.length === 0 && (
+                  <p>
+                    이동 가능한 세부 업무가 없습니다. 상세 보기에서 상위 업무의
+                    완료 확인 상태를 확인해 주세요.
+                  </p>
+                )}
+              </div>
+            )}
+            <Button variant="outline" onClick={() => setMoveChoice(null)}>
+              취소
+            </Button>
+          </DialogContent>
+        </Dialog>
+      )}
       {mode === 'board' ? (
         <WorkBoard
           items={items}
           allItems={allItems}
           searching={searching}
-          busy={Boolean(editing || savingId)}
+          busy={Boolean(editing || savingId || moveChoice)}
           dragged={Boolean(dragged)}
           over={over}
           savingId={savingId}
@@ -866,9 +1019,11 @@ export function WorkTaskSurface({
           onOpen={openItem}
           onEdit={beginEdit}
           onOver={setOver}
-          onDrop={(column) => {
-            void drop(column, Date.now());
+          onDrop={(column, occurredAt) => {
+            void drop(column, occurredAt);
           }}
+          onDragStart={beginDrag}
+          onDragEnd={endDrag}
           handle={handle}
           actions={actions}
           historySummary={historySummary}
@@ -894,7 +1049,7 @@ export function WorkTaskSurface({
                   hasChildren={Boolean(tree.children.get(item.id)?.length)}
                   expanded={!collapsed.has(item.id) || !visible.has(item.id)}
                   onToggle={() => toggle(item.id)}
-                  onOpen={() => openItem(item)}
+                  onOpen={() => openItem(item, Date.now())}
                   projectLabel={projectLabel(item)}
                   parentTitle={
                     tree.byId.get(item.parentWorkItemId || '')?.title

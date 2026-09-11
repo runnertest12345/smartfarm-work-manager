@@ -1,6 +1,8 @@
 // Trusted operator only. Never put this script or CLI credentials in the static site.
 // inspect: read exact targets; provision: stdin temporary password, create-only;
 // close-signup: disable end-user signup only, preserving other project settings.
+// rotate-initial-password: explicit operator authorization only; stdin JSON old/new,
+// skip changed accounts and prove the old temporary password before any update.
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -118,7 +120,15 @@ try {
     );
     process.exit(0);
   }
-  if (!['inspect', 'provision', 'verify', 'verify-login'].includes(mode))
+  if (
+    ![
+      'inspect',
+      'provision',
+      'verify',
+      'verify-login',
+      'rotate-initial-password',
+    ].includes(mode)
+  )
     throw new Error('Unknown mode');
   const lookup = async (person) => {
     const response = await identity.post(
@@ -185,6 +195,138 @@ try {
     }),
   );
   if (mode === 'inspect') process.exit(0);
+  if (mode === 'rotate-initial-password') {
+    if (
+      config.client?.permissions?.disabledUserSignup !== true ||
+      targets.some((t) => !t.existing || !t.doc)
+    )
+      throw new Error('Expected closed signup and three existing identities');
+    const passwords = JSON.parse(readFileSync(0, 'utf8'));
+    if (
+      typeof passwords.old !== 'string' ||
+      typeof passwords.new !== 'string' ||
+      passwords.old.length < 6 ||
+      passwords.new.length < 6 ||
+      passwords.old === passwords.new
+    )
+      throw new Error('Two distinct temporary passwords are required');
+    const publicIdentity = new Client({
+      urlPrefix: 'https://identitytoolkit.googleapis.com',
+      auth: false,
+    });
+    const requestOptions = () => ({
+      ...hidden(),
+      queryParams: { key: env('NEXT_PUBLIC_FIREBASE_API_KEY') },
+    });
+    for (const target of targets) {
+      const { person } = target;
+      if (
+        decode(await readDoc(memberPath(person.uid))).passwordChangeRequired !==
+        true
+      ) {
+        console.log(
+          JSON.stringify({
+            name: person.name,
+            result: 'skipped-personal-password',
+          }),
+        );
+        continue;
+      }
+      const before = await lookup(person);
+      if (!before || before.disabled)
+        throw new Error(`Unavailable account: ${person.name}`);
+      let proof;
+      try {
+        proof = (
+          await publicIdentity.post(
+            '/v1/accounts:signInWithPassword',
+            {
+              email: person.email,
+              password: passwords.old,
+              returnSecureToken: true,
+            },
+            requestOptions(),
+          )
+        ).body;
+      } catch (error) {
+        if (
+          ['INVALID_LOGIN_CREDENTIALS', 'INVALID_PASSWORD'].includes(
+            error.context?.body?.error?.message,
+          )
+        ) {
+          console.log(
+            JSON.stringify({
+              name: person.name,
+              result: 'skipped-initial-password-no-longer-matches',
+            }),
+          );
+          continue;
+        }
+        throw error;
+      }
+      if (proof.localId !== person.uid || !proof.idToken)
+        throw new Error(`Identity proof mismatch: ${person.name}`);
+      // Recheck both live sources just before changing Auth. Never clear the first-login gate.
+      const latest = await lookup(person);
+      const latestMember = await readDoc(memberPath(person.uid));
+      if (
+        !latest ||
+        latest.disabled ||
+        latest.passwordUpdatedAt !== before.passwordUpdatedAt ||
+        latestMember?.updateTime !== target.doc.updateTime ||
+        decode(latestMember).passwordChangeRequired !== true
+      ) {
+        console.log(
+          JSON.stringify({
+            name: person.name,
+            result: 'skipped-concurrent-account-change',
+          }),
+        );
+        continue;
+      }
+      await publicIdentity.post(
+        '/v1/accounts:update',
+        {
+          idToken: proof.idToken,
+          password: passwords.new,
+          returnSecureToken: true,
+        },
+        requestOptions(),
+      );
+      const verified = (
+        await publicIdentity.post(
+          '/v1/accounts:signInWithPassword',
+          {
+            email: person.email,
+            password: passwords.new,
+            returnSecureToken: true,
+          },
+          requestOptions(),
+        )
+      ).body;
+      if (verified.localId !== person.uid || !verified.idToken)
+        throw new Error(`Updated login not verified: ${person.name}`);
+      const afterDoc = await readDoc(memberPath(person.uid));
+      if (
+        afterDoc?.updateTime !== target.doc.updateTime ||
+        decode(afterDoc).passwordChangeRequired !== true
+      )
+        throw new Error(
+          `Membership changed concurrently after password update: ${person.name}`,
+        );
+      console.log(
+        JSON.stringify({
+          name: person.name,
+          result: 'updated-initial-password',
+          firstLoginChangeRequired: true,
+        }),
+      );
+    }
+    console.log(
+      'Password rotation finished. Roles, memberships and business data were not written.',
+    );
+    process.exit(0);
+  }
   if (mode === 'verify-login') {
     if (
       config.client?.permissions?.disabledUserSignup !== true ||

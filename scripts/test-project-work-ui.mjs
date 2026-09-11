@@ -360,7 +360,11 @@ test('KPI drilldown은 프로젝트 업무로 제한하고 일반 업무 목록�
     new URL('../app/farm-ledger-dashboard.tsx', import.meta.url),
     'utf8',
   );
-  assert.match(source, /return operationalWorkItems\s*\.filter/);
+  assert.match(
+    source,
+    /operationalWorkItems\.filter|operationalWorkItems\s*\.filter/,
+  );
+  assert.match(source, /return workSelectionItems\s*\.filter/);
   assert.match(
     source,
     /if \(workScope && !isProjectTask\(workItem\)\) return false/,
@@ -370,4 +374,64 @@ test('KPI drilldown은 프로젝트 업무로 제한하고 일반 업무 목록�
     source,
     /!submitting && !imagesBusy && setDialog\(open \? 'inbox' : null\)/,
   );
+});
+
+test('내부·프로젝트·농가 업무는 연결 대상에 따라 중복 없이 분류한다', () => {
+  const samples = [
+    {
+      id: 'internal',
+      scope: 'internal',
+      workType: 'communication',
+      projectId: '',
+      farmRecordId: '',
+    },
+    {
+      id: 'project',
+      workType: 'communication',
+      projectId: 'project-1',
+      farmRecordId: '',
+    },
+    {
+      id: 'farm',
+      workType: 'service',
+      projectId: 'project-1',
+      farmRecordId: 'record-1',
+    },
+  ];
+  for (const source of ['internal', 'project', 'farm']) {
+    assert.equal(
+      samples
+        .filter((item) => work.workMatchesSource(item, source))
+        .map((item) => item.id)
+        .join(','),
+      source,
+    );
+  }
+  assert.equal(
+    samples.filter((item) => work.workMatchesSource(item, 'all')).length,
+    3,
+  );
+});
+
+test('구분·담당 범위는 KPI와 목록에 같이 적용하며 보드의 전체 계층 원본은 유지한다', () => {
+  const source = readFileSync(
+    new URL('../app/farm-ledger-dashboard.tsx', import.meta.url),
+    'utf8',
+  );
+  const selection = source.slice(
+    source.indexOf('const workSelectionItems'),
+    source.indexOf('const filteredWorkItems'),
+  );
+  assert.ok(
+    selection.includes('workMatchesSource(workItem, workSourceFilter)'),
+  );
+  assert.ok(selection.includes("workAccountFilter === 'head'"));
+  for (const field of [
+    'workSelectionOpenCount',
+    'workSelectionOverdueCount',
+    'workSelectionDueSoonCount',
+  ])
+    assert.ok(source.includes(`{${field}}건`));
+  assert.ok(source.includes('allItems={operationalWorkItems}'));
+  assert.ok(source.includes('aria-pressed={workSourceFilter === source}'));
 });

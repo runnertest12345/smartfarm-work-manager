@@ -174,6 +174,9 @@ import {
   isProjectTask,
   isOperationalWork,
   workProjectId,
+  workMatchesSource,
+  WORK_SOURCE_LABELS,
+  type WorkSourceFilter,
 } from '@/lib/project-work';
 import type { ReceivedImage } from '@/lib/received-images';
 import { ReceivedContentInput, ReceivedImages } from './received-images';
@@ -1109,9 +1112,8 @@ export function FarmLedgerDashboard({
 }: FarmLedgerDashboardProps) {
   const organization = useOrganization(member);
   const [taskRegistrationOpen, setTaskRegistrationOpen] = useState(false);
-  const [workSourceFilter, setWorkSourceFilter] = useState<
-    'all' | 'internal' | 'project'
-  >('all');
+  const [workSourceFilter, setWorkSourceFilter] =
+    useState<WorkSourceFilter>('all');
   const [workAccountFilter, setWorkAccountFilter] = useState<
     'all' | 'mine' | 'department' | 'head'
   >('all');
@@ -2019,15 +2021,10 @@ export function FarmLedgerDashboard({
     workspace.farms,
   ]);
 
-  const filteredWorkItems = useMemo(() => {
-    const query = workSearch.trim().toLocaleLowerCase('ko-KR');
-    return operationalWorkItems
-      .filter((workItem) => {
-        if (workScope && !isProjectTask(workItem)) return false;
-        if (workSourceFilter === 'internal' && !isInternalTask(workItem))
-          return false;
-        if (workSourceFilter === 'project' && isInternalTask(workItem))
-          return false;
+  const workSelectionItems = useMemo(
+    () =>
+      operationalWorkItems.filter((workItem) => {
+        if (!workMatchesSource(workItem, workSourceFilter)) return false;
         if (workAccountFilter === 'mine' && workItem.assigneeUid !== member?.id)
           return false;
         if (
@@ -2041,6 +2038,38 @@ export function FarmLedgerDashboard({
           (!isHeadPriority(workItem) || workItem.assigneeUid !== member?.id)
         )
           return false;
+        return true;
+      }),
+    [
+      operationalWorkItems,
+      workSourceFilter,
+      workAccountFilter,
+      member?.id,
+      member?.departmentId,
+    ],
+  );
+  const workSelectionIds = new Set(workSelectionItems.map((item) => item.id));
+  const workSelectionLeaves = operationalLeafItems.filter((item) =>
+    workSelectionIds.has(item.id),
+  );
+  const workSelectionOpenCount = workSelectionLeaves.filter(
+    (item) => item.status !== 'completed',
+  ).length;
+  const workSelectionOverdueCount = workSelectionLeaves.filter((item) => {
+    const days = daysUntil(item.dueDate);
+    return item.status !== 'completed' && days !== null && days < 0;
+  }).length;
+  const workSelectionDueSoonCount = workSelectionLeaves.filter((item) => {
+    const days = daysUntil(item.dueDate);
+    return (
+      item.status !== 'completed' && days !== null && days >= 0 && days <= 7
+    );
+  }).length;
+  const filteredWorkItems = useMemo(() => {
+    const query = workSearch.trim().toLocaleLowerCase('ko-KR');
+    return workSelectionItems
+      .filter((workItem) => {
+        if (workScope && !isProjectTask(workItem)) return false;
         if (
           workScope &&
           workScope.status !== 'all' &&
@@ -2107,12 +2136,8 @@ export function FarmLedgerDashboard({
     workMode,
     workTypeFilter,
     workScope,
-    workSourceFilter,
-    workAccountFilter,
-    member?.id,
-    member?.departmentId,
     subscriptionToday,
-    operationalWorkItems,
+    workSelectionItems,
     workHierarchy,
     projectById,
     recordById,
@@ -2163,12 +2188,6 @@ export function FarmLedgerDashboard({
   const overdueWorkItems = operationalLeafItems.filter((workItem) => {
     const days = daysUntil(workItem.dueDate);
     return workItem.status !== 'completed' && days !== null && days < 0;
-  });
-  const dueSoonWorkItems = operationalLeafItems.filter((workItem) => {
-    const days = daysUntil(workItem.dueDate);
-    return (
-      workItem.status !== 'completed' && days !== null && days >= 0 && days <= 7
-    );
   });
   const pendingResponseWorkItems = operationalLeafItems
     .filter(
@@ -6126,43 +6145,40 @@ export function FarmLedgerDashboard({
                       {(workMode === 'board' || workMode === 'list') && (
                         <>
                           <div className="mb-4 flex flex-wrap gap-3 rounded-xl border bg-white p-4">
-                            <div className="min-w-44">
-                              <label
-                                htmlFor="work-source"
+                            <div className="min-w-0">
+                              <p
+                                id="work-source-label"
                                 className="mb-1 block text-sm font-medium"
                               >
                                 업무 구분
-                              </label>
-                              <Select
-                                value={workSourceFilter}
-                                onValueChange={(value) => {
-                                  setWorkSourceFilter(
-                                    value as 'all' | 'internal' | 'project',
-                                  );
-                                  setWorkScope(null);
-                                }}
+                              </p>
+                              <fieldset
+                                aria-labelledby="work-source-label"
+                                className="flex flex-wrap gap-2"
                               >
-                                <SelectTrigger id="work-source">
-                                  <SelectValue>
-                                    {
-                                      {
-                                        all: '전체 업무',
-                                        internal: '내부 업무',
-                                        project: '프로젝트·농가 업무',
-                                      }[workSourceFilter]
+                                {(
+                                  Object.keys(
+                                    WORK_SOURCE_LABELS,
+                                  ) as WorkSourceFilter[]
+                                ).map((source) => (
+                                  <Button
+                                    key={source}
+                                    type="button"
+                                    variant={
+                                      workSourceFilter === source
+                                        ? 'default'
+                                        : 'outline'
                                     }
-                                  </SelectValue>
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="all">전체 업무</SelectItem>
-                                  <SelectItem value="internal">
-                                    내부 업무
-                                  </SelectItem>
-                                  <SelectItem value="project">
-                                    프로젝트·농가 업무
-                                  </SelectItem>
-                                </SelectContent>
-                              </Select>
+                                    aria-pressed={workSourceFilter === source}
+                                    onClick={() => {
+                                      setWorkSourceFilter(source);
+                                      setWorkScope(null);
+                                    }}
+                                  >
+                                    {WORK_SOURCE_LABELS[source]}
+                                  </Button>
+                                ))}
+                              </fieldset>
                             </div>
                             <div className="min-w-44">
                               <label
@@ -6231,6 +6247,13 @@ export function FarmLedgerDashboard({
                               </Button>
                             )}
                           </div>
+                          {!workScope && (
+                            <p className="mb-2 text-sm text-slate-600">
+                              {WORK_SOURCE_LABELS[workSourceFilter]} · 선택한
+                              담당 범위의 실행 업무 기준 · 검색 조건은 목록에만
+                              적용
+                            </p>
+                          )}
                           <div
                             className={
                               workScope
@@ -6244,7 +6267,7 @@ export function FarmLedgerDashboard({
                                   미완료 업무
                                 </p>
                                 <p className="mt-1 text-2xl font-bold">
-                                  {openWorkItems}건
+                                  {workSelectionOpenCount}건
                                 </p>
                                 <p className="mt-1 text-[11px] text-[#89938c]">
                                   접수·처리 중·대기·막힘
@@ -6257,7 +6280,7 @@ export function FarmLedgerDashboard({
                                   마감 지연
                                 </p>
                                 <p className="mt-1 text-2xl font-bold text-[#aa4e30]">
-                                  {overdueWorkItems.length}건
+                                  {workSelectionOverdueCount}건
                                 </p>
                                 <p className="mt-1 text-[11px] text-[#9d8174]">
                                   완료되지 않은 지난 기한 업무
@@ -6270,7 +6293,7 @@ export function FarmLedgerDashboard({
                                   7일 이내 마감
                                 </p>
                                 <p className="mt-1 text-2xl font-bold text-[#94601c]">
-                                  {dueSoonWorkItems.length}건
+                                  {workSelectionDueSoonCount}건
                                 </p>
                                 <p className="mt-1 text-[11px] text-[#978773]">
                                   오늘 포함 예정 업무

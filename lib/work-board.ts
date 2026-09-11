@@ -26,6 +26,19 @@ export type WorkBoardGroup = {
   needsConfirmation: boolean;
 };
 
+/** A parent drop selects an individual task; it never bulk-updates its family. */
+export function workBoardDropIntent(
+  group: WorkBoardGroup,
+  target: FarmWorkStatus,
+) {
+  if (group.missing) return 'blocked';
+  if (group.lane === target) return 'none';
+  if (!group.hasChildren) return 'move';
+  if (group.item.status === 'completed') return 'reopen';
+  if (target === 'completed' && group.readyToConfirm) return 'confirm';
+  return 'choose';
+}
+
 /** The board is a projection only. Never rewrite parent or child statuses here. */
 export function buildWorkBoardGroups(
   allItems: FarmWorkItem[],

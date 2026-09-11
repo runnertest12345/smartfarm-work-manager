@@ -83,6 +83,7 @@ function harness(options = {}) {
   };
   const { FirebaseAuthGate } = load('app/firebase-auth-gate.tsx', {
     react: hooks,
+    'next/image': { default: 'img' },
     'firebase/auth': auth,
     'firebase/firestore': {
       doc: (_db, ...parts) => parts.join('/'),
@@ -233,6 +234,67 @@ test('공개 가입 양식 없이 한글 아이디로 로그인한다', async ()
     h.calls.some((call) => call[0] === 'request'),
     false,
   );
+});
+
+test('로그인 문구와 로고를 교체하고 이메일·Google 로그인 버튼을 제거한다', () => {
+  const h = harness();
+  h.render();
+  h.login(null);
+  const tree = h.render();
+  assert.equal(
+    find(tree, (node) => node.type === 'h1').props.children,
+    '로그인',
+  );
+  assert.equal(
+    find(tree, (node) => node.props?.id === 'auth-email').props.placeholder,
+    '예: 러너 (초기 비밀번호: 1234567)',
+  );
+  assert.equal(
+    nodes(tree).some((node) =>
+      [
+        '기존 이메일 계정 로그인',
+        '기존 Google 계정 로그인',
+        '비밀번호 찾기',
+      ].includes(node.props?.children),
+    ),
+    false,
+  );
+  const card = tree.type(tree.props);
+  const logo = find(card, (node) => node.props?.src === '/farmos-ci.png');
+  assert.equal(logo.props.width, 2480);
+  assert.equal(logo.props.height, 2266);
+  assert.equal(logo.props.unoptimized, true);
+  assert.ok(
+    nodes(card).some(
+      (node) => node.props?.children === '파모스 업무관리 프로그램',
+    ),
+  );
+});
+
+test('회원가입 요청은 안내만 펼치고 외부 가입이나 신청 저장을 실행하지 않는다', () => {
+  const h = harness();
+  h.render();
+  h.login(null);
+  let tree = h.render();
+  find(
+    tree,
+    (node) => node.props?.children === '회원가입 요청',
+  ).props.onClick();
+  tree = h.render();
+  assert.ok(
+    find(tree, (node) => node.props?.id === 'registration-request-help'),
+  );
+  assert.equal(h.calls.length, 0);
+  find(
+    tree,
+    (node) => node.props?.children === '회원가입 요청',
+  ).props.onClick();
+  tree = h.render();
+  assert.equal(
+    nodes(tree).some((node) => node.props?.id === 'registration-request-help'),
+    false,
+  );
+  assert.equal(h.calls.length, 0);
 });
 test('한글·NFC·영문 정규화와 아이디 왕복을 지키고 잘못된 주소를 거부한다', () => {
   for (const id of ['평화', '러너', '담호', '직원_01', 'abcdefghij']) {

@@ -36,10 +36,13 @@ const lifecycle = load('lib/work-lifecycle.ts', {
 const projectWork = load('lib/project-work.ts', {
   './work-lifecycle': lifecycle,
 });
-const { buildWorkBoardGroups } = load('lib/work-board.ts', {
-  './work-hierarchy': hierarchy,
-  './project-work': projectWork,
-});
+const { buildWorkBoardGroups, workBoardDropIntent } = load(
+  'lib/work-board.ts',
+  {
+    './work-hierarchy': hierarchy,
+    './project-work': projectWork,
+  },
+);
 let slots = [],
   cursor = 0;
 const useState = (initial) => {
@@ -171,6 +174,8 @@ function setup(extra = {}) {
     onEdit() {},
     onOver() {},
     onDrop() {},
+    onDragStart() {},
+    onDragEnd() {},
     canEdit: () => true,
     handle: () => null,
     historySummary: (item) => React.createElement('p', null, `기록:${item.id}`),
@@ -567,14 +572,15 @@ test('완료된 사업의 상위 업무 다시 열기는 비활성화된다', ()
   );
 });
 
-test('접힌 카드는 업무명·상세 보기만 남기고 메타 정보와 작업 버튼을 모두 숨긴다', () => {
+test('접힌 카드는 프로젝트명·업무명·상세 보기를 표시하고 처리 내용과 작업 버튼은 숨긴다', () => {
   const props = setup();
   let tree = render(props);
   let html = renderToStaticMarkup(tree);
   assert.match(html, /견적서 제출/);
+  assert.match(html, /태백 노지 실증단지/);
   assert.doesNotMatch(
     html,
-    /태백 노지 실증단지|총괄 영업팀|2026-09-15|완료 1\/4|대기 사유|세부 업무 추가/,
+    /총괄 영업팀|2026-09-15|완료 1\/4|대기 사유|세부 업무 추가/,
   );
   assert.match(html, /상세 보기/);
   assert.doesNotMatch(html, /농가 회신 대기|기록:|data-board-task|2026-09-10/);
@@ -625,4 +631,57 @@ test('독립 업무도 대기 사유·다음 행동·이력을 아래로 펼치�
   assert.doesNotMatch(renderToStaticMarkup(tree), /기록:다른 업무/);
   assert.equal(opened, 0);
   assert.equal(edited, 0);
+});
+
+test('접힌 카드도 제목·여백을 잡아 이동하며 세부 버튼에서는 카드 드래그를 시작하지 않는다', () => {
+  const starts = [];
+  const props = setup({ onDragStart: (item) => starts.push(item.id) });
+  let tree = render(props);
+  const card = find(tree, (node) => node.props?.['data-board-root']);
+  assert.equal(card.props.draggable, true);
+  let prevented = 0;
+  const event = (interactive, title) => ({
+    target: {
+      closest: (selector) =>
+        selector === '[data-work-title]' ? title : interactive,
+    },
+    preventDefault: () => prevented++,
+  });
+  card.props.onDragStart(event(true, true));
+  card.props.onDragStart(event(false, false));
+  card.props.onDragStart(event(true, false));
+  assert.equal(starts.length, 2);
+  assert.equal(prevented, 1);
+  tree = render({ ...props, busy: true });
+  assert.equal(
+    find(tree, (node) => node.props?.['data-board-root']).props.draggable,
+    false,
+  );
+});
+
+test('상위 카드 이동은 저장 상태 대신 표시 열을 비교하고 선택·최종 확인·재개를 구분한다', () => {
+  const group = buildWorkBoardGroups(mixed())[0];
+  assert.equal(group.lane, 'in_progress');
+  group.item.status = 'open';
+  assert.equal(workBoardDropIntent(group, 'open'), 'choose');
+  assert.equal(workBoardDropIntent(group, 'in_progress'), 'none');
+  assert.equal(
+    workBoardDropIntent({ ...group, missing: true }, 'completed'),
+    'blocked',
+  );
+  assert.equal(
+    workBoardDropIntent({ ...group, readyToConfirm: true }, 'completed'),
+    'confirm',
+  );
+  assert.equal(
+    workBoardDropIntent(
+      {
+        ...group,
+        item: { ...group.item, status: 'completed' },
+        lane: 'completed',
+      },
+      'open',
+    ),
+    'reopen',
+  );
 });

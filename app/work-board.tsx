@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useState, type DragEvent, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -45,6 +45,8 @@ export function WorkBoard({
   onEdit,
   onOver,
   onDrop,
+  onDragStart,
+  onDragEnd,
   handle,
   actions,
   historySummary,
@@ -58,10 +60,16 @@ export function WorkBoard({
   over: FarmWorkStatus | null;
   savingId: string;
   projectLabel: (item: FarmWorkItem) => string;
-  onOpen: (item: FarmWorkItem) => void;
+  onOpen: (item: FarmWorkItem, occurredAt: number) => void;
   onEdit: (item: FarmWorkItem, status?: FarmWorkStatus) => void;
   onOver: (status: FarmWorkStatus | null) => void;
-  onDrop: (status: FarmWorkStatus) => void;
+  onDrop: (status: FarmWorkStatus, occurredAt: number) => void;
+  onDragStart: (
+    item: FarmWorkItem,
+    event: DragEvent<HTMLElement>,
+    occurredAt: number,
+  ) => void;
+  onDragEnd: (occurredAt: number) => void;
   handle: (item: FarmWorkItem) => ReactNode;
   actions: (item: FarmWorkItem) => ReactNode;
   historySummary: (item: FarmWorkItem) => ReactNode;
@@ -117,7 +125,7 @@ export function WorkBoard({
             }}
             onDrop={(event) => {
               event.preventDefault();
-              onDrop(column);
+              onDrop(column, Date.now());
             }}
             className={`w-[min(360px,85vw)] shrink-0 rounded-xl border p-3 xl:flex-1 ${over === column ? 'border-emerald-600 bg-emerald-50 ring-2 ring-emerald-500' : 'border-slate-200 bg-slate-50'}`}
           >
@@ -141,21 +149,50 @@ export function WorkBoard({
                     ? '최종 확인 필요'
                     : FARM_WORK_STATUS_LABELS[group.lane];
                 return (
+                  // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Drag also has a keyboard-accessible status editor.
                   <article
                     key={item.id}
                     data-board-root={item.id}
+                    draggable={!busy && canEdit(item)}
+                    onDragStart={(event) => {
+                      // Buttons inside expanded details retain their own interaction.
+                      const target = event.target as HTMLElement;
+                      if (
+                        target.closest(
+                          'button, a, input, textarea, select, [role="combobox"]',
+                        ) &&
+                        !target.closest('[data-work-title]')
+                      ) {
+                        event.preventDefault();
+                        return;
+                      }
+                      onDragStart(item, event, Date.now());
+                    }}
+                    onDragEnd={() => onDragEnd(Date.now())}
                     className={`space-y-1 rounded-xl border bg-white p-3 ${rows.some((row) => isHeadPriority(row.item)) ? 'border-l-4 border-amber-600' : 'border-slate-200'} ${savingId && rows.some((row) => row.item.id === savingId) ? 'opacity-60' : ''}`}
                   >
-                    <button
-                      type="button"
-                      aria-label={`${item.title} 업무 상세 열기`}
-                      disabled={busy}
-                      onClick={() => onOpen(item)}
-                      title={item.title}
-                      className="min-h-9 w-full break-words text-left text-base font-semibold hover:text-emerald-800 hover:underline"
-                    >
-                      {item.title}
-                    </button>
+                    <div className="flex items-start gap-2">
+                      {handle(item)}
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className="break-words text-sm text-emerald-800"
+                          data-board-context={item.id}
+                        >
+                          {projectLabel(item)}
+                        </p>
+                        <button
+                          type="button"
+                          data-work-title
+                          aria-label={`${item.title} 업무 상세 열기`}
+                          disabled={busy}
+                          onClick={() => onOpen(item, Date.now())}
+                          title={item.title}
+                          className="min-h-9 w-full cursor-grab break-words text-left text-base font-semibold hover:text-emerald-800 hover:underline active:cursor-grabbing"
+                        >
+                          {item.title}
+                        </button>
+                      </div>
+                    </div>
                     <Collapsible
                       open={isExpanded}
                       onOpenChange={(open) => toggle(item.id, open)}
@@ -177,12 +214,6 @@ export function WorkBoard({
                             className="space-y-3 border-t border-slate-200 pt-3"
                             data-board-details={item.id}
                           >
-                            <div className="flex items-start gap-2">
-                              {!hasChildren && handle(item)}
-                              <p className="break-words text-sm text-emerald-800">
-                                {projectLabel(item)}
-                              </p>
-                            </div>
                             {rows.some((row) => isHeadPriority(row.item)) && (
                               <p className="rounded-md bg-amber-50 px-2 py-1 text-sm font-semibold text-amber-900">
                                 부서장 지시 · 최우선
@@ -289,7 +320,7 @@ export function WorkBoard({
                                     key={task.id}
                                     type="button"
                                     disabled={busy}
-                                    onClick={() => onOpen(task)}
+                                    onClick={() => onOpen(task, Date.now())}
                                     className="block min-h-9 w-full break-words text-left hover:underline"
                                   >
                                     {task.title} · {task.owner || '담당 미지정'}
@@ -318,7 +349,7 @@ export function WorkBoard({
                                     <button
                                       type="button"
                                       disabled={busy}
-                                      onClick={() => onOpen(task)}
+                                      onClick={() => onOpen(task, Date.now())}
                                       className="min-h-9 break-words text-left font-medium hover:underline"
                                     >
                                       {task.title}
@@ -412,7 +443,9 @@ export function WorkBoard({
                                               type="button"
                                               aria-label={`${child.title} 업무 상세 열기`}
                                               disabled={busy}
-                                              onClick={() => onOpen(child)}
+                                              onClick={() =>
+                                                onOpen(child, Date.now())
+                                              }
                                               className="min-h-9 w-full break-words text-left text-base font-medium hover:text-emerald-800 hover:underline"
                                             >
                                               {child.title}

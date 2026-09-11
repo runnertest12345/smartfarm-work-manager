@@ -47,6 +47,10 @@ const lifecycle = load('lib/work-lifecycle.ts', {
   './organization': organization,
 });
 const work = load('lib/project-work.ts', { './work-lifecycle': lifecycle });
+const workBoard = load('lib/work-board.ts', {
+  './work-hierarchy': hierarchy,
+  './project-work': work,
+});
 const tag = (name) =>
   function TestPrimitive({
     children,
@@ -55,6 +59,8 @@ const tag = (name) =>
     keepMounted,
     containerClassName,
     onValueChange,
+    finalFocus,
+    showCloseButton,
     ...props
   }) {
     return React.createElement(name, props, children);
@@ -122,6 +128,7 @@ const { WorkQuickEditor, WorkTaskSurface, ChildTaskForm } = load(
     '@/lib/farm-types': types,
     '@/lib/project-work': work,
     '@/lib/work-hierarchy': hierarchy,
+    '@/lib/work-board': workBoard,
     '@/components/ui/button': { Button: tag('button') },
     '@/components/ui/input': { Input: tag('input') },
     '@/components/ui/textarea': { Textarea: tag('textarea') },
@@ -201,7 +208,7 @@ function find(tree, predicate) {
   assert.ok(found, 'UI control exists');
   return found;
 }
-const event = { preventDefault() {} };
+const event = { preventDefault() {}, stopPropagation() {} };
 test('일반 기록은 상태·처리 내용 중심이며 금액·기록자·발생 시각 입력을 제거한다', () => {
   reset();
   const tree = render(WorkQuickEditor, {
@@ -348,14 +355,14 @@ test('일반 열 드롭은 상태 변경을 한 번 저장하고 대기 열은 �
       });
   drag();
   tree = render(WorkTaskSurface, props);
-  find(tree, (x) => x.props?.handle).props.onDrop('in_progress');
+  find(tree, (x) => x.props?.handle).props.onDrop('in_progress', Date.now());
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(saved.length, 1);
   assert.equal(saved[0][0].newStatus, 'in_progress');
   tree = render(WorkTaskSurface, props);
   drag();
   tree = render(WorkTaskSurface, props);
-  find(tree, (x) => x.props?.handle).props.onDrop('waiting');
+  find(tree, (x) => x.props?.handle).props.onDrop('waiting', Date.now());
   tree = render(WorkTaskSurface, props);
   assert.equal(saved.length, 1);
   assert.ok(find(tree, (x) => x.type === WorkQuickEditor));
@@ -396,7 +403,7 @@ test('목록은 중첩 업무를 펼치고 접을 수 있으며 세부 실행 �
   assert.equal(nodes(tree).filter((x) => x.props?.item?.id === 'b').length, 1);
 });
 
-test('상위 묶음은 드래그하지 않고 자식 실행 업무만 독립적으로 변경한다', async () => {
+test('상위 손잡이가 표시되며 자식 실행 업무의 드래그는 해당 업무만 변경한다', async () => {
   reset();
   const parent = { ...item, childWorkItemIds: ['b'] };
   const child = { ...item, id: 'b', title: '세부 실행', parentWorkItemId: 'a' };
@@ -408,18 +415,190 @@ test('상위 묶음은 드래그하지 않고 자식 실행 업무만 독립적�
   });
   let tree = render(WorkTaskSurface, props);
   let board = find(tree, (node) => node.props?.handle);
-  assert.equal(board.props.handle(parent), null);
+  assert.equal(board.props.handle(parent).props.draggable, true);
   board.props
     .handle(child)
     .props.onDragStart({ ...event, dataTransfer: { setData() {} } });
   tree = render(WorkTaskSurface, props);
   board = find(tree, (node) => node.props?.handle);
-  board.props.onDrop('in_progress');
+  board.props.onDrop('in_progress', Date.now());
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(saved.length, 1);
   assert.equal(saved[0].workItemId, 'b');
   assert.equal(parent.status, 'open');
   assert.equal(child.status, 'open');
+});
+
+const boardOf = (tree) => find(tree, (node) => node.props?.handle);
+const dragEvent = () => ({ ...event, dataTransfer: { setData() {} } });
+function dragTo(props, task, target) {
+  let tree = render(WorkTaskSurface, props);
+  boardOf(tree).props.onDragStart(task, dragEvent(), Date.now());
+  tree = render(WorkTaskSurface, props);
+  boardOf(tree).props.onDrop(target, Date.now());
+  return render(WorkTaskSurface, props);
+}
+const family = () => [
+  { ...item, status: 'open', childWorkItemIds: ['b', 'c'], openChildCount: 2 },
+  {
+    ...item,
+    id: 'b',
+    title: '단가 검토',
+    parentWorkItemId: 'a',
+    status: 'in_progress',
+  },
+  {
+    ...item,
+    id: 'c',
+    title: '승인 대기',
+    parentWorkItemId: 'a',
+    status: 'waiting',
+  },
+];
+
+test('상위 카드를 접수로 드롭하면 선택창만 열고 취소해도 상태를 저장하지 않는다', () => {
+  reset();
+  const tasks = family();
+  const saved = [];
+  const props = surface({
+    items: tasks,
+    allItems: tasks,
+    onSave: async (input) => saved.push(input),
+  });
+  let tree = dragTo(props, tasks[0], 'open');
+  assert.match(renderToStaticMarkup(tree), /이동할 세부 업무 선택/);
+  assert.equal(boardOf(tree).props.busy, true);
+  assert.equal(saved.length, 0);
+  find(tree, (node) => node.props?.children === '취소').props.onClick();
+  tree = render(WorkTaskSurface, props);
+  assert.doesNotMatch(renderToStaticMarkup(tree), /이동할 세부 업무 선택/);
+  assert.equal(saved.length, 0);
+  assert.equal(tasks[0].status, 'open');
+});
+
+test('상위 드롭에서 선택한 세부 업무의 빠른 수정만 열고 부모·형제는 그대로 둔다', () => {
+  reset();
+  const tasks = family();
+  const saved = [];
+  const props = surface({
+    items: tasks,
+    allItems: tasks,
+    onSave: async (input) => saved.push(input),
+  });
+  let tree = dragTo(props, tasks[0], 'waiting');
+  const choices = find(
+    tree,
+    (node) => node.props?.['aria-label'] === '이동할 세부 업무',
+  );
+  find(
+    choices,
+    (node) => node.props?.['aria-label'] === '단가 검토 대기·막힘로 이동',
+  ).props.onClick();
+  tree = render(WorkTaskSurface, props);
+  const editor = find(tree, (node) => node.type === WorkQuickEditor);
+  assert.equal(editor.props.task.id, 'b');
+  assert.equal(editor.props.initialStatus, 'waiting');
+  assert.equal(saved.length, 0);
+  assert.equal(tasks[0].status, 'open');
+  assert.equal(tasks[2].status, 'waiting');
+});
+
+test('완료 열 드롭은 준비된 부모도 최종 확인을 열며 미완료 세부 업무를 자동 완료하지 않는다', () => {
+  reset();
+  const tasks = family().map((task, index) => ({
+    ...task,
+    status: index ? 'completed' : 'in_progress',
+    openChildCount: 0,
+  }));
+  const saved = [];
+  const props = surface({
+    items: tasks,
+    allItems: tasks,
+    onSave: async (input) => saved.push(input),
+  });
+  const tree = dragTo(props, tasks[0], 'completed');
+  const editor = find(tree, (node) => node.type === WorkQuickEditor);
+  assert.equal(editor.props.task.id, 'a');
+  assert.equal(editor.props.initialStatus, 'completed');
+  assert.equal(saved.length, 0);
+  reset();
+  const unfinished = family();
+  const next = dragTo(
+    { ...props, items: unfinished, allItems: unfinished },
+    unfinished[0],
+    'completed',
+  );
+  assert.match(renderToStaticMarkup(next), /이동할 세부 업무 선택/);
+  assert.equal(
+    nodes(next).some((node) => node.type === WorkQuickEditor),
+    false,
+  );
+  assert.equal(saved.length, 0);
+});
+
+test('동일 열 드롭·드래그 직후 클릭·중복 드롭은 추가 저장이나 상세 이동을 일으키지 않는다', async () => {
+  reset();
+  const saved = [];
+  let opened = 0;
+  let finish;
+  const props = surface({
+    onOpen: () => opened++,
+    onSave: (input) => {
+      saved.push(input);
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    },
+  });
+  let tree = dragTo(props, item, 'open');
+  assert.equal(saved.length, 0);
+  tree = dragTo(props, item, 'in_progress');
+  boardOf(tree).props.onDrop('completed', Date.now());
+  boardOf(tree).props.onOpen(item, Date.now());
+  assert.equal(saved.length, 1);
+  assert.equal(opened, 0);
+  finish();
+  await new Promise(setImmediate);
+});
+
+test('드래그 중 변경·삭제된 업무와 누락 연결은 이동하지 않는다', () => {
+  for (const replacement of [[], [{ ...item, updatedAt: 20 }]]) {
+    reset();
+    let saved = 0;
+    const props = surface({ onSave: async () => saved++ });
+    let tree = render(WorkTaskSurface, props);
+    boardOf(tree).props.onDragStart(item, dragEvent(), Date.now());
+    const updated = { ...props, items: replacement, allItems: replacement };
+    tree = render(WorkTaskSurface, updated);
+    boardOf(tree).props.onDrop('completed', Date.now());
+    assert.match(
+      renderToStaticMarkup(render(WorkTaskSurface, updated)),
+      /변경되었거나 삭제/,
+    );
+    assert.equal(saved, 0);
+  }
+  reset();
+  const missing = { ...item, childWorkItemIds: ['missing'] };
+  const props = surface({ items: [missing], allItems: [missing] });
+  assert.match(
+    renderToStaticMarkup(dragTo(props, missing, 'completed')),
+    /연결을 확인/,
+  );
+});
+
+test('선택창에서 상위 업무가 삭제되면 선택 대신 안내를 표시한다', () => {
+  reset();
+  const tasks = family();
+  const props = surface({ items: tasks, allItems: tasks });
+  dragTo(props, tasks[0], 'waiting');
+  const tree = render(WorkTaskSurface, { ...props, items: [], allItems: [] });
+  assert.match(renderToStaticMarkup(tree), /삭제되었거나 연결이 변경/);
+  assert.equal(
+    nodes(tree).some(
+      (node) => node.props?.['aria-label'] === '이동할 세부 업무',
+    ),
+    false,
+  );
 });
 
 test('세부 업무 상태 선택은 해당 빠른 수정만 열고 적용 전에는 저장하지 않는다', () => {
@@ -440,11 +619,11 @@ test('세부 업무 상태 선택은 해당 빠른 수정만 열고 적용 전�
   assert.equal(editor.props.task.id, 'b');
   assert.equal(editor.props.initialStatus, 'waiting');
   assert.equal(saved, 0);
-  find(tree, (node) => node.props?.handle).props.onOpen(item);
+  find(tree, (node) => node.props?.handle).props.onOpen(item, Date.now());
   assert.equal(opened.length, 0);
   editor.props.onCancel();
   tree = render(WorkTaskSurface, props);
-  find(tree, (node) => node.props?.handle).props.onOpen(child);
+  find(tree, (node) => node.props?.handle).props.onOpen(child, Date.now());
   assert.equal(opened.join(','), 'b');
 });
 
@@ -507,7 +686,10 @@ test('드래그 중 실시간 변경으로 저장이 거절되면 성공으로 �
     .props.handle(item)
     .props.onDragStart({ ...event, dataTransfer: { setData() {} } });
   tree = render(WorkTaskSurface, props);
-  find(tree, (node) => node.props?.handle).props.onDrop('in_progress');
+  find(tree, (node) => node.props?.handle).props.onDrop(
+    'in_progress',
+    Date.now(),
+  );
   await new Promise((resolve) => setImmediate(resolve));
   tree = render(WorkTaskSurface, props);
   assert.match(renderToStaticMarkup(tree), /다른 변경이 먼저 저장되었습니다/);

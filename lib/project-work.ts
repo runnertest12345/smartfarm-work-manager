@@ -88,6 +88,25 @@ export function isStandaloneWork(
   return isProjectTask(item) || isInternalTask(item);
 }
 
+export const WORK_SOURCE_LABELS = {
+  all: '전체 업무',
+  internal: '내부 업무',
+  project: '프로젝트 업무',
+  farm: '농가 업무',
+} as const;
+export type WorkSourceFilter = keyof typeof WORK_SOURCE_LABELS;
+
+/** Context categories are disjoint; billing is excluded before this view filter. */
+export function workMatchesSource(
+  item: FarmWorkItem,
+  source: WorkSourceFilter,
+) {
+  if (source === 'all') return true;
+  if (source === 'internal') return isInternalTask(item);
+  if (source === 'project') return isProjectTask(item);
+  return Boolean(item.farmRecordId);
+}
+
 export function sameWorkContext(a: FarmWorkItem, b: FarmWorkItem) {
   return isInternalTask(a) || isInternalTask(b)
     ? isInternalTask(a) &&
