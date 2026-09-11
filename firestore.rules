@@ -10,9 +10,12 @@ service cloud.firestore {
     }
 
     function activeMember(workspaceId) {
-      return signedIn()
-        && get(/databases/$(database)/documents/appMembers/$(request.auth.uid)).data.active == true
-        && get(/databases/$(database)/documents/appMembers/$(request.auth.uid)).data.get('workspaceId', workspaceId) == workspaceId;
+      return signedIn() && activeWorkspaceMember(workspaceId);
+    }
+
+    function activeWorkspaceMember(workspaceId) {
+      let member = get(/databases/$(database)/documents/appMembers/$(request.auth.uid)).data;
+      return member.active == true && member.get('workspaceId', workspaceId) == workspaceId;
     }
 
     function personalMember(workspaceId, uid) {
@@ -27,8 +30,9 @@ service cloud.firestore {
     }
 
     function sameTaskContext(a, b) {
-      return a.get('scope', '') == b.get('scope', '') && a.get('projectId', '') == b.get('projectId', '')
-        && (a.get('scope', '') != 'internal' || (a.get('departmentId', '') != '' && a.departmentId == b.get('departmentId', '')));
+      let scope = a.get('scope', '');
+      return scope == b.get('scope', '') && a.get('projectId', '') == b.get('projectId', '')
+        && (scope != 'internal' || (a.get('departmentId', '') != '' && a.departmentId == b.get('departmentId', '')));
     }
 
     function validNewAssignment(workspaceId, after) {
@@ -47,12 +51,13 @@ service cloud.firestore {
       let after = request.resource.data;
       let before = creating ? {} : resource.data;
       let assigned = after.get('assigneeUid', '') != '';
-      return after.get('scope', '') in ['', 'internal']
-        && (after.get('scope', '') != 'internal' || (after.get('projectId', '') == '' && after.farmRecordId == '' && after.farmId == ''
+      let scope = after.get('scope', '');
+      return scope in ['', 'internal']
+        && (scope != 'internal' || (after.get('projectId', '') == '' && after.farmRecordId == '' && after.farmId == ''
           && after.workType in ['communication', 'installation', 'service', 'note']))
         && (creating
           ? (assigned ? validNewAssignment(workspaceId, after)
-            : after.get('scope', '') != 'internal' && !after.keys().hasAny(['assignedByUid', 'departmentId', 'headAssigned', 'assignedAt']))
+            : scope != 'internal' && !after.keys().hasAny(['assignedByUid', 'departmentId', 'headAssigned', 'assignedAt']))
           : !after.diff(before).affectedKeys().hasAny(['scope', 'assigneeUid', 'assignedByUid', 'departmentId', 'headAssigned', 'assignedAt'])
             && (!assigned || after.owner == before.owner));
     }
@@ -77,21 +82,22 @@ service cloud.firestore {
     }
 
     function validDocument(documentId) {
-      return request.resource.data.keys().hasAll([
+      let data = request.resource.data;
+      return data.keys().hasAll([
           'id', 'createdAt', 'updatedAt', 'createdByUid', 'updatedByUid'
         ])
-        && request.resource.data.size() <= 64
-        && request.resource.data.id == documentId
-        && request.resource.data.id is string
-        && request.resource.data.id.size() > 0
-        && request.resource.data.id.size() <= 160
-        && request.resource.data.createdAt is int
-        && request.resource.data.updatedAt is int
-        && request.resource.data.createdAt > 0
-        && request.resource.data.updatedAt >= request.resource.data.createdAt
-        && request.resource.data.createdByUid is string
-        && request.resource.data.createdByUid.size() > 0
-        && request.resource.data.updatedByUid == request.auth.uid;
+        && data.size() <= 64
+        && data.id == documentId
+        && data.id is string
+        && data.id.size() > 0
+        && data.id.size() <= 160
+        && data.createdAt is int
+        && data.updatedAt is int
+        && data.createdAt > 0
+        && data.updatedAt >= data.createdAt
+        && data.createdByUid is string
+        && data.createdByUid.size() > 0
+        && data.updatedByUid == request.auth.uid;
     }
 
     function validCreate(documentId) {
@@ -100,11 +106,13 @@ service cloud.firestore {
     }
 
     function validUpdate(documentId) {
+      let after = request.resource.data;
+      let before = resource.data;
       return validDocument(documentId)
-        && request.resource.data.id == resource.data.id
-        && request.resource.data.createdAt == resource.data.createdAt
-        && request.resource.data.createdByUid == resource.data.createdByUid
-        && request.resource.data.updatedAt >= resource.data.updatedAt;
+        && after.id == before.id
+        && after.createdAt == before.createdAt
+        && after.createdByUid == before.createdByUid
+        && after.updatedAt >= before.updatedAt;
     }
 
     function validRelations(workspaceId, name, creating) {
@@ -164,11 +172,12 @@ service cloud.firestore {
       let after = request.resource.data;
       return after.get('deletedAt', 0) != before.get('deletedAt', 0)
         ? workLifecycleChange(workspaceId, documentId, before, after)
-          && (after.get('parentWorkItemId', '') == '' || linkedParent(workspaceId, documentId, before, after, false))
+          && (after.get('parentWorkItemId', '') == '' || linkedParent(workspaceId, documentId, before, after, false, openTask(after)))
         : before.get('deletedAt', 0) == 0
           && !after.diff(before).affectedKeys().hasAny(['deletedAt', 'deletedByUid', 'workLifecycleEntryId', 'workType'])
           && validWorkTree(workspaceId, documentId, false) && validWorkAssignment(workspaceId, false)
-          && workRelations(workspaceId, after, false);
+          // Internal links are already fully checked by validWorkAssignment.
+          && (after.get('scope', '') == 'internal' || workRelations(workspaceId, after, false));
     }
 
     function validWorkRecord(workspaceId, name, creating) {
@@ -357,12 +366,12 @@ service cloud.firestore {
           : !(childId in oldIds) && childId in newIds && newIds.hasAll(oldIds) && newIds.size() == oldIds.size() + 1);
     }
 
-    function linkedParent(workspaceId, documentId, before, after, creating) {
+    function linkedParent(workspaceId, documentId, before, after, creating, afterOpen) {
       let parentId = after.parentWorkItemId;
       let path = /databases/$(database)/documents/workspaces/$(workspaceId)/workItems/$(parentId);
       let parent = get(path).data;
       let nextParent = getAfter(path).data;
-      let delta = openTask(after) - (creating ? 0 : openTask(before));
+      let delta = afterOpen - (creating ? 0 : openTask(before));
       let lifecycle = before.get('deletedAt', 0) != after.get('deletedAt', 0);
       return parentId != documentId
         && parent.id == parentId
@@ -372,7 +381,7 @@ service cloud.firestore {
         && sameTaskContext(parent, after)
         && parent.get('deletedAt', 0) == 0 && nextParent.get('deletedAt', 0) == 0
         && (after.get('deletedAt', 0) > 0 ? !(documentId in nextParent.get('childWorkItemIds', [])) : documentId in nextParent.get('childWorkItemIds', []))
-        && (openTask(after) == 0 || nextParent.get('status', 'open') != 'completed')
+        && (afterOpen == 0 || nextParent.get('status', 'open') != 'completed')
         && (!creating || parent.get('status', 'open') != 'completed')
         && ((delta == 0 && !creating && !lifecycle)
           || (nextParent.get('lastChildMutationId', '') == documentId
@@ -385,15 +394,17 @@ service cloud.firestore {
       let ids = after.get('childWorkItemIds', []);
       let count = after.get('openChildCount', 0);
       let parentId = after.get('parentWorkItemId', '');
+      let idCount = ids.size();
+      let afterOpen = openTask(after);
       return parentId is string && ids is list && count is int
-        && ids.size() <= 500 && ids.toSet().size() == ids.size()
-        && !(documentId in ids) && count >= 0 && count <= ids.size()
-        && (openTask(after) != 0 || count == 0)
-        && (!creating || (ids.size() == 0 && count == 0))
+        && idCount <= 500 && ids.toSet().size() == idCount
+        && !(documentId in ids) && count >= 0 && count <= idCount
+        && (afterOpen != 0 || count == 0)
+        && (!creating || (idCount == 0 && count == 0))
         && (creating || parentId == before.get('parentWorkItemId', ''))
-        && (creating || (parentId == '' && ids.size() == 0)
+        && (creating || (parentId == '' && idCount == 0)
           || (after.get('projectId', '') == before.get('projectId', '') && after.farmRecordId == before.farmRecordId))
-        && (parentId == '' || linkedParent(workspaceId, documentId, before, after, creating))
+        && (parentId == '' || linkedParent(workspaceId, documentId, before, after, creating, afterOpen))
         && (creating || (ids == before.get('childWorkItemIds', []) && count == before.get('openChildCount', 0))
           || childCounterChange(workspaceId, documentId, before, after));
     }

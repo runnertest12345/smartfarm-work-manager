@@ -1,6 +1,7 @@
 // Rules API evaluates only synthetic documents: no accounts, grants, or business data are written.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { logger } = require('firebase-tools/lib/logger');
@@ -764,6 +765,137 @@ for (const name of ['visits', 'checklistItems', 'blockerEpisodes']) {
   });
 }
 
+// Exercise app-shaped child transactions, including a parent that is itself a child.
+// Each request is evaluated independently; this does not measure the batch read limit.
+const diagnosticActor = {
+  ...staff,
+  email: 'u7374616666@staff.smartfarm-work-manager.invalid',
+};
+for (const [taskScope, nested] of ['internal', 'project'].flatMap((scope) =>
+  [false, true].map((nested) => [scope, nested]),
+)) {
+  for (const existingCount of [0, 1, 2]) {
+    const prefix = taskScope + '-' + (nested ? 'nested' : 'flat') + '-existing-' + existingCount;
+    const baseTask = {
+      ...work,
+      scope: taskScope === 'internal' ? 'internal' : '',
+      projectId: taskScope === 'internal' ? '' : 'synthetic-project',
+      owner: staff.displayName,
+      assigneeUid: staff.id,
+      assignedByUid: staff.id,
+      createdByUid: staff.id,
+      updatedByUid: staff.id,
+      headAssigned: false,
+      lastActivityAt: now,
+    };
+    const rootId = prefix + '-root';
+    const middleId = prefix + '-middle';
+    const newId = prefix + '-new-child';
+    const previousChildren = Array.from({ length: existingCount }, (_, i) => ({
+      ...baseTask,
+      id: prefix + '-old-' + i,
+      parentWorkItemId: middleId,
+      status: i === 0 ? 'open' : 'completed',
+      childWorkItemIds: [],
+      openChildCount: 0,
+    }));
+    const root = {
+      ...baseTask,
+      id: rootId,
+      parentWorkItemId: '',
+      childWorkItemIds: [middleId],
+      openChildCount: 1,
+      lastChildMutationId: middleId,
+    };
+    const middleBefore = {
+      ...baseTask,
+      id: middleId,
+      parentWorkItemId: nested ? rootId : '',
+      childWorkItemIds: previousChildren.map((child) => child.id),
+      openChildCount: previousChildren.filter((child) => child.status !== 'completed').length,
+      ...(existingCount ? { lastChildMutationId: previousChildren.at(-1).id } : {}),
+    };
+    const newChild = {
+      ...baseTask,
+      id: newId,
+      parentWorkItemId: middleId,
+      childWorkItemIds: [],
+      openChildCount: 0,
+    };
+    const middleAfter = {
+      ...middleBefore,
+      childWorkItemIds: [...middleBefore.childWorkItemIds, newId],
+      openChildCount: middleBefore.openChildCount + 1,
+      lastChildMutationId: newId,
+      updatedAt: now + 1,
+      lastActivityAt: now + 1,
+    };
+    const history = (id, workItemId) => ({
+      id, workItemId, channel: 'system', sender: '', receivedContent: '',
+      actionContent: 'Synthetic child creation', amount: 0,
+      recorder: staff.displayName, occurredAt: now, referenceUrl: '',
+      createdAt: now, updatedAt: now,
+      createdByUid: staff.id, updatedByUid: staff.id,
+    });
+    const childHistory = history(prefix + '-child-history', newId);
+    const parentHistory = history(prefix + '-parent-history', middleId);
+    const reads = {
+      [memberPath(staff.id)]: diagnosticActor,
+      [path('projects', 'synthetic-project')]: { id: 'synthetic-project', status: 'active' },
+      [path('workItems', rootId)]: root,
+      [path('workItems', middleId)]: middleBefore,
+      [path('workItems', newId)]: null,
+      [path('historyEntries', childHistory.id)]: null,
+      [path('historyEntries', parentHistory.id)]: null,
+      ...Object.fromEntries(previousChildren.map((child) => [path('workItems', child.id), child])),
+    };
+    const after = {
+      [path('workItems', rootId)]: root,
+      [path('workItems', middleId)]: middleAfter,
+      [path('workItems', newId)]: newChild,
+      [path('historyEntries', childHistory.id)]: childHistory,
+      [path('historyEntries', parentHistory.id)]: parentHistory,
+    };
+    const common = { actor: diagnosticActor, verified: false, provider: 'password', reads, after };
+    check(prefix + ': child create', 'ALLOW', { ...common, target: path('workItems', newId), data: newChild });
+    check(prefix + ': parent update', 'ALLOW', { ...common, method: 'update', target: path('workItems', middleId), before: middleBefore, data: middleAfter });
+    check(prefix + ': child history', 'ALLOW', { ...common, target: path('historyEntries', childHistory.id), data: childHistory });
+    check(prefix + ': parent history', 'ALLOW', { ...common, target: path('historyEntries', parentHistory.id), data: parentHistory });
+  }
+}
+
+// The internal fast path must not skip assignment or relation validation.
+for (const [label, patch] of [
+  ['missing farm record', { farmRecordId: undefined }],
+  ['null farm record', { farmRecordId: null }],
+  ['numeric farm record', { farmRecordId: 0 }],
+  ['linked farm record', { farmRecordId: 'record' }],
+  ['linked farm', { farmId: 'farm' }],
+  ['linked project', { projectId: 'project' }],
+  ['financial type', { workType: 'payment' }],
+  ['changed scope', { scope: '' }],
+]) {
+  const data = { ...work, ...patch, updatedAt: now + 1 };
+  if (data.farmRecordId === undefined) delete data.farmRecordId;
+  check('internal relation guard: ' + label, 'DENY', {
+    method: 'update', before: work, data,
+  });
+}
+for (const [label, patch] of [
+  ['changed id', { id: 'different-id' }],
+  ['changed creator', { createdByUid: staff.id }],
+  ['changed creation time', { createdAt: now - 1 }],
+  ['backdated update', { updatedAt: now - 1 }],
+  ['wrong updater', { updatedByUid: staff.id }],
+  ['missing creator', { createdByUid: undefined }],
+]) {
+  const data = { ...work, updatedAt: now + 1, ...patch };
+  if (data.createdByUid === undefined) delete data.createdByUid;
+  check('audit invariant: ' + label, 'DENY', {
+    method: 'update', before: work, data,
+  });
+}
+
 try {
   const options = { project: 'smartfarm-work-manager', nonInteractive: true };
   const account = auth.getGlobalDefaultAccount();
@@ -778,16 +910,15 @@ try {
         files: [
           {
             name: 'firestore.rules',
-            content: readFileSync(
-              new URL('../firestore.rules', import.meta.url),
-              'utf8',
-            ),
+            content: process.argv[2]
+              ? execFileSync('git', ['show', `${process.argv[2]}:firestore.rules`], { encoding: 'utf8' })
+              : readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8'),
           },
         ],
       },
       testSuite: { testCases: cases.map((entry) => entry.test) },
     },
-    { skipLog: { body: true } },
+    { skipLog: { body: true, resBody: true, queryParams: true } },
   );
   if (body.issues?.length) console.log(JSON.stringify({ issues: body.issues }));
   assert.equal(

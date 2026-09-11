@@ -2,6 +2,7 @@
 // Uses the existing Firebase CLI login without printing or exporting credentials.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { logger } = require('firebase-tools/lib/logger');
@@ -818,16 +819,15 @@ try {
         files: [
           {
             name: 'firestore.rules',
-            content: readFileSync(
-              new URL('../firestore.rules', import.meta.url),
-              'utf8',
-            ),
+            content: process.argv[2]
+              ? execFileSync('git', ['show', `${process.argv[2]}:firestore.rules`], { encoding: 'utf8' })
+              : readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8'),
           },
         ],
       },
       testSuite: { testCases: cases.map(({ test }) => test) },
     },
-    { skipLog: { body: true } },
+    { skipLog: { body: true, resBody: true, queryParams: true } },
   );
   const body = response.body;
   if (body.issues?.length) console.log(JSON.stringify({ issues: body.issues }));
