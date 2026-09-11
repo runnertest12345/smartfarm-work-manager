@@ -5191,7 +5191,10 @@ export function FarmLedgerDashboard({
                   </p>
                   <div className="space-y-1">
                     {group.ids
-                      .map((id) => navItems.find((item) => item.id === id)!)
+                      .flatMap((id) => {
+                        const item = navItems.find((item) => item.id === id);
+                        return item ? [item] : [];
+                      })
                       .map((item) => (
                         <button
                           key={item.id}
@@ -5206,14 +5209,6 @@ export function FarmLedgerDashboard({
                         >
                           <item.icon className="size-[18px]" />
                           <span>{item.label}</span>
-                          {item.count !== undefined && (
-                            <span
-                              className="ml-auto rounded-md bg-current/5 px-2 py-0.5 text-xs"
-                              title={`${item.label} 전체 건수`}
-                            >
-                              {item.count}
-                            </span>
-                          )}
                         </button>
                       ))}
                   </div>
