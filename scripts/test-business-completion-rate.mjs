@@ -44,4 +44,6 @@ test('사업 집계 요약·연도별·사업별·평균에만 같은 표시를 
   );
   assert.equal((source.match(/<BusinessCompletionRate/g) || []).length, 4);
   assert.ok(source.includes("progress < 100 ? 'bg-red-700'"));
+  assert.match(source, /records.length > 0 && progress < 100/);
+  assert.ok(/rate=\{\s*records.length > 0 \? progress : null\s*\}/.test(source));
 });

@@ -8165,12 +8165,14 @@ export function FarmLedgerDashboard({
                                     <div className="flex min-w-[130px] items-center gap-3">
                                       <div className="h-2 flex-1 overflow-hidden rounded-full bg-[#edf1ec]">
                                         <div
-                                          className={`h-full rounded-full ${progress < 100 ? 'bg-red-700' : 'bg-[#62b982]'}`}
+                                          className={`h-full rounded-full ${records.length > 0 && progress < 100 ? 'bg-red-700' : 'bg-[#62b982]'}`}
                                           style={{ width: `${progress}%` }}
                                         />
                                       </div>
                                       <BusinessCompletionRate
-                                        rate={progress}
+                                        rate={
+                                          records.length > 0 ? progress : null
+                                        }
                                         className="w-9 text-right text-sm"
                                       />
                                     </div>
