@@ -2,6 +2,7 @@
 import Image from 'next/image';
 import { ServiceWorkPanel } from './service-work-panel';
 import { ProjectManagementList } from './project-management-list';
+import { BusinessCompletionRate } from './business-completion-rate';
 import { serviceReceivedAt, serviceYear } from '@/lib/service-work';
 import {
   ProjectSettlementDetails,
@@ -7895,37 +7896,25 @@ export function FarmLedgerDashboard({
                           },
                           {
                             label: '설치율',
-                            value:
-                              businessInstallationRate === null
-                                ? '-'
-                                : `${businessInstallationRate}%`,
+                            rate: businessInstallationRate,
                             note: `${businessInstallation}/${businessRecords.length}곳`,
                             icon: CalendarCheck2,
                           },
                           {
                             label: '시운전율',
-                            value:
-                              businessCommissioningRate === null
-                                ? '-'
-                                : `${businessCommissioningRate}%`,
+                            rate: businessCommissioningRate,
                             note: `${businessCommissioning}/${businessRecords.length}곳`,
                             icon: Wrench,
                           },
                           {
                             label: '교육률',
-                            value:
-                              businessEducationRate === null
-                                ? '-'
-                                : `${businessEducationRate}%`,
+                            rate: businessEducationRate,
                             note: `${businessEducation}/${businessRecords.length}곳`,
                             icon: TrendingUp,
                           },
                           {
                             label: '유효 구독률',
-                            value:
-                              businessSubscriptionRate === null
-                                ? '-'
-                                : `${businessSubscriptionRate}%`,
+                            rate: businessSubscriptionRate,
                             note: `${businessSubscriptions}/${businessRecords.length}곳`,
                             icon: CalendarClock,
                           },
@@ -7940,7 +7929,13 @@ export function FarmLedgerDashboard({
                                   {metric.label}
                                 </p>
                                 <p className="mt-1 text-2xl font-bold">
-                                  {metric.value}
+                                  {metric.rate !== undefined ? (
+                                    <BusinessCompletionRate
+                                      rate={metric.rate}
+                                    />
+                                  ) : (
+                                    metric.value
+                                  )}
                                 </p>
                                 <p className="mt-1 text-[11px] text-[#89938c]">
                                   {metric.note}
@@ -8056,11 +8051,9 @@ export function FarmLedgerDashboard({
                                     key={metric.label}
                                     className={index === 3 ? 'pr-5' : ''}
                                   >
-                                    <p className="font-semibold">
-                                      {metric.rate === null
-                                        ? '-'
-                                        : `${metric.rate}%`}
-                                    </p>
+                                    <BusinessCompletionRate
+                                      rate={metric.rate}
+                                    />
                                     <p className="mt-1 text-[11px] text-[#89938c]">
                                       {metric.complete}/
                                       {summary.participationCount}건
@@ -8160,11 +8153,9 @@ export function FarmLedgerDashboard({
                                     },
                                   ].map((metric) => (
                                     <TableCell key={metric.label}>
-                                      <p className="font-semibold">
-                                        {metric.rate === null
-                                          ? '-'
-                                          : `${metric.rate}%`}
-                                      </p>
+                                      <BusinessCompletionRate
+                                        rate={metric.rate}
+                                      />
                                       <p className="mt-1 text-[11px] text-[#89938c]">
                                         {metric.complete}/{records.length}곳
                                       </p>
@@ -8174,13 +8165,14 @@ export function FarmLedgerDashboard({
                                     <div className="flex min-w-[130px] items-center gap-3">
                                       <div className="h-2 flex-1 overflow-hidden rounded-full bg-[#edf1ec]">
                                         <div
-                                          className="h-full rounded-full bg-[#62b982]"
+                                          className={`h-full rounded-full ${progress < 100 ? 'bg-red-700' : 'bg-[#62b982]'}`}
                                           style={{ width: `${progress}%` }}
                                         />
                                       </div>
-                                      <strong className="w-9 text-right text-sm">
-                                        {progress}%
-                                      </strong>
+                                      <BusinessCompletionRate
+                                        rate={progress}
+                                        className="w-9 text-right text-sm"
+                                      />
                                     </div>
                                   </TableCell>
                                 </TableRow>
