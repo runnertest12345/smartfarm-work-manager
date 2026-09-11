@@ -553,9 +553,11 @@ export function WorkTaskSurface({
   searching = false,
   onEditingChange,
   deleteAction,
+  contextRootId,
 }: {
   items: FarmWorkItem[];
   allItems: FarmWorkItem[];
+  contextRootId?: string;
   mode?: 'board' | 'list';
   recorder: string;
   latestSummary?: (item: FarmWorkItem) => { action: string; received: string };
@@ -861,24 +863,44 @@ export function WorkTaskSurface({
       setSavingId('');
     }
   }
+  // Keep full ancestry for permissions, but start a detail list below its selected task.
+  const displayRoots = contextRootId
+    ? tree.children.get(contextRootId) || []
+    : tree.roots;
+  const outlineNumbers = new Map<string, string>();
+  function numberBranch(item: FarmWorkItem, number: string) {
+    if (outlineNumbers.has(item.id)) return;
+    outlineNumbers.set(item.id, number);
+    (tree.children.get(item.id) || []).forEach((child, index) =>
+      numberBranch(child, `${number}.${index + 1}`),
+    );
+  }
+  displayRoots.forEach((item, index) => numberBranch(item, String(index + 1)));
+  let fallbackNumber = displayRoots.length;
+  for (const item of items)
+    if (!outlineNumbers.has(item.id)) numberBranch(item, String(++fallbackNumber));
+  const expanded = (id: string) => searching || !collapsed.has(id) || !visible.has(id);
+  const branches = [...outlineNumbers.keys()].filter((id) =>
+    included.has(id) && tree.children.get(id)?.length,
+  );
   const rows: { item: FarmWorkItem; depth: number }[] = [];
   const visited = new Set<string>();
   function visit(item: FarmWorkItem, depth: number) {
     if (visited.has(item.id) || !included.has(item.id)) return;
     visited.add(item.id);
     rows.push({ item, depth });
-    if (!collapsed.has(item.id) || !visible.has(item.id))
+    if (expanded(item.id))
       (tree.children.get(item.id) || []).forEach((child) =>
         visit(child, depth + 1),
       );
   }
-  tree.roots.forEach((item) => visit(item, 0));
+  displayRoots.forEach((item) => visit(item, 0));
   for (const item of items)
     if (
       !visited.has(item.id) &&
       !tree
         .ancestors(item.id)
-        .some((parent) => collapsed.has(parent.id) && visible.has(parent.id))
+        .some((parent) => !expanded(parent.id))
     )
       visit(item, 0);
   const movingGroup = moveChoice
@@ -903,11 +925,21 @@ export function WorkTaskSurface({
     }) ?? [];
   return (
     <div ref={surfaceElement} tabIndex={-1} className="space-y-3">
-      <p className="text-sm text-slate-600">
-        {mode === 'board'
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-slate-600">
+          {mode === 'board'
           ? '프로젝트명과 업무명을 표시합니다. 카드 제목이나 손잡이를 잡아 원하는 상태 열로 옮기세요. 세부 업무가 있으면 이동할 업무를 선택합니다. 상세 보기에서 담당자·기한·처리 내용을 확인하고 수정할 수 있습니다.'
-          : '업무를 펼쳐 세부 업무를 확인하고, 현재 목록에서 바로 수정하세요.'}
-      </p>
+          : searching
+            ? '검색 결과의 상하위 관계를 펼쳐서 표시합니다. 검색을 지우면 기존 접힘 상태로 돌아갑니다.'
+            : '목록 번호로 상하위 관계를 확인하세요. 최근 기록은 각 업무에서 펼칠 수 있습니다.'}
+        </p>
+        {mode === 'list' && branches.length > 0 && (
+          <div className="flex shrink-0 gap-2">
+            <Button type="button" size="sm" variant="outline" disabled={searching} onClick={() => setCollapsed(new Set(branches))}>모두 접기</Button>
+            <Button type="button" size="sm" variant="outline" disabled={searching} onClick={() => setCollapsed(new Set())}>모두 펼치기</Button>
+          </div>
+        )}
+      </div>
       {notice && (
         <output
           className="block rounded-lg border bg-white p-3 text-sm"
@@ -1031,7 +1063,7 @@ export function WorkTaskSurface({
         />
       ) : (
         <div className="overflow-hidden rounded-xl border bg-white">
-          <Table className="min-w-[760px]">
+          <Table className="min-w-[760px] border-separate border-spacing-y-1">
             <TableHeader>
               <TableRow>
                 <TableHead>업무·세부 업무</TableHead>
@@ -1046,21 +1078,20 @@ export function WorkTaskSurface({
                   key={item.id}
                   item={item}
                   depth={depth}
+                  number={outlineNumbers.get(item.id) || ''}
+                  level={tree.ancestors(item.id).length}
                   hasChildren={Boolean(tree.children.get(item.id)?.length)}
-                  expanded={!collapsed.has(item.id) || !visible.has(item.id)}
-                  onToggle={() => toggle(item.id)}
+                  expanded={expanded(item.id)}
+                  searching={searching}
+                  onToggle={() => { if (!searching) toggle(item.id); }}
                   onOpen={() => openItem(item, Date.now())}
                   projectLabel={projectLabel(item)}
                   parentTitle={
                     tree.byId.get(item.parentWorkItemId || '')?.title
                   }
                   status={status(item)}
-                  progress={
-                    <>
-                      {progress(item)}
-                      {historySummary(item)}
-                    </>
-                  }
+                  progress={progress(item)}
+                  history={historySummary(item)}
                   actions={actions(item)}
                   editor={null}
                 />
@@ -1086,27 +1117,35 @@ export function WorkTaskSurface({
 function TaskTableRows({
   item,
   depth,
+  number,
+  level,
   hasChildren,
   expanded,
+  searching,
   onToggle,
   onOpen,
   projectLabel,
   parentTitle,
   status,
   progress,
+  history,
   actions,
   editor,
 }: {
   item: FarmWorkItem;
   depth: number;
+  number: string;
+  level: number;
   hasChildren: boolean;
   expanded: boolean;
+  searching: boolean;
   onToggle: () => void;
   onOpen: () => void;
   projectLabel: string;
   parentTitle?: string;
   status: ReactNode;
   progress: ReactNode;
+  history: ReactNode;
   actions: ReactNode;
   editor: ReactNode;
 }) {
@@ -1115,30 +1154,35 @@ function TaskTableRows({
       <TableRow
         data-work-id={item.id}
         data-work-depth={depth}
+        data-work-number={number}
         className={
-          depth
-            ? 'bg-[#f7faf8] hover:bg-[#edf5ef]'
-            : 'border-t-8 border-t-white bg-[#eaf3ed] hover:bg-[#e1efe6]'
+          depth === 0
+            ? 'bg-emerald-50 [&>td]:border-y [&>td]:border-emerald-200 [&>td:first-child]:border-l-4 [&>td:first-child]:border-l-emerald-700'
+            : hasChildren
+              ? 'bg-slate-100 [&>td]:border-y [&>td]:border-slate-200 [&>td:first-child]:border-l-4 [&>td:first-child]:border-l-slate-400'
+              : 'bg-white [&>td]:border-b [&>td]:border-slate-200 [&>td:first-child]:border-l-4 [&>td:first-child]:border-l-transparent'
         }
       >
-        <TableCell className="align-top">
+        <TableCell className="w-[48%] whitespace-normal align-top">
           <div
-            style={{ marginLeft: `${Math.min(depth, 6) * 24}px` }}
+            style={{ marginLeft: `${Math.min(depth, 3) * 24}px` }}
             className={
               depth
                 ? 'relative border-l-2 border-[#91b8a0] pl-4 before:absolute before:left-0 before:top-5 before:h-px before:w-4 before:bg-[#91b8a0]'
                 : ''
             }
           >
-            <div className="flex items-start gap-1">
+            <div className="flex min-w-0 items-start gap-2">
               {hasChildren ? (
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
                   aria-expanded={expanded}
-                  aria-label={`${item.title} 세부 업무 ${expanded ? '접기' : '펼치기'}`}
+                  aria-label={`${item.title} 세부 업무 ${searching ? '검색 중 펼침' : expanded ? '접기' : '펼치기'}`}
+                  disabled={searching}
                   onClick={onToggle}
+                  className="shrink-0 border border-slate-200 bg-white"
                 >
                   {expanded ? (
                     <ChevronDown className="size-4" />
@@ -1147,37 +1191,43 @@ function TaskTableRows({
                   )}
                 </Button>
               ) : (
-                <span className="w-4 shrink-0" />
+                <span className="w-8 shrink-0" aria-hidden="true" />
               )}
-              <div>
-                <p
-                  className={`mb-1 text-xs font-semibold ${depth ? 'text-[#52735e]' : 'text-[#285c3d]'}`}
-                >
-                  {depth
-                    ? `↳ 세부 업무${depth > 1 ? ` · ${depth}단계` : ''}`
-                    : item.parentWorkItemId
-                      ? '세부 업무 · 상위 업무 연결 확인 필요'
-                      : '하위 업무'}
-                </p>
+              <div className="min-w-0 flex-1">
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <span aria-label={`목록 번호 ${number}`} className={`max-w-full break-all rounded-md px-2 py-1 font-mono text-sm font-semibold tabular-nums ${depth === 0 ? 'bg-emerald-800 text-white' : 'border border-slate-300 bg-white text-slate-700'}`}>{number}</span>
+                  <span className="text-sm font-semibold text-slate-600">
+                    {item.parentWorkItemId && !parentTitle
+                      ? '상위 업무 연결 확인 필요'
+                      : level ? `세부 업무 · ${level}단계` : '상위 업무'}
+                    {hasChildren ? ' · 묶음' : ''}
+                  </span>
+                </div>
                 {isHeadPriority(item) && (
                   <p className="mb-1 text-sm font-bold text-amber-900">
                     부서장 지시 · 최우선
                   </p>
                 )}
-                {parentTitle && (
-                  <p className="mb-1 max-w-sm whitespace-normal text-xs text-[#52735e]">
-                    상위: {parentTitle}
-                  </p>
-                )}
                 <button
                   type="button"
                   onClick={onOpen}
-                  className="min-h-9 max-w-sm whitespace-normal text-left text-base font-semibold hover:text-emerald-800 hover:underline"
+                  className="min-h-9 w-full break-words whitespace-normal text-left text-base font-bold hover:text-emerald-800 hover:underline"
                 >
                   {item.title}
                 </button>
-                <p className="text-xs text-slate-500">{projectLabel}</p>
+                {parentTitle && (
+                  <p className="mt-1 break-words text-xs text-slate-600">
+                    상위: {parentTitle}
+                  </p>
+                )}
+                {!depth && <p className="mt-1 break-words text-xs text-slate-500">{projectLabel}</p>}
                 {progress}
+                {history && (
+                  <details className="mt-2 text-sm text-slate-600">
+                    <summary className="w-fit cursor-pointer rounded py-1 font-medium focus-visible:outline-2 focus-visible:outline-emerald-700">최근 기록</summary>
+                    {history}
+                  </details>
+                )}
                 {item.nextAction && (
                   <p className="mt-1 max-w-sm whitespace-normal text-sm text-slate-600">
                     다음: {item.nextAction}

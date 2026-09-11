@@ -403,6 +403,70 @@ test('목록은 중첩 업무를 펼치고 접을 수 있으며 세부 실행 �
   assert.equal(nodes(tree).filter((x) => x.props?.item?.id === 'b').length, 1);
 });
 
+test('목록 번호는 접기·검색과 무관하게 계층을 유지하고 전체 접기를 지원한다', () => {
+  reset();
+  const allItems = [
+    { ...item, childWorkItemIds: ['child', 'sibling'] },
+    { ...item, id: 'child', parentWorkItemId: item.id, childWorkItemIds: ['leaf'] },
+    { ...item, id: 'leaf', parentWorkItemId: 'child' },
+    { ...item, id: 'sibling', parentWorkItemId: item.id },
+    { ...item, id: 'other' },
+  ];
+  const props = surface({ mode: 'list', items: allItems, allItems });
+  const numbers = (tree) => nodes(tree).filter((node) => node.props?.onToggle && node.props?.number).map((node) => node.props.number);
+  let tree = render(WorkTaskSurface, props);
+  assert.deepEqual(numbers(tree), ['1', '1.1', '1.1.1', '1.2', '2']);
+  find(tree, (node) => node.props?.children === '모두 접기').props.onClick();
+  tree = render(WorkTaskSurface, props);
+  assert.deepEqual(numbers(tree), ['1', '2']);
+  tree = render(WorkTaskSurface, { ...props, items: [allItems[2]], searching: true });
+  assert.deepEqual(numbers(tree), ['1', '1.1', '1.1.1']);
+  // Even a matching parent must reveal its matching children without changing collapse state.
+  tree = render(WorkTaskSurface, { ...props, searching: true });
+  assert.deepEqual(numbers(tree), ['1', '1.1', '1.1.1', '1.2', '2']);
+  const searchedParent = find(tree, (node) => node.props?.number === '1');
+  const toggleButton = find(searchedParent.type(searchedParent.props), (node) => node.props?.['aria-expanded'] !== undefined);
+  assert.equal(toggleButton.props.disabled, true);
+  assert.match(toggleButton.props['aria-label'], /검색 중 펼침/);
+  searchedParent.props.onToggle();
+  tree = render(WorkTaskSurface, props);
+  assert.deepEqual(numbers(tree), ['1', '2']);
+  find(tree, (node) => node.props?.children === '모두 펼치기').props.onClick();
+  tree = render(WorkTaskSurface, props);
+  assert.deepEqual(numbers(tree), ['1', '1.1', '1.1.1', '1.2', '2']);
+});
+
+test('선택한 중간 업무 상세는 자손만 표시하고 전체 조상의 완료 잠금을 유지한다', () => {
+  reset();
+  const root = { ...item, status: 'completed', childWorkItemIds: ['selected'] };
+  const selected = { ...item, id: 'selected', title: '선택한 상위 업무', parentWorkItemId: root.id, childWorkItemIds: ['leaf'] };
+  const leaf = { ...item, id: 'leaf', title: '직접 세부 업무', parentWorkItemId: selected.id };
+  const props = surface({ mode: 'list', items: [leaf], allItems: [root, selected, leaf], contextRootId: selected.id });
+  let tree = render(WorkTaskSurface, props);
+  const rows = nodes(tree).filter((node) => node.props?.item && node.props?.onToggle);
+  assert.deepEqual(rows.map((node) => node.props.item.id), ['leaf']);
+  assert.equal(rows[0].props.level, 2);
+  const html = renderToStaticMarkup(tree);
+  assert.match(html, /상위: 선택한 상위 업무/);
+  assert.doesNotMatch(html, /상위 업무 연결 확인 필요/);
+  find(rows[0].props.actions, (node) => node.props?.['aria-label'] === '직접 세부 업무 빠른 수정').props.onClick();
+  tree = render(WorkTaskSurface, props);
+  assert.equal(find(tree, (node) => node.type === WorkQuickEditor).props.statusLocked, true);
+});
+
+test('깊은 목록은 단계와 번호를 보존하고 최근 기록은 기본 접힘으로 표시한다', () => {
+  reset();
+  const allItems = Array.from({ length: 9 }, (_, index) => ({ ...item, id: `depth-${index}`, parentWorkItemId: index ? `depth-${index - 1}` : '' }));
+  const tree = render(WorkTaskSurface, surface({ mode: 'list', items: allItems, allItems, latestSummary: () => ({ action: '최근 처리 내용', received: '받은 내용' }) }));
+  const row = find(tree, (node) => node.props?.item?.id === 'depth-8' && node.props?.onToggle);
+  assert.equal(row.props.number, '1.1.1.1.1.1.1.1.1');
+  const renderedRow = row.type(row.props);
+  assert.equal(find(renderedRow, (node) => node.props?.style?.marginLeft).props.style.marginLeft, '72px');
+  assert.equal(find(renderedRow, (node) => node.type === 'details').props.open, undefined);
+  assert.match(renderToStaticMarkup(renderedRow), /세부 업무 · 8단계/);
+  assert.match(renderToStaticMarkup(renderedRow), /최근 처리 내용/);
+});
+
 test('상위 손잡이가 표시되며 자식 실행 업무의 드래그는 해당 업무만 변경한다', async () => {
   reset();
   const parent = { ...item, childWorkItemIds: ['b'] };

@@ -7019,6 +7019,7 @@ export function FarmLedgerDashboard({
                                 ?.receivedContent || '',
                           })}
                           mode="list"
+                          searching={Boolean(workSearch.trim())}
                           items={filteredWorkItems}
                           allItems={operationalWorkItems}
                           recorder={accountName || accountEmail}
@@ -9407,9 +9408,8 @@ export function FarmLedgerDashboard({
                             items={workHierarchy.descendants(
                               selectedWorkItem.id,
                             )}
-                            allItems={workHierarchy.descendants(
-                              selectedWorkItem.id,
-                            )}
+                            allItems={operationalWorkItems}
+                            contextRootId={selectedWorkItem.id}
                             recorder={accountName || accountEmail}
                             projectLabel={workContextLabel}
                             onOpen={(item) => openFarm(item.farmId, item.id)}

@@ -574,6 +574,9 @@ test('빠른 수정 팝업은 기존 뒤로가기 보호에 포함되고 모든 
   assert.equal(surfaces.length, 4);
   for (const [, props] of surfaces)
     assert.match(props, /onEditingChange=\{setWorkQuickEditOpen\}/);
+  const list = surfaces.find(([, props]) => props.includes('items={filteredWorkItems}') && props.includes('mode="list"'));
+  assert.ok(list, 'the filtered task list is connected');
+  assert.match(list[1], /searching=\{Boolean\(workSearch.trim\(\)\)\}/);
   const controls = source('app/work-task-controls.tsx');
   assert.doesNotMatch(controls, /scrollIntoView/);
 });
