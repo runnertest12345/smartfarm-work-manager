@@ -1,4 +1,7 @@
 'use client';
+import Image from 'next/image';
+import { ServiceWorkPanel } from './service-work-panel';
+import { serviceReceivedAt, serviceYear } from '@/lib/service-work';
 import {
   ProjectSettlementDetails,
   ProjectSettlementEditor,
@@ -1202,6 +1205,7 @@ export function FarmLedgerDashboard({
   const [resolvingProjectUpdateId, setResolvingProjectUpdateId] = useState('');
   const [editingRecordId, setEditingRecordId] = useState('');
   const [dialog, setDialog] = useState<DialogKind>(null);
+  const serviceRegistrationOpenRef = useRef(false);
   const [childTaskParent, setChildTaskParent] = useState<FarmWorkItem | null>(
     null,
   );
@@ -3225,6 +3229,7 @@ export function FarmLedgerDashboard({
   function canGoBackDetail() {
     if (
       dialog ||
+      serviceRegistrationOpenRef.current ||
       childTaskParent ||
       taskRegistrationOpen ||
       quickDetailTaskId ||
@@ -5152,12 +5157,21 @@ export function FarmLedgerDashboard({
         <div className="mx-auto flex min-h-screen max-w-[1920px]">
           <aside className="sticky top-0 hidden h-screen w-[224px] shrink-0 flex-col overflow-y-auto bg-[#15382e] px-3 py-5 text-white lg:flex">
             <div className="mb-7 flex items-center gap-3 px-3">
-              <div className="grid size-10 place-items-center rounded-xl bg-[#62b982] shadow-[0_10px_24px_rgba(98,185,130,0.24)]">
-                <Leaf className="size-5" />
+              <div className="w-14 shrink-0 rounded-lg bg-white p-1.5">
+                <Image
+                  src="/farmos-ci.png"
+                  alt="FarmOS 파모스"
+                  width={2480}
+                  height={2266}
+                  unoptimized
+                  className="h-auto w-full object-contain"
+                />
               </div>
               <div>
-                <p className="font-bold">팜로그</p>
-                <p className="text-xs text-white/70">스마트팜 업무관리</p>
+                <p className="font-bold">파모스</p>
+                <p className="break-keep text-xs text-white/70">
+                  업무관리 프로그램
+                </p>
               </div>
             </div>
             <nav aria-label="주요 메뉴" className="space-y-5">
@@ -5253,8 +5267,15 @@ export function FarmLedgerDashboard({
           >
             <header className="sticky top-0 z-20 flex min-h-[72px] flex-wrap items-center justify-between gap-2 border-b border-[#d8e0e7] bg-white px-4 py-3 sm:px-6">
               <div className="flex items-center gap-3 lg:hidden">
-                <div className="grid size-9 place-items-center rounded-xl bg-[#2f7b59] text-white">
-                  <Leaf className="size-5" />
+                <div className="w-10 shrink-0">
+                  <Image
+                    src="/farmos-ci.png"
+                    alt="FarmOS 파모스"
+                    width={2480}
+                    height={2266}
+                    unoptimized
+                    className="h-auto w-full object-contain"
+                  />
                 </div>
                 <Select
                   value={view}
@@ -9452,105 +9473,75 @@ export function FarmLedgerDashboard({
                   )}
 
                   {view === 'service' && (
-                    <section>
-                      <div className="mb-6">
-                        <p className="text-sm font-medium text-[#647568]">
-                          농가 장애 대응
-                        </p>
-                        <h1 className="mt-1 text-[28px] font-bold">
-                          A/S 업무 관리
-                        </h1>
-                        <p className="mt-2 text-sm text-[#77847b]">
-                          A/S 업무의 현재 상태와 마지막 수신·처리 결과를
-                          확인합니다.
-                        </p>
-                      </div>
-                      {serviceWorkItems.length ? (
-                        <div className="grid gap-4 xl:grid-cols-2">
-                          {[...serviceWorkItems]
-                            .sort((a, b) =>
-                              compareServiceWorkItems(a, b, riskNow),
-                            )
-                            .map((item) => {
-                              const farm = farmById.get(item.farmId);
-                              const project = projectForWorkItem(item);
-                              const received = latestEntryWith(
-                                item,
-                                'receivedContent',
-                              );
-                              const action = latestEntryWith(
-                                item,
-                                'actionContent',
-                              );
-                              return (
-                                <button
-                                  key={item.id}
-                                  type="button"
-                                  onClick={() => openFarm(item.farmId, item.id)}
-                                  className="rounded-2xl border border-[#dfe6dd] bg-white p-5 text-left shadow-sm hover:bg-[#fafcf9]"
-                                >
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div>
-                                      <div className="flex flex-wrap gap-2">
-                                        <Badge
-                                          variant="outline"
-                                          className={workStatusClass(
-                                            item.status,
-                                          )}
-                                        >
-                                          {FARM_LOG_STATUS_LABELS[item.status]}
-                                        </Badge>
-                                        <span className="text-xs text-[#89938c]">
-                                          {formatTimestamp(item.lastActivityAt)}
-                                        </span>
-                                      </div>
-                                      <h2 className="mt-3 font-bold">
-                                        {item.title}
-                                      </h2>
-                                      <p className="mt-1 text-sm text-[#69766e]">
-                                        {farm?.name ?? '농가 없음'} ·{' '}
-                                        {project?.name ?? '사업 없음'}
-                                      </p>
-                                    </div>
-                                    <div className="grid size-10 place-items-center rounded-xl bg-[#fff1e8] text-[#b46438]">
-                                      <Wrench className="size-5" />
-                                    </div>
-                                  </div>
-                                  <div className="mt-4 rounded-xl bg-[#f6f8f6] p-3">
-                                    <p className="text-[11px] font-semibold text-[#7a867d]">
-                                      마지막 받은 내용
-                                    </p>
-                                    <p className="mt-1 line-clamp-2 text-sm leading-6">
-                                      {received?.receivedContent ||
-                                        '받은 내용이 없습니다.'}
-                                    </p>
-                                  </div>
-                                  <div className="mt-3 rounded-xl bg-[#eef6f0] p-3">
-                                    <p className="text-[11px] font-semibold text-[#477356]">
-                                      마지막 처리 내용
-                                    </p>
-                                    <p className="mt-1 line-clamp-2 text-sm leading-6">
-                                      {action?.actionContent ||
-                                        '처리 내용이 없습니다.'}
-                                    </p>
-                                  </div>
-                                  <div className="mt-3 flex items-center justify-between text-xs text-[#89938c]">
-                                    <span>담당 {item.owner || '미지정'}</span>
-                                    <ArrowRight className="size-4" />
-                                  </div>
-                                </button>
-                              );
-                            })}
-                        </div>
-                      ) : (
-                        <div className="rounded-2xl border border-[#dfe6dd] bg-white py-16 text-center">
-                          <Wrench className="mx-auto size-8 text-[#9aa49d]" />
-                          <p className="mt-3 font-semibold">
-                            등록된 A/S 업무가 없습니다.
-                          </p>
-                        </div>
+                    <ServiceWorkPanel
+                      currentYear={serviceYear(riskNow)}
+                      onRegistrationOpenChange={(open) => {
+                        serviceRegistrationOpenRef.current = open;
+                      }}
+                      rows={[...serviceWorkItems]
+                        .sort((a, b) => compareServiceWorkItems(a, b, riskNow))
+                        .map((item) => ({
+                          id: item.id,
+                          title: item.title,
+                          farmName:
+                            farmById.get(item.farmId)?.name ?? '농가 없음',
+                          projectName:
+                            projectForWorkItem(item)?.name ?? '사업 없음',
+                          owner: item.owner,
+                          statusLabel: FARM_LOG_STATUS_LABELS[item.status],
+                          statusClass: workStatusClass(item.status),
+                          receivedAt: serviceReceivedAt(
+                            item,
+                            historiesByWorkItem.get(item.id) ?? [],
+                          ),
+                          receivedContent:
+                            latestEntryWith(item, 'receivedContent')
+                              ?.receivedContent ?? '',
+                          actionContent:
+                            latestEntryWith(item, 'actionContent')
+                              ?.actionContent ?? '',
+                        }))}
+                      registrationOptions={workspace.records.flatMap(
+                        (record) => {
+                          const farm = farmById.get(record.farmId);
+                          const project = projectById.get(record.projectId);
+                          if (
+                            !farm ||
+                            !project ||
+                            project.deletedAt ||
+                            project.status === 'completed'
+                          )
+                            return [];
+                          return [
+                            {
+                              recordId: record.id,
+                              farmId: farm.id,
+                              farmLabel: `${farm.name} · ${farm.farmCode}`,
+                              projectLabel: `${project.year} · ${project.name}`,
+                            },
+                          ];
+                        },
                       )}
-                    </section>
+                      onRegister={(recordId) => {
+                        const record = recordById.get(recordId);
+                        const project =
+                          record && projectById.get(record.projectId);
+                        if (
+                          record &&
+                          farmById.has(record.farmId) &&
+                          project &&
+                          !project.deletedAt &&
+                          project.status !== 'completed'
+                        )
+                          openQuickWorkItem(record, 'service', '');
+                      }}
+                      onOpen={(id) => {
+                        const item = serviceWorkItems.find(
+                          (work) => work.id === id,
+                        );
+                        if (item) openFarm(item.farmId, item.id);
+                      }}
+                    />
                   )}
 
                   {view === 'organization' && (
