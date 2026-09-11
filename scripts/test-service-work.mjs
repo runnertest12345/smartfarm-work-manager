@@ -319,7 +319,7 @@ test('대시보드는 기존 A/S 조회·등록·상세 연결과 원본 로고�
     dashboard.indexOf('<nav '),
   );
   assert.match(brand, /farmos-ci.png/);
-  assert.match(brand, /bg-white/);
+  assert.doesNotMatch(brand, /bg-white/);
   assert.match(brand, /팜로그/);
   assert.match(brand, /파모스 업무관리 프로그램/);
   assert.doesNotMatch(brand, /<Leaf/);

@@ -5155,7 +5155,7 @@ export function FarmLedgerDashboard({
         <div className="mx-auto flex min-h-screen max-w-[1920px]">
           <aside className="sticky top-0 hidden h-screen w-[224px] shrink-0 flex-col overflow-y-auto bg-[#15382e] px-3 py-5 text-white lg:flex">
             <div className="mb-7 flex items-center gap-3 px-3">
-              <div className="w-14 shrink-0 rounded-lg bg-white p-1.5">
+              <div className="w-14 shrink-0 p-1.5">
                 <Image
                   src="/farmos-ci.png"
                   alt="FarmOS 파모스"

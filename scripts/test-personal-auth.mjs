@@ -265,6 +265,19 @@ test('로그인 문구와 로고를 교체하고 이메일·Google 로그인 버
   assert.equal(logo.props.height, 2266);
   assert.ok(nodes(card).some((node) => node.props?.children === '팜로그'));
   assert.equal(logo.props.unoptimized, true);
+  assert.match(card.props.className, /auth-shell/);
+  const backdrop = find(
+    card,
+    (node) => node.props?.className === 'auth-backdrop',
+  );
+  assert.equal(backdrop.props['aria-hidden'], 'true');
+  assert.match(
+    find(card, (node) => node.type === 'section').props.className,
+    /bg-white/,
+  );
+  const css = source('app/globals.css');
+  assert.match(css, /\.auth-backdrop\s*\{[^}]*pointer-events: none/s);
+  assert.doesNotMatch(card.props.className, /overflow-hidden|\bfixed\b/);
   assert.ok(
     nodes(card).some(
       (node) => node.props?.children === '파모스 업무관리 프로그램',

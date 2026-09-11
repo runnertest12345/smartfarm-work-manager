@@ -121,6 +121,48 @@ body {
   --sidebar-ring: oklch(0.556 0 0);
 }
 
+/* Auth-only decoration: keep the form opaque and the document free to scroll. */
+.auth-shell {
+  position: relative;
+  isolation: isolate;
+  min-height: 100svh;
+  background:
+    radial-gradient(ellipse at 12% 12%, #25898955, transparent 55%),
+    radial-gradient(ellipse at 90% 88%, #1a91c73d, transparent 52%),
+    linear-gradient(135deg, #133e35 0%, #123e48 50%, #15354c 100%);
+}
+.auth-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.auth-backdrop::before,
+.auth-backdrop::after {
+  content: '';
+  position: absolute;
+  width: clamp(32rem, 65vw, 70rem);
+  aspect-ratio: 1;
+  border: 1px solid #b7e8e51a;
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 3rem #b7e8e508,
+    0 0 0 6rem #b7e8e505;
+}
+.auth-backdrop::before {
+  top: -30rem;
+  right: -20rem;
+}
+.auth-backdrop::after {
+  bottom: -34rem;
+  left: -24rem;
+}
+.auth-panel {
+  box-shadow:
+    0 28px 80px #061f3240,
+    0 4px 16px #061f321f;
+}
+
 /* Shared working-surface rules: readable Korean text, clear focus and compact data. */
 .farm-app {
   background: var(--background);

@@ -43,9 +43,10 @@ type AccessState =
   | 'allowed';
 function AuthCard({ children }: { children: React.ReactNode }) {
   return (
-    <main className="grid min-h-screen place-items-center bg-slate-100 px-5 py-10 text-slate-900">
-      <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
-        <div className="mb-7 flex items-center gap-4">
+    <main className="auth-shell grid min-h-screen place-items-center px-5 py-10 text-slate-900">
+      <div className="auth-backdrop" aria-hidden="true" />
+      <section className="auth-panel relative w-full min-w-0 max-w-md rounded-2xl border border-white bg-white p-6 sm:p-8">
+        <div className="mb-7 flex items-center gap-4 rounded-xl border border-[#deebed] bg-[#f0f7f8] p-3 sm:p-4">
           <Image
             src="/farmos-ci.png"
             alt="FarmOS 파모스"
@@ -54,7 +55,7 @@ function AuthCard({ children }: { children: React.ReactNode }) {
             unoptimized
             className="h-auto w-20 shrink-0 object-contain sm:w-24"
           />
-          <div>
+          <div className="min-w-0">
             <p className="text-xl font-bold text-slate-900">팜로그</p>
             <p className="mt-1 break-keep text-sm leading-6 text-slate-600">
               파모스 업무관리 프로그램
