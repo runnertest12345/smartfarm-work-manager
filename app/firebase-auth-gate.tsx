@@ -54,9 +54,12 @@ function AuthCard({ children }: { children: React.ReactNode }) {
             unoptimized
             className="h-auto w-20 shrink-0 object-contain sm:w-24"
           />
-          <p className="break-keep text-base font-semibold leading-7 text-slate-700">
-            파모스 업무관리 프로그램
-          </p>
+          <div>
+            <p className="text-xl font-bold text-slate-900">팜로그</p>
+            <p className="mt-1 break-keep text-sm leading-6 text-slate-600">
+              파모스 업무관리 프로그램
+            </p>
+          </div>
         </div>
         {children}
       </section>

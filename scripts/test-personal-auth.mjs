@@ -263,6 +263,7 @@ test('로그인 문구와 로고를 교체하고 이메일·Google 로그인 버
   const logo = find(card, (node) => node.props?.src === '/farmos-ci.png');
   assert.equal(logo.props.width, 2480);
   assert.equal(logo.props.height, 2266);
+  assert.ok(nodes(card).some((node) => node.props?.children === '팜로그'));
   assert.equal(logo.props.unoptimized, true);
   assert.ok(
     nodes(card).some(

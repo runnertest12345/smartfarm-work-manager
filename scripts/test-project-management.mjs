@@ -122,6 +122,7 @@ const alerts = Object.fromEntries(
 const aliases = {
   '@/lib/project-farm-progress': load('lib/project-farm-progress.ts'),
   '@/components/ui/button': { Button: button },
+  '@/components/ui/badge': { Badge: tag('span') },
   '@/components/ui/input': { Input: input },
   '@/components/ui/table': table,
   '@/components/ui/collapsible': collapsible,
@@ -134,6 +135,10 @@ const aliases = {
 };
 const { ProjectFarmProgressCard, ProjectStageFigures, ProjectStageSummary } =
   load('app/project-farm-progress.tsx', aliases);
+const { ProjectManagementList } = load(
+  'app/project-management-list.tsx',
+  aliases,
+);
 const { ProjectDeletionDialog } = load(
   'app/project-deletion-dialog.tsx',
   aliases,
@@ -364,21 +369,18 @@ test('농가 세부 보기는 화면 이동 없이 KPI 아래 표를 펼치고 �
   assert.doesNotMatch(renderToStaticMarkup(tree), /테스트 농가 a/);
   assert.match(renderToStaticMarkup(tree), /세부 보기/);
 });
-test('프로젝트 표의 KPI 표시가 요약 카드와 같은 수치를 사용한다', () => {
+test('프로젝트 설치 KPI는 상세 농가 진행상황에 유지하고 목록은 간결하게 표시한다', () => {
   const stage = summarizeProjectFarms(records, 'p1').stages[0];
   const html = renderToStaticMarkup(render(ProjectStageFigures, { stage }));
   assert.match(html, /67%/);
   assert.match(html, /완료 2개소/);
   assert.match(html, /미완료 1개소/);
   const dashboard = source('app/farm-ledger-dashboard.tsx');
-  assert.match(
-    dashboard,
-    /<ProjectStageSummary\s+progress=\{snapshot.farmProgress\}/,
-  );
+  assert.doesNotMatch(dashboard, /<ProjectStageSummary/);
   assert.match(dashboard, /progress=\{selectedProjectSnapshot.farmProgress\}/);
 });
 
-test('프로젝트 표는 비율만 먼저 표시하고 상세 보기에서 완료·미완료 개소를 펼친다', () => {
+test('독립 단계 요약은 상세 보기에서 완료·미완료 개소를 펼친다', () => {
   reset();
   const props = {
     progress: summarizeProjectFarms(records, 'p1'),
@@ -467,7 +469,7 @@ test('통합 현황은 연도 드롭다운을 사용하고 같은 선택값을 K
   );
 });
 
-test('프로젝트 관리도 연도 버튼 없이 선택 연도의 KPI와 표·카드 목록을 표시한다', () => {
+test('프로젝트 관리는 조회 조건을 모으고 간결한 프로젝트 중심 요약·목록을 표시한다', () => {
   const dashboard = source('app/farm-ledger-dashboard.tsx');
   const projects = dashboard.slice(
     dashboard.indexOf("{view === 'projects'"),
@@ -482,12 +484,132 @@ test('프로젝트 관리도 연도 버튼 없이 선택 연도의 KPI와 표·�
     source('app/farm-kpi-panels.tsx'),
     /연도별 사업 집계|aria-pressed/,
   );
-  assert.match(
+  assert.match(projects, /aria-label="프로젝트 조회 조건"/);
+  assert.match(projects, /<ProjectManagementList/);
+  assert.doesNotMatch(
     projects,
-    /summary=\{yearProjectKpis\}\s+year=\{projectYearFilter\}/,
+    /<ProjectKpiPanel|프로젝트 표시 방식|설치 \/ 시운전 \/ 교육/,
   );
-  assert.equal((projects.match(/filteredProjects\.map/g) || []).length, 2);
+  assert.equal((projects.match(/filteredProjects\.map/g) || []).length, 1);
   assert.match(dashboard, /const filteredProjects = yearProjects\s*\.filter/);
+});
+
+test('프로젝트 요약은 4개이며 상태 기준 집계와 중복 없는 확인 필요 개수를 사용한다', () => {
+  reset();
+  const rows = ['active', 'completed', 'on_hold'].map((status, index) => ({
+    id: String(index),
+    name: `프로젝트${index}`,
+    context: '2026년 · 일반 사업',
+    manager: '',
+    status,
+    statusLabel: status,
+    statusClass: '',
+    stageLabel: '운영',
+    farmCount: 1,
+    riskCount: index === 0 ? 7 : index === 1 ? 1 : 0,
+    riskLabel: '서류 · 구독',
+  }));
+  const props = { rows, onOpen() {} };
+  const buttons = (tree) =>
+    nodes(tree).filter(
+      (node) => typeof node.props?.['aria-pressed'] === 'boolean',
+    );
+  let tree = render(ProjectManagementList, props);
+  assert.equal(buttons(tree).length, 4);
+  const labels = buttons(tree).map((button) => renderToStaticMarkup(button));
+  assert.match(labels[0], /3<span/);
+  assert.match(labels[1], /1<span/);
+  assert.match(labels[2], /프로젝트 완료율 33%/);
+  assert.match(labels[3], /2<span/);
+  buttons(tree)[3].props.onClick();
+  tree = render(ProjectManagementList, props);
+  const body = renderToStaticMarkup(
+    find(tree, (node) => node.type === table.TableBody),
+  );
+  assert.match(body, /프로젝트0/);
+  assert.match(body, /프로젝트1/);
+  assert.doesNotMatch(body, /프로젝트2/);
+  buttons(tree)[2].props.onClick();
+  tree = render(ProjectManagementList, props);
+  assert.match(
+    renderToStaticMarkup(find(tree, (node) => node.type === table.TableBody)),
+    /프로젝트1/,
+  );
+  assert.doesNotMatch(
+    renderToStaticMarkup(find(tree, (node) => node.type === table.TableBody)),
+    /프로젝트0/,
+  );
+});
+
+test('간결한 프로젝트 목록은 클릭한 프로젝트를 열고 빈 필터에서 전체로 돌아간다', () => {
+  reset();
+  const opened = [];
+  const props = {
+    rows: [
+      {
+        id: 'p1',
+        name: '테스트 프로젝트',
+        context: '일반 사업',
+        manager: '담당자',
+        status: 'active',
+        statusLabel: '진행 중',
+        statusClass: '',
+        stageLabel: '설치',
+        farmCount: 3,
+        riskCount: 0,
+        riskLabel: '',
+      },
+    ],
+    onOpen: (id) => opened.push(id),
+  };
+  let tree = render(ProjectManagementList, props);
+  find(
+    tree,
+    (node) => node.props?.children === '테스트 프로젝트',
+  ).props.onClick();
+  assert.deepEqual(opened, ['p1']);
+  const metricButtons = nodes(tree).filter(
+    (node) => typeof node.props?.['aria-pressed'] === 'boolean',
+  );
+  metricButtons[2].props.onClick();
+  tree = render(ProjectManagementList, props);
+  assert.match(renderToStaticMarkup(tree), /조건에 맞는 프로젝트가 없습니다/);
+  find(
+    tree,
+    (node) => node.props?.children === '전체 프로젝트 보기',
+  ).props.onClick();
+  tree = render(ProjectManagementList, props);
+  assert.match(renderToStaticMarkup(tree), /테스트 프로젝트/);
+  props.rows = [];
+  assert.match(
+    renderToStaticMarkup(render(ProjectManagementList, props)),
+    /프로젝트 완료율 -/,
+  );
+});
+
+test('상세는 핵심 요약과 확인 항목 뒤에 농가 진행 카드를 한 번만 배치한다', () => {
+  const dashboard = source('app/farm-ledger-dashboard.tsx');
+  assert.match(
+    dashboard,
+    /selectedProject.description && \([\s\S]{0,700}\{selectedProject.description\}/,
+  );
+  const summary = dashboard.slice(
+    dashboard.indexOf('<TabsContent value="summary" className="space-y-4">'),
+    dashboard.indexOf('<TabsContent value="farms">'),
+  );
+  assert.ok(
+    summary.indexOf('선택한 프로젝트 요약') <
+      summary.indexOf('확인이 필요한 항목'),
+  );
+  assert.ok(
+    summary.indexOf('확인이 필요한 항목') <
+      summary.indexOf('<ProjectFarmProgressCard'),
+  );
+  assert.equal((summary.match(/<ProjectFarmProgressCard/g) || []).length, 1);
+  assert.doesNotMatch(summary, /설치·운영 완료율/);
+  assert.match(summary, /사업 진행률 산정 근거/);
+  assert.match(summary, /setProjectDetailTab\('farms'\)/);
+  assert.match(summary, /setProjectDetailTab\('settlement'\)/);
 });
 
 test('연도 선택은 빈 연도와 전체 연도를 유지하며 두 화면의 라벨을 연결한다', () => {

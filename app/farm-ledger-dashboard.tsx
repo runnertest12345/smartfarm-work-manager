@@ -1,6 +1,7 @@
 'use client';
 import Image from 'next/image';
 import { ServiceWorkPanel } from './service-work-panel';
+import { ProjectManagementList } from './project-management-list';
 import { serviceReceivedAt, serviceYear } from '@/lib/service-work';
 import {
   ProjectSettlementDetails,
@@ -14,10 +15,7 @@ import {
 
 import { ProjectWorkTree } from './project-work-tree';
 import { FarmPaymentHistory } from './farm-payment-history';
-import {
-  ProjectFarmProgressCard,
-  ProjectStageSummary,
-} from './project-farm-progress';
+import { ProjectFarmProgressCard } from './project-farm-progress';
 import {
   summarizeProjectFarms,
   isFarmStageComplete,
@@ -5168,9 +5166,9 @@ export function FarmLedgerDashboard({
                 />
               </div>
               <div>
-                <p className="font-bold">파모스</p>
+                <p className="font-bold">팜로그</p>
                 <p className="break-keep text-xs text-white/70">
-                  업무관리 프로그램
+                  파모스 업무관리 프로그램
                 </p>
               </div>
             </div>
@@ -7630,17 +7628,14 @@ export function FarmLedgerDashboard({
 
                   {view === 'projects' && (
                     <section>
-                      <div className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+                      <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
                         <div>
-                          <p className="text-sm font-medium text-[#647568]">
-                            프로젝트 중심 조회
-                          </p>
-                          <h1 className="mt-1 text-[28px] font-bold">
-                            프로젝트 통합관리
+                          <h1 className="text-[28px] font-bold">
+                            프로젝트 관리
                           </h1>
-                          <p className="mt-2 text-sm text-[#77847b]">
-                            연도별 사업과 설치·시운전·교육·구독률, 막힘, 서류와
-                            정산을 한곳에서 확인합니다.
+                          <p className="mt-2 text-sm text-slate-600">
+                            진행 상태를 한눈에 확인하고, 프로젝트를 선택해 세부
+                            내용을 관리하세요.
                           </p>
                         </div>
                         <Button
@@ -7651,15 +7646,134 @@ export function FarmLedgerDashboard({
                           프로젝트 추가
                         </Button>
                       </div>
+                      <section
+                        aria-label="프로젝트 조회 조건"
+                        className="mb-5 grid items-end gap-3 rounded-xl border border-slate-200 bg-white p-4 sm:grid-cols-2 xl:grid-cols-[160px_180px_minmax(200px,1fr)_180px]"
+                      >
+                        <ProjectYearSelector
+                          id="management-project-year"
+                          projects={activeProjects}
+                          value={projectYearFilter}
+                          onChange={setProjectYearFilter}
+                        />
+                        <ProjectTypeSelector
+                          id="project-type-scope"
+                          value={projectTypeFilter}
+                          onChange={setProjectTypeFilter}
+                        />
+                        <div className="space-y-2">
+                          <label
+                            htmlFor="management-project-search"
+                            className="text-sm font-medium"
+                          >
+                            프로젝트 검색
+                          </label>
+                          <Input
+                            id="management-project-search"
+                            value={projectSearch}
+                            onChange={(event) =>
+                              setProjectSearch(event.target.value)
+                            }
+                            placeholder="프로젝트명 · 기관 · 담당자"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label
+                            htmlFor="management-project-risk"
+                            className="text-sm font-medium"
+                          >
+                            확인 항목
+                          </label>
+                          <Select
+                            value={projectRiskFilter}
+                            onValueChange={(value) =>
+                              setProjectRiskFilter(
+                                value as typeof projectRiskFilter,
+                              )
+                            }
+                          >
+                            <SelectTrigger
+                              id="management-project-risk"
+                              className="h-10 w-full"
+                            >
+                              <SelectValue>
+                                {projectRiskFilter === 'all'
+                                  ? '전체 항목'
+                                  : projectRiskFilter === 'blocked'
+                                    ? '막힘 있음'
+                                    : projectRiskFilter === 'documents'
+                                      ? '서류 위험'
+                                      : projectRiskFilter === 'subscription'
+                                        ? '구독 위험'
+                                        : '정산 위험'}
+                              </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="all">전체 항목</SelectItem>
+                              <SelectItem value="blocked">막힘 있음</SelectItem>
+                              <SelectItem value="documents">
+                                서류 위험
+                              </SelectItem>
+                              <SelectItem value="subscription">
+                                구독 위험
+                              </SelectItem>
+                              <SelectItem value="settlement">
+                                정산 위험
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </section>
+                      <ProjectManagementList
+                        rows={filteredProjects.map((project) => {
+                          const snapshot = projectSnapshots.get(project.id)!;
+                          const blockers =
+                            snapshot.openProjectBlockers.length +
+                            snapshot.blockedItems.length;
+                          const subscriptions =
+                            snapshot.expiringSoon.length +
+                            snapshot.expiredSubscriptions.length +
+                            snapshot.missingSubscriptionExpiry.length;
+                          const riskLabel = [
+                            blockers ? `막힘 ${blockers}` : '',
+                            snapshot.documentRisks.length
+                              ? `서류 ${snapshot.documentRisks.length}`
+                              : '',
+                            subscriptions ? `구독 ${subscriptions}` : '',
+                            projectHasSettlementRisk(project)
+                              ? '정산 확인'
+                              : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' · ');
+                          return {
+                            id: project.id,
+                            name: project.name,
+                            context: `${project.year}년 · ${FARM_PROJECT_TYPE_LABELS[project.projectType]} · ${project.institution || '기관 미입력'}`,
+                            manager: project.manager,
+                            status: project.status,
+                            statusLabel:
+                              FARM_PROJECT_STATUS_LABELS[project.status],
+                            statusClass: projectStatusClass(project.status),
+                            stageLabel:
+                              FARM_PROJECT_STAGE_LABELS[project.currentStage],
+                            farmCount: snapshot.records.length,
+                            riskCount: projectRiskCount(project),
+                            riskLabel,
+                          };
+                        })}
+                        onOpen={openProjectDetail}
+                      />
                       {deletedProjects.length > 0 && (
-                        <Collapsible className="mb-4 rounded-xl border border-slate-200 bg-white p-3">
-                          <CollapsibleTrigger className="flex min-h-10 w-full items-center justify-between text-sm font-medium">
+                        <Collapsible className="mt-5 rounded-xl border border-slate-200 bg-white px-4 py-2">
+                          <CollapsibleTrigger className="flex min-h-10 w-full items-center justify-between text-sm text-slate-500">
                             삭제한 프로젝트 {deletedProjects.length}개
                             <ChevronDown className="size-4" />
                           </CollapsibleTrigger>
-                          <CollapsibleContent className="space-y-2 pt-3">
-                            <p className="text-sm text-slate-600">
-                              농가·구독·입금·업무·서류 기록은 보존되어 있습니다.
+                          <CollapsibleContent className="space-y-2 pb-2">
+                            <p className="text-xs text-slate-500">
+                              연결된 농가·업무·구독·입금·서류 기록은 보존되어
+                              있습니다.
                             </p>
                             {deletedProjects.map((project) => (
                               <div
@@ -7670,7 +7784,6 @@ export function FarmLedgerDashboard({
                                   {project.year}년 · {project.name}
                                 </span>
                                 <Button
-                                  type="button"
                                   size="sm"
                                   variant="outline"
                                   onClick={() =>
@@ -7684,490 +7797,6 @@ export function FarmLedgerDashboard({
                           </CollapsibleContent>
                         </Collapsible>
                       )}
-                      <div className="mb-4 grid max-w-xl gap-3 sm:grid-cols-2">
-                        <ProjectYearSelector
-                          id="management-project-year"
-                          projects={activeProjects}
-                          value={projectYearFilter}
-                          onChange={setProjectYearFilter}
-                        />
-                        <ProjectTypeSelector
-                          id="project-type-scope"
-                          value={projectTypeFilter}
-                          onChange={setProjectTypeFilter}
-                        />
-                      </div>
-                      <ProjectKpiPanel
-                        summary={yearProjectKpis}
-                        year={projectYearFilter}
-                        projectType={projectTypeFilter}
-                        onSelect={selectProjectKpi}
-                      />
-                      <div className="mb-5 grid gap-3 rounded-xl border border-[#d8e0e7] bg-white p-3 sm:grid-cols-[1fr_220px]">
-                        <div className="relative">
-                          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#879088]" />
-                          <Input
-                            value={projectSearch}
-                            onChange={(event) =>
-                              setProjectSearch(event.target.value)
-                            }
-                            placeholder="프로젝트명, 기관, 담당자, 연도 검색"
-                            className="pl-9"
-                            aria-label="프로젝트 검색"
-                          />
-                        </div>
-                        <Select
-                          value={projectRiskFilter}
-                          onValueChange={(value) =>
-                            setProjectRiskFilter(
-                              value as typeof projectRiskFilter,
-                            )
-                          }
-                        >
-                          <SelectTrigger
-                            className="h-10 w-full"
-                            aria-label="프로젝트 위험 필터"
-                          >
-                            <SelectValue>
-                              {projectRiskFilter === 'all'
-                                ? '모든 프로젝트'
-                                : projectRiskFilter === 'blocked'
-                                  ? '막힘 있음'
-                                  : projectRiskFilter === 'documents'
-                                    ? '서류 위험'
-                                    : projectRiskFilter === 'subscription'
-                                      ? '구독 위험'
-                                      : '정산 위험'}
-                            </SelectValue>
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="all">모든 프로젝트</SelectItem>
-                            <SelectItem value="blocked">막힘 있음</SelectItem>
-                            <SelectItem value="documents">서류 위험</SelectItem>
-                            <SelectItem value="subscription">
-                              구독 위험
-                            </SelectItem>
-                            <SelectItem value="settlement">
-                              정산 위험
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <Tabs defaultValue="table" className="gap-3">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <p className="text-sm font-semibold">
-                            프로젝트 {filteredProjects.length}개{' '}
-                            <span className="font-normal text-[#586777]">
-                              · 이름을 누르면 상세로 이동합니다
-                            </span>
-                          </p>
-                          <TabsList aria-label="프로젝트 표시 방식">
-                            <TabsTrigger value="table">
-                              <List />표
-                            </TabsTrigger>
-                            <TabsTrigger value="cards">
-                              <LayoutDashboard />
-                              카드
-                            </TabsTrigger>
-                          </TabsList>
-                        </div>
-                        <TabsContent
-                          value="table"
-                          className="overflow-hidden rounded-xl border border-[#d8e0e7] bg-white"
-                        >
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>프로젝트·담당자</TableHead>
-                                <TableHead>진행 상태</TableHead>
-                                <TableHead>하위 업무</TableHead>
-                                <TableHead>농가·구독</TableHead>
-                                <TableHead>설치 / 시운전 / 교육</TableHead>
-                                <TableHead>서류·정산</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {filteredProjects.map((project) => {
-                                const snapshot = projectSnapshots.get(
-                                  project.id,
-                                )!;
-                                const completed =
-                                  snapshot.hierarchy.leaves.filter(
-                                    (item) => item.status === 'completed',
-                                  ).length;
-                                const blockers =
-                                  snapshot.openProjectBlockers.length +
-                                  snapshot.blockedItems.length;
-                                return (
-                                  <TableRow key={project.id}>
-                                    <TableCell className="max-w-sm whitespace-normal">
-                                      <button
-                                        type="button"
-                                        className="min-h-10 text-left font-bold text-[#176448] hover:underline"
-                                        onClick={() =>
-                                          openProjectDetail(project.id)
-                                        }
-                                      >
-                                        {project.name}
-                                      </button>
-                                      <p className="text-sm text-[#586777]">
-                                        {project.year}년 ·{' '}
-                                        {
-                                          FARM_PROJECT_TYPE_LABELS[
-                                            project.projectType
-                                          ]
-                                        }{' '}
-                                        · {project.manager || '담당 미지정'}
-                                      </p>
-                                    </TableCell>
-                                    <TableCell>
-                                      <Badge
-                                        variant="outline"
-                                        className={projectStatusClass(
-                                          project.status,
-                                        )}
-                                      >
-                                        {
-                                          FARM_PROJECT_STATUS_LABELS[
-                                            project.status
-                                          ]
-                                        }
-                                      </Badge>
-                                      <p className="mt-1 text-sm">
-                                        {
-                                          FARM_PROJECT_STAGE_LABELS[
-                                            project.currentStage
-                                          ]
-                                        }
-                                      </p>
-                                    </TableCell>
-                                    <TableCell>
-                                      <strong>
-                                        실행 업무 {completed}/
-                                        {snapshot.hierarchy.leafCount}건 완료
-                                      </strong>
-                                      <p
-                                        className={`mt-1 text-sm ${blockers ? 'text-[#ad432b]' : 'text-[#586777]'}`}
-                                      >
-                                        {blockers
-                                          ? `막힘 ${blockers}건`
-                                          : '막힘 없음'}
-                                      </p>
-                                    </TableCell>
-                                    <TableCell>
-                                      <strong>
-                                        {snapshot.records.length}개소
-                                      </strong>
-                                      <p className="mt-1 text-sm text-[#586777]">
-                                        구독{' '}
-                                        {snapshot.activeSubscriptions.length}
-                                        개소
-                                      </p>
-                                    </TableCell>
-                                    <TableCell>
-                                      <ProjectStageSummary
-                                        progress={snapshot.farmProgress}
-                                        projectName={project.name}
-                                      />
-                                    </TableCell>
-                                    <TableCell>
-                                      <p>
-                                        서류 승인{' '}
-                                        {snapshot.approvedDocuments.length}/
-                                        {snapshot.requiredDocuments.length}건
-                                      </p>
-                                      <p className="mt-1 text-sm text-[#586777]">
-                                        {projectSettlementLabel(project)}
-                                      </p>
-                                    </TableCell>
-                                  </TableRow>
-                                );
-                              })}
-                              {!filteredProjects.length && (
-                                <TableRow>
-                                  <TableCell
-                                    colSpan={6}
-                                    className="h-32 text-center"
-                                  >
-                                    조건에 맞는 프로젝트가 없습니다. 연도·사업
-                                    타입·검색 조건을 확인하세요.
-                                  </TableCell>
-                                </TableRow>
-                              )}
-                            </TableBody>
-                          </Table>
-                        </TabsContent>
-                        <TabsContent value="cards">
-                          <div className="grid gap-4 xl:grid-cols-2">
-                            {filteredProjects.map((project) => {
-                              const projectCardSnapshot = projectSnapshots.get(
-                                project.id,
-                              )!;
-                              return (
-                                <button
-                                  type="button"
-                                  key={project.id}
-                                  aria-label={`${project.name} 통합 현황 보기`}
-                                  onClick={() => openProjectDetail(project.id)}
-                                  className="w-full rounded-2xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4f9a70] focus-visible:ring-offset-2"
-                                >
-                                  <Card className="h-full cursor-pointer border-0 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
-                                    <CardContent className="px-5 py-1">
-                                      <div className="flex items-start justify-between gap-3">
-                                        <div className="min-w-0">
-                                          <div className="mb-2 flex flex-wrap gap-2">
-                                            <Badge variant="outline">
-                                              {project.year}
-                                            </Badge>
-                                            <Badge variant="outline">
-                                              {
-                                                FARM_PROJECT_TYPE_LABELS[
-                                                  project.projectType
-                                                ]
-                                              }
-                                            </Badge>
-                                            <Badge variant="outline">
-                                              {
-                                                FARM_PROJECT_STATUS_LABELS[
-                                                  project.status
-                                                ]
-                                              }
-                                            </Badge>
-                                          </div>
-                                          <h2 className="truncate text-lg font-bold">
-                                            {project.name}
-                                          </h2>
-                                          <p className="mt-1 text-sm text-[#748178]">
-                                            {project.institution}
-                                          </p>
-                                        </div>
-                                        <div className="grid size-12 place-items-center rounded-2xl bg-[#e8f3e5] text-[#4c7c48]">
-                                          <BriefcaseBusiness className="size-5" />
-                                        </div>
-                                      </div>
-                                      <p className="mt-4 line-clamp-2 text-sm leading-6 text-[#66736b]">
-                                        {project.description ||
-                                          '사업 설명이 없습니다.'}
-                                      </p>
-                                      <div className="mt-5 grid grid-cols-4 gap-3">
-                                        <div>
-                                          <p className="text-[11px] text-[#89938c]">
-                                            농가
-                                          </p>
-                                          <p className="mt-1 font-bold">
-                                            {projectCardSnapshot.records.length}
-                                            곳
-                                          </p>
-                                        </div>
-                                        <div>
-                                          <p className="text-[11px] text-[#89938c]">
-                                            목표
-                                          </p>
-                                          <p className="mt-1 font-bold">
-                                            {project.targetFarmCount || '-'}곳
-                                          </p>
-                                        </div>
-                                        <div>
-                                          <p className="text-[11px] text-[#89938c]">
-                                            진행 업무
-                                          </p>
-                                          <p className="mt-1 font-bold">
-                                            {
-                                              projectCardSnapshot.hierarchy.leaves.filter(
-                                                (item) =>
-                                                  item.status !== 'completed',
-                                              ).length
-                                            }
-                                            건
-                                          </p>
-                                        </div>
-                                        <div>
-                                          <p className="text-[11px] text-[#89938c]">
-                                            프로젝트 진행
-                                          </p>
-                                          <p className="mt-1 font-bold">
-                                            {
-                                              projectCardSnapshot.overallProgress
-                                            }
-                                            %
-                                          </p>
-                                        </div>
-                                      </div>
-                                      <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#edf1ec]">
-                                        <div
-                                          className="h-full rounded-full bg-[#62b982]"
-                                          style={{
-                                            width: `${projectCardSnapshot.overallProgress}%`,
-                                          }}
-                                        />
-                                      </div>
-                                      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                                        {[
-                                          {
-                                            label: '설치',
-                                            complete:
-                                              projectCardSnapshot.records.filter(
-                                                (record) =>
-                                                  isFarmStageComplete(
-                                                    record,
-                                                    'installationDate',
-                                                  ),
-                                              ).length,
-                                            rate: projectCardSnapshot.installationRate,
-                                          },
-                                          {
-                                            label: '시운전',
-                                            complete:
-                                              projectCardSnapshot.records.filter(
-                                                (record) =>
-                                                  isFarmStageComplete(
-                                                    record,
-                                                    'commissioningDate',
-                                                  ),
-                                              ).length,
-                                            rate: projectCardSnapshot.commissioningRate,
-                                          },
-                                          {
-                                            label: '교육',
-                                            complete:
-                                              projectCardSnapshot.records.filter(
-                                                (record) =>
-                                                  isFarmStageComplete(
-                                                    record,
-                                                    'educationDate',
-                                                  ),
-                                              ).length,
-                                            rate: projectCardSnapshot.educationRate,
-                                          },
-                                          {
-                                            label: '유효 구독',
-                                            complete:
-                                              projectCardSnapshot
-                                                .activeSubscriptions.length,
-                                            rate: projectCardSnapshot.subscriptionRate,
-                                          },
-                                        ].map((metric) => (
-                                          <div
-                                            key={metric.label}
-                                            className="rounded-xl bg-[#f6f8f5] px-3 py-2.5"
-                                          >
-                                            <div className="flex items-center justify-between gap-2">
-                                              <span className="text-sm font-medium text-[#7d8981]">
-                                                {metric.label}
-                                              </span>
-                                              <strong className="text-base text-[#315f43]">
-                                                {metric.rate === null
-                                                  ? '-'
-                                                  : `${metric.rate}%`}
-                                              </strong>
-                                            </div>
-                                            <p className="mt-2 text-sm text-slate-600">
-                                              {metric.label === '유효 구독'
-                                                ? '구독'
-                                                : '완료'}{' '}
-                                              {metric.complete}개소
-                                            </p>
-                                            <p className="mt-1 text-sm font-semibold text-amber-800">
-                                              {metric.label === '유효 구독'
-                                                ? '유효 구독 아님'
-                                                : '미완료'}{' '}
-                                              {projectCardSnapshot.records
-                                                .length - metric.complete}
-                                              개소
-                                            </p>
-                                            <div className="mt-2 h-1 overflow-hidden rounded-full bg-[#e3e9e2]">
-                                              <div
-                                                className="h-full rounded-full bg-[#6ab27e]"
-                                                style={{
-                                                  width: `${metric.rate ?? 0}%`,
-                                                }}
-                                              />
-                                            </div>
-                                          </div>
-                                        ))}
-                                      </div>
-                                      <div className="mt-4 flex flex-wrap gap-2">
-                                        <Badge
-                                          variant="outline"
-                                          className={
-                                            projectCardSnapshot
-                                              .openProjectBlockers.length ||
-                                            projectCardSnapshot.blockedItems
-                                              .length ||
-                                            projectCardSnapshot.documentRisks
-                                              .length
-                                              ? 'border-[#efc8bb] bg-[#fff1ec] text-[#a94f32]'
-                                              : 'border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]'
-                                          }
-                                        >
-                                          막힘{' '}
-                                          {projectCardSnapshot
-                                            .openProjectBlockers.length +
-                                            projectCardSnapshot.blockedItems
-                                              .length +
-                                            projectCardSnapshot.documentRisks
-                                              .length}
-                                          건
-                                        </Badge>
-                                        <Badge variant="outline">
-                                          구독{' '}
-                                          {
-                                            projectCardSnapshot
-                                              .activeSubscriptions.length
-                                          }
-                                          /{projectCardSnapshot.records.length}
-                                        </Badge>
-                                        <Badge variant="outline">
-                                          서류{' '}
-                                          {
-                                            projectCardSnapshot
-                                              .submittedDocuments.length
-                                          }
-                                          /
-                                          {
-                                            projectCardSnapshot
-                                              .requiredDocuments.length
-                                          }{' '}
-                                          제출
-                                        </Badge>
-                                        <Badge variant="outline">
-                                          {projectSettlementLabel(project)}
-                                        </Badge>
-                                      </div>
-                                      <div className="mt-4 flex items-center justify-between border-t border-[#edf1ec] pt-3 text-xs font-semibold text-[#3d7455]">
-                                        <span>
-                                          현재 단계 ·{' '}
-                                          {
-                                            FARM_PROJECT_STAGE_LABELS[
-                                              project.currentStage
-                                            ]
-                                          }
-                                        </span>
-                                        <span>통합 현황 보기 →</span>
-                                      </div>
-                                    </CardContent>
-                                  </Card>
-                                </button>
-                              );
-                            })}
-                            {!filteredProjects.length && (
-                              <div className="rounded-2xl border border-dashed border-[#d7dfd5] bg-white py-14 text-center xl:col-span-2">
-                                <BriefcaseBusiness className="mx-auto size-8 text-[#97a29a]" />
-                                <p className="mt-3 font-semibold">
-                                  {workspace.projects.length
-                                    ? '선택한 연도·사업 타입·검색·위험에 맞는 프로젝트가 없습니다.'
-                                    : '아직 등록된 프로젝트가 없습니다.'}
-                                </p>
-                                <p className="mt-1 text-sm text-[#89938c]">
-                                  {workspace.projects.length
-                                    ? '검색어나 위험 필터를 바꿔 보세요.'
-                                    : '프로젝트를 먼저 만들면 농가·구독·서류·정산을 연결할 수 있습니다.'}
-                                </p>
-                              </div>
-                            )}
-                          </div>
-                        </TabsContent>
-                      </Tabs>
                     </section>
                   )}
 
@@ -9851,6 +9480,17 @@ export function FarmLedgerDashboard({
                       {selectedProject.startDate || '시작일 미입력'} ~{' '}
                       {selectedProject.endDate || '종료일 미입력'}
                     </p>
+                    {selectedProject.description && (
+                      <Collapsible className="mt-2 rounded-lg bg-slate-50 px-3">
+                        <CollapsibleTrigger className="flex min-h-10 w-full items-center justify-between text-sm font-medium">
+                          사업 설명
+                          <ChevronDown className="size-4" />
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="pb-3 text-sm whitespace-pre-wrap break-words text-slate-600">
+                          {selectedProject.description}
+                        </CollapsibleContent>
+                      </Collapsible>
+                    )}
                     <div className="flex flex-wrap gap-2 pt-2">
                       <Button
                         size="sm"
@@ -9928,255 +9568,114 @@ export function FarmLedgerDashboard({
                       <TabsTrigger value="history">처리 이력</TabsTrigger>
                     </TabsList>
                     <TabsContent value="summary" className="space-y-4">
-                      <ProjectFarmProgressCard
-                        key={selectedProject.id}
-                        progress={selectedProjectSnapshot.farmProgress}
-                        farmName={(farmId) =>
-                          farmById.get(farmId)?.name || '농가 정보 없음'
-                        }
-                      />
-                      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                        {[
-                          {
-                            label: '프로젝트 진행률',
-                            value: `${selectedProjectSnapshot.overallProgress}%`,
-                            note:
-                              selectedProject.status === 'completed'
-                                ? '완료 확정 사업 · 100%'
-                                : `현재 ${FARM_PROJECT_STAGE_LABELS[selectedProject.currentStage]} · 단계별 증빙 평균`,
-                            icon: TrendingUp,
-                          },
-                          {
-                            label: '참여 농가',
-                            value: `${selectedProjectSnapshot.records.length}/${selectedProject.targetFarmCount || '-'}곳`,
-                            note:
-                              selectedProjectSnapshot.farmCoverage === null
-                                ? '목표 농가 수를 입력해 주세요'
-                                : `목표 대비 ${selectedProjectSnapshot.farmCoverage}%`,
-                            icon: Warehouse,
-                          },
-                          {
-                            label: '현재 막힘',
-                            value: `${selectedProjectSnapshot.openProjectBlockers.length + selectedProjectSnapshot.blockedItems.length + selectedProjectSnapshot.documentRisks.length}건`,
-                            note: selectedProjectSnapshot.openProjectBlockers
-                              .length
-                              ? `프로젝트 막힘 ${selectedProjectSnapshot.openProjectBlockers.length}건`
-                              : selectedProjectSnapshot.blockedItems.length
-                                ? `농가 업무 막힘 ${selectedProjectSnapshot.blockedItems.length}건`
-                                : selectedProjectSnapshot.documentRisks.length
-                                  ? `서류 위험 ${selectedProjectSnapshot.documentRisks.length}건`
-                                  : '현재 막힌 항목 없음',
-                            icon: CircleAlert,
-                          },
-                          {
-                            label: '유효 구독률',
-                            value:
-                              selectedProjectSnapshot.subscriptionRate === null
-                                ? '-'
-                                : `${selectedProjectSnapshot.subscriptionRate}%`,
-                            note: `90일 내 만료 ${selectedProjectSnapshot.expiringSoon.length}곳 · 만료 ${selectedProjectSnapshot.expiredSubscriptions.length}곳`,
-                            icon: CalendarClock,
-                          },
-                          {
-                            label: '필수 제출서류',
-                            value: `${selectedProjectSnapshot.submittedDocuments.length}/${selectedProjectSnapshot.requiredDocuments.length}건`,
-                            note: `승인 ${selectedProjectSnapshot.approvedDocuments.length}건 · 위험 ${selectedProjectSnapshot.documentRisks.length}건`,
-                            icon: FileText,
-                          },
-                          {
-                            label: '정산',
-                            value: projectSettlementLabel(selectedProject),
-                            note: selectedProject.settlementDueDate
-                              ? `${selectedProject.settlementDueDate} · ${dueLabel(selectedProject.settlementDueDate, ['paid', 'closed'].includes(selectedProject.settlementStatus))}`
-                              : '정산기한 미입력',
-                            icon: CreditCard,
-                          },
-                        ].map((item) => (
-                          <Card key={item.label} className="border-0 bg-white">
-                            <CardContent className="px-4 py-1">
-                              <div className="flex items-start justify-between gap-3">
-                                <div>
-                                  <p className="text-xs text-[#7f8a82]">
-                                    {item.label}
-                                  </p>
-                                  <p className="mt-1 text-xl font-bold">
-                                    {item.value}
-                                  </p>
-                                  <p className="mt-1 text-xs text-[#768179]">
-                                    {item.note}
-                                  </p>
-                                </div>
-                                <div className="grid size-9 place-items-center rounded-xl bg-[#edf5ec] text-[#4b8057]">
-                                  <item.icon className="size-4" />
-                                </div>
-                              </div>
-                            </CardContent>
-                          </Card>
-                        ))}
+                      <section
+                        aria-label="선택한 프로젝트 요약"
+                        className="grid gap-3 sm:grid-cols-3"
+                      >
+                        <div className="rounded-xl border border-slate-200 bg-white p-4">
+                          <p className="text-sm text-slate-600">
+                            프로젝트 진행률
+                          </p>
+                          <p className="mt-2 text-2xl font-bold">
+                            {selectedProjectSnapshot.overallProgress}%
+                          </p>
+                          <p className="mt-2 text-xs text-slate-500">
+                            {selectedProject.status === 'completed'
+                              ? '완료 확정 사업'
+                              : `${FARM_PROJECT_STAGE_LABELS[selectedProject.currentStage]} · 단계별 증빙 평균`}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-slate-200 bg-white p-4">
+                          <p className="text-sm text-slate-600">참여 농가</p>
+                          <p className="mt-2 text-2xl font-bold">
+                            {selectedProjectSnapshot.records.length}
+                            <span className="ml-1 text-sm font-normal text-slate-500">
+                              개소
+                            </span>
+                          </p>
+                          <p className="mt-2 text-xs text-slate-500">
+                            {selectedProject.targetFarmCount
+                              ? `목표 ${selectedProject.targetFarmCount}개소 · 달성 ${selectedProjectSnapshot.farmCoverage ?? 0}%`
+                              : '목표 농가 수 미입력'}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-slate-200 bg-white p-4">
+                          <p className="text-sm text-slate-600">확인 필요</p>
+                          <p
+                            className={`mt-2 text-2xl font-bold ${projectRiskCount(selectedProject) ? 'text-amber-800' : ''}`}
+                          >
+                            {projectRiskCount(selectedProject)}
+                            <span className="ml-1 text-sm font-normal text-slate-500">
+                              건
+                            </span>
+                          </p>
+                          <p className="mt-2 text-xs text-slate-500">
+                            막힘 · 서류 · 구독 · 정산 기준
+                          </p>
+                        </div>
                       </section>
 
-                      <Collapsible className="rounded-xl border border-[#d8e0e7] bg-white px-5 py-2">
-                        <CollapsibleTrigger className="flex min-h-11 w-full items-center justify-between text-left font-semibold">
-                          설치·시운전·교육 및 단계별 지표{' '}
-                          <ChevronDown className="size-4" />
-                        </CollapsibleTrigger>
-                        <CollapsibleContent className="space-y-4 pb-4">
-                          <section className="bg-white py-3">
-                            <div className="mb-4">
-                              <h3 className="font-bold">설치·운영 완료율</h3>
-                              <p className="mt-1 text-xs text-[#7d8981]">
-                                완료일 또는 별도 완료 확인이 있는 농가와 현재
-                                유효한 구독을 기준으로 계산합니다.
-                              </p>
-                            </div>
-                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                              {[
-                                {
-                                  label: '설치',
-                                  complete:
-                                    selectedProjectSnapshot.records.filter(
-                                      (record) =>
-                                        isFarmStageComplete(
-                                          record,
-                                          'installationDate',
-                                        ),
-                                    ).length,
-                                  rate: selectedProjectSnapshot.installationRate,
-                                  note: '설치일 또는 완료 확인 기준',
-                                  icon: CalendarCheck2,
-                                },
-                                {
-                                  label: '시운전',
-                                  complete:
-                                    selectedProjectSnapshot.records.filter(
-                                      (record) =>
-                                        isFarmStageComplete(
-                                          record,
-                                          'commissioningDate',
-                                        ),
-                                    ).length,
-                                  rate: selectedProjectSnapshot.commissioningRate,
-                                  note: '시운전일 또는 완료 확인 기준',
-                                  icon: Wrench,
-                                },
-                                {
-                                  label: '교육',
-                                  complete:
-                                    selectedProjectSnapshot.records.filter(
-                                      (record) =>
-                                        isFarmStageComplete(
-                                          record,
-                                          'educationDate',
-                                        ),
-                                    ).length,
-                                  rate: selectedProjectSnapshot.educationRate,
-                                  note: '교육일 또는 완료 확인 기준',
-                                  icon: TrendingUp,
-                                },
-                                {
-                                  label: '유효 구독',
-                                  complete:
-                                    selectedProjectSnapshot.activeSubscriptions
-                                      .length,
-                                  rate: selectedProjectSnapshot.subscriptionRate,
-                                  note: `90일 내 만료 ${selectedProjectSnapshot.expiringSoon.length}곳`,
-                                  icon: CalendarClock,
-                                },
-                              ].map((metric) => (
-                                <div
-                                  key={metric.label}
-                                  className="rounded-xl border border-[#e2e8e1] p-4"
-                                >
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div>
-                                      <p className="text-xs font-semibold text-[#657269]">
-                                        {metric.label}
-                                      </p>
-                                      <p className="mt-1 text-2xl font-bold text-[#315f43]">
-                                        {metric.rate === null
-                                          ? '-'
-                                          : `${metric.rate}%`}
-                                      </p>
-                                    </div>
-                                    <div className="grid size-9 place-items-center rounded-xl bg-[#edf5ec] text-[#4b8057]">
-                                      <metric.icon className="size-4" />
-                                    </div>
-                                  </div>
-                                  <p className="mt-2 text-xs text-[#768179]">
-                                    {metric.complete}/
-                                    {selectedProjectSnapshot.records.length}곳 ·{' '}
-                                    {metric.note}
-                                  </p>
-                                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#edf1ec]">
-                                    <div
-                                      className="h-full rounded-full bg-[#62b982]"
-                                      style={{ width: `${metric.rate ?? 0}%` }}
-                                    />
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </section>
-
-                          <section className="rounded-2xl bg-white p-5 shadow-sm">
-                            <div className="mb-4 flex items-center justify-between">
-                              <div>
-                                <h3 className="font-bold">사업 진행 단계</h3>
-                                <p className="mt-1 text-xs text-[#7d8981]">
-                                  저장된 날짜·농가·서류·정산을 근거로
-                                  계산합니다.
-                                </p>
-                              </div>
-                              <span className="text-xs text-[#89938c]">
-                                최근 활동{' '}
-                                {formatTimestamp(
-                                  selectedProjectSnapshot.latestActivityAt,
-                                )}
-                              </span>
-                            </div>
-                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                              {selectedProjectStageCards.map((stage) => (
-                                <div
-                                  key={stage.label}
-                                  className="rounded-xl border border-[#e2e8e1] p-3"
-                                >
-                                  <div className="flex items-center justify-between gap-2">
-                                    <p className="text-sm font-semibold">
-                                      {stage.label}
-                                    </p>
-                                    <span className="text-sm font-bold text-[#347454]">
-                                      {stage.progress === null
-                                        ? '미설정'
-                                        : `${stage.progress}%`}
-                                    </span>
-                                  </div>
-                                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#edf1ec]">
-                                    <div
-                                      className="h-full rounded-full bg-[#62b982]"
-                                      style={{
-                                        width: `${stage.progress ?? 0}%`,
-                                      }}
-                                    />
-                                  </div>
-                                  <p className="mt-2 text-[11px] leading-5 text-[#7d8981]">
-                                    {stage.evidence}
-                                  </p>
-                                </div>
-                              ))}
-                            </div>
-                          </section>
-                        </CollapsibleContent>
-                      </Collapsible>
                       <section className="rounded-xl border border-[#d8e0e7] bg-white p-5">
                         <h3 className="font-bold">확인이 필요한 항목</h3>
                         <p className="mt-1 text-xs text-[#7d8981]">
-                          프로젝트 직접 막힘, 농가 업무와 기한초과·보완·반려
-                          서류를 함께 봅니다.
+                          프로젝트·업무 막힘과 서류·구독·정산 확인 항목입니다.
                         </p>
-                        {selectedProjectSnapshot.openProjectBlockers.length ||
-                        selectedProjectSnapshot.blockedItems.length ||
-                        selectedProjectSnapshot.documentRisks.length ? (
+                        {projectRiskCount(selectedProject) > 0 ? (
                           <div className="mt-4 space-y-2">
+                            {selectedProjectSnapshot.expiringSoon.length +
+                              selectedProjectSnapshot.expiredSubscriptions
+                                .length +
+                              selectedProjectSnapshot.missingSubscriptionExpiry
+                                .length >
+                              0 && (
+                              <button
+                                type="button"
+                                onClick={() => setProjectDetailTab('farms')}
+                                className="flex w-full items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-left text-sm"
+                              >
+                                <span>
+                                  <strong>구독 확인</strong>
+                                  <span className="mt-1 block text-xs text-amber-900">
+                                    90일 내 만료{' '}
+                                    {
+                                      selectedProjectSnapshot.expiringSoon
+                                        .length
+                                    }
+                                    개소 · 만료{' '}
+                                    {
+                                      selectedProjectSnapshot
+                                        .expiredSubscriptions.length
+                                    }
+                                    개소 · 만료일 미입력{' '}
+                                    {
+                                      selectedProjectSnapshot
+                                        .missingSubscriptionExpiry.length
+                                    }
+                                    개소
+                                  </span>
+                                </span>
+                                <ArrowRight className="size-4 shrink-0" />
+                              </button>
+                            )}
+                            {projectHasSettlementRisk(selectedProject) && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setProjectDetailTab('settlement')
+                                }
+                                className="flex w-full items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-left text-sm"
+                              >
+                                <span>
+                                  <strong>정산 확인</strong>
+                                  <span className="mt-1 block text-xs text-amber-900">
+                                    {projectSettlementLabel(selectedProject)} ·{' '}
+                                    {selectedProject.settlementDueDate ||
+                                      '기한 미입력'}
+                                  </span>
+                                </span>
+                                <ArrowRight className="size-4 shrink-0" />
+                              </button>
+                            )}
                             {selectedProjectSnapshot.openProjectBlockers.map(
                               (update) => (
                                 <div
@@ -10277,11 +9776,73 @@ export function FarmLedgerDashboard({
                           </div>
                         ) : (
                           <div className="mt-4 flex items-center gap-3 rounded-xl border border-[#cfe0d1] bg-[#f2f8f2] p-4 text-sm text-[#36714d]">
-                            <CheckCircle2 className="size-5" /> 현재 막힌 항목이
-                            없습니다.
+                            <CheckCircle2 className="size-5" /> 현재 확인이
+                            필요한 항목이 없습니다.
                           </div>
                         )}
                       </section>
+                      <ProjectFarmProgressCard
+                        key={selectedProject.id}
+                        progress={selectedProjectSnapshot.farmProgress}
+                        farmName={(farmId) =>
+                          farmById.get(farmId)?.name || '농가 정보 없음'
+                        }
+                      />
+                      <Collapsible className="rounded-xl border border-[#d8e0e7] bg-white px-5 py-2">
+                        <CollapsibleTrigger className="flex min-h-11 w-full items-center justify-between text-left font-semibold">
+                          사업 진행률 산정 근거{' '}
+                          <ChevronDown className="size-4" />
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="space-y-4 pb-4">
+                          <section className="rounded-2xl bg-white p-5 shadow-sm">
+                            <div className="mb-4 flex items-center justify-between">
+                              <div>
+                                <h3 className="font-bold">사업 진행 단계</h3>
+                                <p className="mt-1 text-xs text-[#7d8981]">
+                                  저장된 날짜·농가·서류·정산을 근거로
+                                  계산합니다.
+                                </p>
+                              </div>
+                              <span className="text-xs text-[#89938c]">
+                                최근 활동{' '}
+                                {formatTimestamp(
+                                  selectedProjectSnapshot.latestActivityAt,
+                                )}
+                              </span>
+                            </div>
+                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                              {selectedProjectStageCards.map((stage) => (
+                                <div
+                                  key={stage.label}
+                                  className="rounded-xl border border-[#e2e8e1] p-3"
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="text-sm font-semibold">
+                                      {stage.label}
+                                    </p>
+                                    <span className="text-sm font-bold text-[#347454]">
+                                      {stage.progress === null
+                                        ? '미설정'
+                                        : `${stage.progress}%`}
+                                    </span>
+                                  </div>
+                                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#edf1ec]">
+                                    <div
+                                      className="h-full rounded-full bg-[#62b982]"
+                                      style={{
+                                        width: `${stage.progress ?? 0}%`,
+                                      }}
+                                    />
+                                  </div>
+                                  <p className="mt-2 text-[11px] leading-5 text-[#7d8981]">
+                                    {stage.evidence}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </section>
+                        </CollapsibleContent>
+                      </Collapsible>
                     </TabsContent>
                     <TabsContent value="farms">
                       <section className="rounded-xl border border-[#d8e0e7] bg-white p-5">
