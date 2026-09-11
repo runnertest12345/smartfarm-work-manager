@@ -319,6 +319,7 @@ const scripts = new Map(
     'lib/subscription-payment.ts',
     'lib/subscription-renewal-report.ts',
     'lib/project-work.ts',
+    'lib/service-work.ts',
     'lib/work-lifecycle.ts',
     'lib/organization.ts',
     'lib/login-identity.ts',
@@ -841,6 +842,68 @@ function harness(
     },
   };
 }
+test('완료 사업의 농가 A/S는 등록·처리·체크·방문·완료·재개 가능하며 사업 완료와 구독은 유지한다', async () => {
+  const h = harness();
+  h.put('projects', { ...h.list('projects')[0], status: 'completed', currentStage: 'closed' });
+  h.sync();
+  const body = h.body();
+  const result = await h.api.post({
+    ...body, paymentRequest: undefined,
+    workItem: { ...body.workItem, workType: 'service', status: 'open', title: '농가 점검' },
+    history: h.history(0), checklist: ['센서 점검'],
+  });
+  const id = result.workItem.id;
+  const history = async (newStatus) => {
+    h.sync();
+    return h.api.post({ kind: 'history', history: { ...h.history(0), workItemId: id, newStatus } });
+  };
+  await history('in_progress');
+  h.sync();
+  await h.api.patch({ kind: 'checklist', workItemId: id, checklistItemId: h.list('checklistItems')[0].id, isCompleted: true, completedBy: '담당자' });
+  h.sync();
+  const visit = {
+    workItemId: id, scheduledAt: paidAt, assignedTo: '담당자', status: 'scheduled',
+    actualStartedAt: 0, actualEndedAt: 0, preparationNote: '', result: '', nextVisitAt: 0, recordedBy: '담당자',
+  };
+  const scheduled = await h.api.post({ kind: 'visit', visit });
+  await assert.rejects(history('completed'), /현장 방문/);
+  h.sync();
+  await h.api.post({ kind: 'visit', visit: { ...visit, id: scheduled.visit.id, status: 'completed', actualStartedAt: paidAt, actualEndedAt: paidAt + 60000, result: '센서 교체 완료' } });
+  await history('completed');
+  assert.equal(h.list('workItems')[0].status, 'completed');
+  await history('in_progress');
+  assert.equal(h.list('workItems')[0].status, 'in_progress');
+  assert.equal(h.list('projects')[0].status, 'completed');
+  assert.equal(h.list('projects')[0].currentStage, 'closed');
+  assert.equal(h.list('subscriptionEvents').length, 0);
+  assert.equal(h.list('farmRecords')[0].currentSubscriptionExpiresAt, '2026-08-31');
+});
+
+test('완료 사업의 일반 업무와 직접 프로젝트 A/S, 삭제 사업의 신규 A/S는 계속 차단한다', async () => {
+  for (const workPatch of [
+    { workType: 'communication' }, { workType: 'installation' },
+    { workType: 'service', farmRecordId: '', projectId: 'p1' },
+  ]) {
+    const h = harness();
+    h.put('projects', { ...h.list('projects')[0], status: 'completed' });
+    h.sync();
+    const body = h.body();
+    await assert.rejects(h.api.post({ ...body, paymentRequest: undefined, workItem: { ...body.workItem, status: 'open', ...workPatch }, history: h.history(0) }), /완료된 사업/);
+    assert.equal(h.list('workItems').length, 0);
+  }
+  for (const staleCache of [false, true]) {
+    const h = harness();
+    h.put('projects', { ...h.list('projects')[0], status: 'completed' });
+    h.sync();
+    h.put('projects', { ...h.list('projects')[0], deletedAt: fixedNow });
+    if (!staleCache) h.sync();
+    const body = h.body();
+    await assert.rejects(h.api.post({ ...body, paymentRequest: undefined, workItem: { ...body.workItem, workType: 'service', status: 'open' }, history: h.history(0) }), /삭제된 프로젝트/);
+    assert.equal(h.list('workItems').length, 0);
+    assert.equal(h.list('historyEntries').length, 0);
+  }
+});
+
 const capture = (patch = {}) => ({
   kind: 'inbox',
   inboxItem: {

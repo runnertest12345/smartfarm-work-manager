@@ -177,6 +177,11 @@ function harness() {
       makeRow('미지정', 0),
     ],
     currentYear: '2026',
+    farms: [
+      { farmId: 'f1', farmLabel: '농가1 · 1' },
+      { farmId: 'f2', farmLabel: '농가2 · 2' },
+      { farmId: 'unlinked', farmLabel: '미연결 농가 · 3' },
+    ],
     registrationOptions: [
       {
         farmId: 'f1',
@@ -328,4 +333,68 @@ test('대시보드는 기존 A/S 조회·등록·상세 연결과 원본 로고�
     dashboard.indexOf('</header>'),
   );
   assert.match(header, /farmos-ci.png/);
+});
+
+test('참여 사업이 없는 농가도 선택·검색되고 등록에 필요한 연결을 안내한다', () => {
+  const h = harness();
+  find(h.render(), (n) => n.props.onClick && text(n).includes('A/S 등록')).props.onClick();
+  const dialog = find(h.render(), (n) => n.type.name === 'ServiceRegistrationDialog');
+  const render = () => h.renderDialog(dialog);
+  assert.match(text(render()), /전체 농가 3곳/);
+  assert.match(text(render()), /미연결 농가/);
+  find(render(), (n) => n.props.id === 'service-farm-search').props.onChange({ target: { value: '미연결' } });
+  assert.match(text(render()), /검색 결과 1곳/);
+  const selectors = () => nodes(render()).filter((n) => n.props.onValueChange);
+  selectors()[0].props.onValueChange('unlinked');
+  assert.match(text(render()), /연결된 참여 사업이 없습니다/);
+  assert.equal(selectors()[1].props.disabled, true);
+  assert.equal(find(render(), (n) => n.props.children === 'A/S 내용 작성').props.disabled, true);
+});
+
+test('A/S 선택지는 전체 농가와 완료 사업을 포함하고 삭제 사업은 등록 대상에서 제외한다', () => {
+  const tree = ts.createSourceFile('dashboard.tsx', source('app/farm-ledger-dashboard.tsx'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let panel;
+  function visit(node) {
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(tree) === 'ServiceWorkPanel') panel = node;
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  assert.ok(panel);
+  const farms = ['open', 'completed', 'unlinked', 'deleted'].map((id) => ({ id, name: id, farmCode: id }));
+  const projects = ['open', 'completed', 'deleted'].map((id) => ({ id, name: id, year: '2025', status: id === 'completed' ? 'completed' : 'active', deletedAt: id === 'deleted' ? 1 : 0 }));
+  const records = projects.map((p) => ({ id: p.id + '-record', farmId: p.id, projectId: p.id }));
+  const context = { workspace: { farms, records }, farmById: new Map(farms.map((f) => [f.id, f])), projectById: new Map(projects.map((p) => [p.id, p])) };
+  function evaluateAttribute(name) {
+    const attribute = panel.attributes.properties.find((p) => p.name?.getText(tree) === name);
+    return vm.runInNewContext('(' + attribute.initializer.expression.getText(tree) + ')', context);
+  }
+  assert.equal(evaluateAttribute('farms').length, 4);
+  assert.equal(evaluateAttribute('registrationOptions').map((r) => r.recordId).join(','), 'open-record,completed-record');
+  assert.match(evaluateAttribute('registrationOptions')[1].projectLabel, /완료/);
+});
+
+test('완료 사업 예외는 참여 기록이 있는 농가 A/S에만 적용한다', () => {
+  for (const work of [
+    { workType: 'communication', farmRecordId: 'record' },
+    { workType: 'installation', farmRecordId: 'record' },
+    { workType: 'payment', farmRecordId: 'record' },
+    { workType: 'service', farmRecordId: '' },
+    { workType: 'service', farmRecordId: 'record', scope: 'internal' },
+  ]) assert.equal(dates.isFarmServiceWork(work), false);
+  assert.equal(dates.isFarmServiceWork({ workType: 'service', farmRecordId: 'record' }), true);
+  const store = source('lib/firebase/farm-ledger-store.ts');
+  const ast = ts.createSourceFile('store.ts', store, ts.ScriptTarget.Latest, true);
+  const guard = ast.statements.find((s) => ts.isFunctionDeclaration(s) && s.name?.text === 'assertProjectEditable');
+  const js = ts.transpileModule(guard.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const assertEditable = vm.runInNewContext(js + '; assertProjectEditable');
+  assert.throws(() => assertEditable({ status: 'completed' }), /완료된 사업/);
+  assert.equal(assertEditable({ status: 'completed' }, false, true).status, 'completed');
+  assert.throws(() => assertEditable({ status: 'completed', deletedAt: 1 }, false, true), /삭제된 프로젝트/);
+  assert.throws(() => assertEditable(undefined, false, true), /찾을 수 없습니다/);
+  for (const [name, expected] of [['createWorkItem', 4], ['saveVisit', 1], ['toggleChecklist', 1]]) {
+    const fn = ast.statements.find((s) => ts.isFunctionDeclaration(s) && s.name?.text === name);
+    assert.equal((fn.getText(ast).match(/isFarmServiceWork\(/g) || []).length, expected, name + ': 저장 검증도 동일 예외 적용');
+  }
+  const history = ast.statements.find((s) => ts.isFunctionDeclaration(s) && s.name?.text === 'addHistoryEntry');
+  assert.equal((history.getText(ast).match(/!isFarmServiceWork\(existing\)/g) || []).length, 2, '캐시와 트랜잭션 모두 상태 변경 허용');
 });

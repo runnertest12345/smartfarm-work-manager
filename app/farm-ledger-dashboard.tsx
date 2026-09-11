@@ -3,7 +3,7 @@ import Image from 'next/image';
 import { ServiceWorkPanel } from './service-work-panel';
 import { ProjectManagementList } from './project-management-list';
 import { BusinessCompletionRate } from './business-completion-rate';
-import { serviceReceivedAt, serviceYear } from '@/lib/service-work';
+import { isFarmServiceWork, serviceReceivedAt, serviceYear } from '@/lib/service-work';
 import {
   ProjectSettlementDetails,
   ProjectSettlementEditor,
@@ -6920,7 +6920,8 @@ export function FarmLedgerDashboard({
                           onAddChild={addChildTask}
                           onSave={saveQuickWork}
                           isClosed={(item) =>
-                            projectForWorkItem(item)?.status === 'completed'
+                            projectForWorkItem(item)?.status === 'completed' &&
+                            !isFarmServiceWork(item)
                           }
                         />
                       )}
@@ -7026,7 +7027,8 @@ export function FarmLedgerDashboard({
                           onAddChild={addChildTask}
                           onSave={saveQuickWork}
                           isClosed={(item) =>
-                            projectForWorkItem(item)?.status === 'completed'
+                            projectForWorkItem(item)?.status === 'completed' &&
+                            !isFarmServiceWork(item)
                           }
                         />
                       )}
@@ -9126,8 +9128,7 @@ export function FarmLedgerDashboard({
                           if (
                             !farm ||
                             !project ||
-                            project.deletedAt ||
-                            project.status === 'completed'
+                            project.deletedAt
                           )
                             return [];
                           return [
@@ -9135,11 +9136,15 @@ export function FarmLedgerDashboard({
                               recordId: record.id,
                               farmId: farm.id,
                               farmLabel: `${farm.name} · ${farm.farmCode}`,
-                              projectLabel: `${project.year} · ${project.name}`,
+                              projectLabel: `${project.year} · ${project.name}${project.status === 'completed' ? ' · 완료' : ''}`,
                             },
                           ];
                         },
                       )}
+                      farms={workspace.farms.map((farm) => ({
+                        farmId: farm.id,
+                        farmLabel: `${farm.name} · ${farm.farmCode}`,
+                      }))}
                       onRegister={(recordId) => {
                         const record = recordById.get(recordId);
                         const project =
@@ -9148,8 +9153,7 @@ export function FarmLedgerDashboard({
                           record &&
                           farmById.has(record.farmId) &&
                           project &&
-                          !project.deletedAt &&
-                          project.status !== 'completed'
+                          !project.deletedAt
                         )
                           openQuickWorkItem(record, 'service', '');
                       }}
@@ -9412,7 +9416,8 @@ export function FarmLedgerDashboard({
                             onAddChild={addChildTask}
                             onSave={saveQuickWork}
                             isClosed={(item) =>
-                              projectForWorkItem(item)?.status === 'completed'
+                              projectForWorkItem(item)?.status === 'completed' &&
+                              !isFarmServiceWork(item)
                             }
                           />
                         </section>
@@ -10008,7 +10013,10 @@ export function FarmLedgerDashboard({
                         onOpen={(item) => openFarm(item.farmId, item.id)}
                         onAddChild={addChildTask}
                         onSave={saveQuickWork}
-                        isClosed={() => selectedProject.status === 'completed'}
+                        isClosed={(item) =>
+                          selectedProject.status === 'completed' &&
+                          !isFarmServiceWork(item)
+                        }
                       />
                     </TabsContent>
                     <TabsContent value="documents">

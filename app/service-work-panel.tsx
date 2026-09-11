@@ -55,10 +55,12 @@ export type ServiceRegistrationOption = {
 };
 
 function ServiceRegistrationDialog({
+  farms: availableFarms,
   options,
   onClose,
   onRegister,
 }: {
+  farms: { farmId: string; farmLabel: string }[];
   options: ServiceRegistrationOption[];
   onClose: () => void;
   onRegister: (recordId: string) => void;
@@ -66,11 +68,9 @@ function ServiceRegistrationDialog({
   const [search, setSearch] = useState('');
   const [farmId, setFarmId] = useState('');
   const [recordId, setRecordId] = useState('');
-  const farms = [
-    ...new Map(
-      options.map((option) => [option.farmId, option.farmLabel]),
-    ).entries(),
-  ].sort((a, b) => a[1].localeCompare(b[1], 'ko'));
+  const farms = availableFarms
+    .map(({ farmId, farmLabel }) => [farmId, farmLabel] as const)
+    .sort((a, b) => a[1].localeCompare(b[1], 'ko'));
   const matchingFarms = farms.filter(([, label]) =>
     label.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
   );
@@ -87,14 +87,13 @@ function ServiceRegistrationDialog({
         <DialogHeader>
           <DialogTitle>A/S 등록 · 농가 선택</DialogTitle>
           <DialogDescription>
-            농가와 참여 사업을 선택하면 A/S 내용을 작성하는 창이 열립니다. 현재
-            등록 가능한 미완료 사업만 표시합니다.
+            전체 농가에서 선택할 수 있습니다. 완료된 참여 사업에도 A/S를
+            등록할 수 있으며, 사업의 완료 상태는 유지됩니다.
           </DialogDescription>
         </DialogHeader>
-        {!options.length ? (
+        {!farms.length ? (
           <p className="py-4 text-sm text-slate-600">
-            등록할 수 있는 농가·참여 사업이 없습니다. 농가 관리대장에서 참여
-            사업을 먼저 등록해 주세요.
+            등록된 농가가 없습니다. 농가 관리대장에서 농가를 먼저 등록해 주세요.
           </p>
         ) : (
           <>
@@ -111,6 +110,9 @@ function ServiceRegistrationDialog({
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
               />
+              <p className="text-sm text-slate-600">
+                전체 농가 {farms.length}곳 · 검색 결과 {matchingFarms.length}곳
+              </p>
             </div>
             <div className="space-y-2">
               <label htmlFor="service-farm" className="text-sm font-medium">
@@ -147,7 +149,7 @@ function ServiceRegistrationDialog({
               <Select
                 value={recordId}
                 onValueChange={(value) => setRecordId(value ?? '')}
-                disabled={!farmId}
+                disabled={!farmId || !records.length}
               >
                 <SelectTrigger id="service-record" className="w-full">
                   <SelectValue>
@@ -162,6 +164,12 @@ function ServiceRegistrationDialog({
                   ))}
                 </SelectContent>
               </Select>
+              {farmId && !records.length && (
+                <p role="status" className="text-sm text-slate-600">
+                  이 농가에 연결된 참여 사업이 없습니다. 농가 관리대장에서 참여
+                  사업을 등록하거나 삭제된 사업을 복구한 뒤 A/S를 등록해 주세요.
+                </p>
+              )}
             </div>
           </>
         )}
@@ -188,6 +196,7 @@ function ServiceRegistrationDialog({
 
 export function ServiceWorkPanel({
   rows,
+  farms,
   registrationOptions,
   currentYear,
   onRegister,
@@ -195,6 +204,7 @@ export function ServiceWorkPanel({
   onRegistrationOpenChange,
 }: {
   rows: ServiceRow[];
+  farms: { farmId: string; farmLabel: string }[];
   registrationOptions: ServiceRegistrationOption[];
   currentYear: string;
   onRegister: (recordId: string) => void;
@@ -410,6 +420,7 @@ export function ServiceWorkPanel({
       )}
       {registering && (
         <ServiceRegistrationDialog
+          farms={farms}
           options={registrationOptions}
           onClose={() => changeRegistrationOpen(false)}
           onRegister={onRegister}

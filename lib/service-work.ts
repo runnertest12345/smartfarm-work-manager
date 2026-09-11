@@ -1,5 +1,16 @@
 import type { FarmHistoryEntry, FarmWorkItem } from './farm-types';
 
+/** After-sales support continues after a farm's project has finished. */
+export function isFarmServiceWork(
+  work: Pick<FarmWorkItem, 'workType' | 'farmRecordId' | 'scope'>,
+) {
+  return (
+    work.workType === 'service' &&
+    Boolean(work.farmRecordId) &&
+    work.scope !== 'internal'
+  );
+}
+
 function validTimestamp(value: number) {
   return (
     Number.isFinite(value) &&

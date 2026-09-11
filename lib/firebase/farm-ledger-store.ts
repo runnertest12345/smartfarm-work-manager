@@ -85,6 +85,7 @@ import {
   sameWorkContext,
 } from '@/lib/project-work';
 import { resolveTaskAssignment } from './organization-store';
+import { isFarmServiceWork } from '@/lib/service-work';
 import { projectLifecyclePatch } from '@/lib/project-lifecycle';
 import {
   assertSettlementTransition,
@@ -954,13 +955,14 @@ function assertProjectState(input: FarmProjectInput) {
 function assertProjectEditable(
   project: FarmProject | undefined,
   allowDeleted = false,
+  allowCompleted = false,
 ) {
   if (!project) throw new Error('선택한 사업을 찾을 수 없습니다.');
   if (project.deletedAt && !allowDeleted)
     throw new Error(
       '삭제된 프로젝트입니다. 프로젝트 관리에서 먼저 복구해 주세요.',
     );
-  if (project.status === 'completed') {
+  if (project.status === 'completed' && (!allowCompleted || project.deletedAt)) {
     throw new Error('완료된 사업은 먼저 다시 진행 상태로 열어 주세요.');
   }
   return project;
@@ -3000,7 +3002,8 @@ async function createWorkItem(
   if (!internal)
     assertProjectEditable(
       workspace.projects.find((item) => item.id === projectId),
-      Boolean(record),
+      Boolean(record) && !isFarmServiceWork(input),
+      isFarmServiceWork(input),
     );
   const sourceInbox = sourceInboxId
     ? workspace.inboxItems.find((item) => item.id === sourceInboxId)
@@ -3154,7 +3157,11 @@ async function createWorkItem(
     if (!internal) {
       const project = await transaction.get(documentRef('projects', projectId));
       if (!project.exists()) throw new Error('프로젝트를 찾을 수 없습니다.');
-      assertProjectEditable(project.data() as FarmProject, Boolean(record));
+      assertProjectEditable(
+        project.data() as FarmProject,
+        Boolean(record) && !isFarmServiceWork(workItem),
+        isFarmServiceWork(workItem),
+      );
     }
     if (input.assigneeUid)
       Object.assign(
@@ -3247,6 +3254,7 @@ async function addHistoryEntry(
   const project = workspace.projects.find((item) => item.id === projectId);
   if (
     project?.status === 'completed' &&
+    !isFarmServiceWork(existing) &&
     input.newStatus !== undefined &&
     input.newStatus !== 'completed'
   ) {
@@ -3502,6 +3510,7 @@ async function addHistoryEntry(
         throw new Error('프로젝트를 찾을 수 없습니다.');
       if (
         projectSnapshot.data().status === 'completed' &&
+        !isFarmServiceWork(existing) &&
         resolvedStatus !== 'completed'
       )
         throw new Error('완료된 사업의 업무는 다시 열 수 없습니다.');
@@ -3644,6 +3653,7 @@ async function saveVisit(input: FarmWorkVisitInput) {
         ? (latestProject.data() as FarmProject)
         : undefined,
       true,
+      isFarmServiceWork(workItem),
     );
     if (existing) {
       const latestVisit = await batch.get(documentRef('visits', existing.id));
@@ -3732,6 +3742,7 @@ async function toggleChecklist(
           ? (latestProject.data() as FarmProject)
           : undefined,
         true,
+        isFarmServiceWork(workItem),
       );
     }
     const latestCheck = await batch.get(
