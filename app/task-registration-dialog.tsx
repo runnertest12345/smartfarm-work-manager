@@ -41,6 +41,7 @@ export function TaskRegistrationDialog({
   departments,
   projects,
   parent,
+  initialProject,
   onClose,
   onCreated,
 }: {
@@ -49,13 +50,14 @@ export function TaskRegistrationDialog({
   departments: Department[];
   projects: FarmProject[];
   parent?: FarmWorkItem;
+  initialProject?: FarmProject;
   onClose: () => void;
   onCreated: () => void;
 }) {
   const [scope, setScope] = useState<'internal' | 'project'>(
-    parent ? (isInternalTask(parent) ? 'internal' : 'project') : 'internal',
+    parent ? (isInternalTask(parent) ? 'internal' : 'project') : initialProject ? (initialProject.projectType === 'internal' ? 'internal' : 'project') : 'internal',
   );
-  const [projectId, setProjectId] = useState(parent?.projectId || '');
+  const [projectId, setProjectId] = useState(parent?.projectId || initialProject?.id || '');
   const [assigneeUid, setAssigneeUid] = useState(
     parent?.assigneeUid || member.id,
   );
@@ -132,7 +134,7 @@ export function TaskRegistrationDialog({
                   workItem: {
                     ...(scope === 'internal' ? { scope: 'internal' } : {}),
                     assigneeUid,
-                    projectId: scope === 'project' ? projectId : '',
+                    projectId,
                     parentWorkItemId: parent?.id || '',
                     farmRecordId: '',
                     workType: 'communication',
@@ -185,9 +187,10 @@ export function TaskRegistrationDialog({
               <Label htmlFor="task-scope">업무 구분</Label>
               <Select
                 value={scope}
-                onValueChange={(value) =>
-                  setScope(value as 'internal' | 'project')
-                }
+                onValueChange={(value) => {
+                  setScope(value as 'internal' | 'project');
+                  setProjectId('');
+                }}
                 disabled={busy}
               >
                 <SelectTrigger id="task-scope">
@@ -202,12 +205,12 @@ export function TaskRegistrationDialog({
               </Select>
             </div>
           )}
-          {scope === 'project' && (
+          {(
             <div>
-              <Label htmlFor="task-project">프로젝트</Label>
+              <Label htmlFor="task-project">{scope === 'internal' ? '내부 프로젝트 (선택)' : '프로젝트'}</Label>
               <Select
-                value={projectId}
-                onValueChange={(value) => setProjectId(String(value))}
+                value={projectId || 'none'}
+                onValueChange={(value) => setProjectId(value === 'none' ? '' : String(value))}
                 disabled={busy || Boolean(parent)}
               >
                 <SelectTrigger id="task-project">
@@ -216,10 +219,12 @@ export function TaskRegistrationDialog({
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
+                  {scope === 'internal' && <SelectItem value="none">프로젝트 없이 등록</SelectItem>}
                   {projects
                     .filter(
                       (project) =>
-                        !project.deletedAt && project.status !== 'completed',
+                        !project.deletedAt && project.status !== 'completed' &&
+                        (scope === 'internal' ? project.projectType === 'internal' : project.projectType !== 'internal'),
                     )
                     .map((project) => (
                       <SelectItem key={project.id} value={project.id}>

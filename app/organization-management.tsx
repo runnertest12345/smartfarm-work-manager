@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { MemberRegistrationButton } from './member-registration';
 import { accountIdentifier } from '@/lib/login-identity';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,6 +35,7 @@ import {
 } from '@/lib/firebase/organization-store';
 import {
   isOrganizationAdmin,
+  canRegisterMembers,
   SHARED_ACCESS_EMAIL,
   type AppMember,
   type Department,
@@ -55,7 +57,18 @@ export function OrganizationManagement({
     Department | 'new' | null
   >(null);
   if (!isOrganizationAdmin(current))
-    return <p>직원·부서 관리는 승인된 관리자만 사용할 수 있습니다.</p>;
+    return canRegisterMembers(current) ? (
+      <section className="space-y-4 rounded-xl border bg-white p-5">
+        <h1 className="text-2xl font-bold">회원 등록</h1>
+        <p className="text-slate-600">
+          새 직원을 등록할 수 있습니다. 기존 직원의 권한·부서 변경은 관리자에게
+          요청해 주세요.
+        </p>
+        <MemberRegistrationButton current={current} departments={departments} />
+      </section>
+    ) : (
+      <p>직원·부서 관리는 승인된 관리자만 사용할 수 있습니다.</p>
+    );
   const personal = members.filter(
     (member) => member.email !== SHARED_ACCESS_EMAIL,
   );
@@ -118,13 +131,19 @@ export function OrganizationManagement({
         )}
       </section>
       <section className="rounded-xl border bg-white p-5">
-        <h2 className="text-lg font-bold">
-          직원 계정 · 승인 대기·중지 {pending}명
-        </h2>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-bold">
+            직원 계정 · 승인 대기·중지 {pending}명
+          </h2>
+          <MemberRegistrationButton
+            current={current}
+            departments={departments}
+          />
+        </div>
         <p className="mt-2 text-sm text-slate-600">
-          신규 계정 생성 화면은 아직 제공하지 않습니다. 부서장 지시 업무는
-          직원의 소속 부서장이 직접 계정에 배정했을 때 자동으로 최우선이 됩니다.
-          가입자에게 관리자 권한은 자동으로 부여되지 않습니다.
+          회원 추가는 러너·평화만 할 수 있습니다. 부서장 지시 업무는 직원의 소속
+          부서장이 직접 계정에 배정했을 때 자동으로 최우선이 됩니다. 가입자에게
+          관리자 권한은 자동으로 부여되지 않습니다.
         </p>
         <Input
           aria-label="직원 이름·아이디 검색"

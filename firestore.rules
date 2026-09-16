@@ -29,6 +29,33 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/appMembers/$(request.auth.uid)).data.get('admin', false) == true;
     }
 
+    // Only the two existing internal registrars may create a new ordinary membership.
+    // Auth account creation still requires the private server API; public signup stays disabled.
+    function registrationActor() {
+      let actor = get(/databases/$(database)/documents/appMembers/$(request.auth.uid)).data;
+      return request.auth != null
+        && request.auth.uid in ['staff-bootstrap-3c039722dfe5ab50da57d128', 'staff-bootstrap-cbbc0b0b0bce4dfea455a415']
+        && request.auth.token.firebase.sign_in_provider == 'password'
+        && actor.email == request.auth.token.get('email', '')
+        && actor.active == true && actor.workspaceId == 'sheet-20260903-579dfadc'
+        && actor.get('passwordChangeRequired', true) == false;
+    }
+
+    function validRegisteredMember(userId) {
+      let after = request.resource.data;
+      return userId.matches('^staff-member-[a-f0-9-]{36}$')
+        && after.keys().hasOnly(['email', 'displayName', 'active', 'admin', 'workspaceId', 'departmentId', 'requestedDepartment', 'jobTitle', 'passwordChangeRequired', 'createdAt', 'updatedAt', 'createdByUid', 'registrationRequestId'])
+        && after.email is string && after.email.matches('^u([0-9a-f]{2}){2,30}@staff[.]smartfarm-work-manager[.]invalid$')
+        && after.displayName is string && after.displayName.size() > 0 && after.displayName.size() <= 40
+        && after.active == true && after.admin == false && after.passwordChangeRequired == true
+        && after.workspaceId == 'sheet-20260903-579dfadc' && after.requestedDepartment == '' && after.jobTitle == '직원'
+        && after.departmentId is string && after.departmentId.size() > 0
+        && get(/databases/$(database)/documents/workspaces/$(after.workspaceId)/departments/$(after.departmentId)).data.id == after.departmentId
+        && after.createdAt is int && after.createdAt > 0 && after.createdAt <= request.time.toMillis() + 300000
+        && after.updatedAt == after.createdAt && after.createdByUid == request.auth.uid
+        && after.registrationRequestId is string && after.registrationRequestId.matches('^[a-f0-9-]{36}$');
+    }
+
     function sameTaskContext(a, b) {
       let scope = a.get('scope', '');
       return scope == b.get('scope', '') && a.get('projectId', '') == b.get('projectId', '')
@@ -47,19 +74,31 @@ service cloud.firestore {
         && after.headAssigned == (department.headUid == request.auth.uid && actor.departmentId == after.departmentId && after.assigneeUid != request.auth.uid);
     }
 
-    function validWorkAssignment(workspaceId, creating) {
-      let after = request.resource.data;
-      let before = creating ? {} : resource.data;
+    function internalWorkProject(workspaceId, data, creating) {
+      let projectId = data.get('projectId', '');
+      return projectId == '' || (projectId is string && internalProjectLink(workspaceId, projectId, data, creating));
+    }
+
+    function internalProjectLink(workspaceId, projectId, work, creating) {
+      let project = getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(projectId)).data;
+      return project.id == projectId && project.get('projectType', 'general') == 'internal'
+        && (!creating || (project.get('deletedAt', 0) == 0 && project.status != 'completed'))
+        && (project.status != 'completed' || work.status == 'completed');
+    }
+
+    function validWorkAssignment(workspaceId, creating, after, before) {
       let assigned = after.get('assigneeUid', '') != '';
       let scope = after.get('scope', '');
       return scope in ['', 'internal']
-        && (scope != 'internal' || (after.get('projectId', '') == '' && after.farmRecordId == '' && after.farmId == ''
-          && after.workType in ['communication', 'installation', 'service', 'note']))
+        && (scope != 'internal' || (after.farmRecordId == '' && after.farmId == ''
+          && after.workType in ['communication', 'installation', 'service', 'note']
+          && internalWorkProject(workspaceId, after, creating)
+          && (creating || after.get('projectId', '') == before.get('projectId', ''))))
         && (creating
           ? (assigned ? validNewAssignment(workspaceId, after)
             : scope != 'internal' && !after.keys().hasAny(['assignedByUid', 'departmentId', 'headAssigned', 'assignedAt']))
-          : !after.diff(before).affectedKeys().hasAny(['scope', 'assigneeUid', 'assignedByUid', 'departmentId', 'headAssigned', 'assignedAt'])
-            && (!assigned || after.owner == before.owner));
+          // Assignment fields are immutable in workUpdate's shared changed-key check.
+          : (!assigned || after.owner == before.owner));
     }
 
     function knownCollection(name) {
@@ -83,20 +122,21 @@ service cloud.firestore {
 
     function validDocument(documentId) {
       let data = request.resource.data;
+      let id = data.id;
+      let createdAt = data.createdAt;
+      let updatedAt = data.updatedAt;
+      let createdByUid = data.createdByUid;
       return data.keys().hasAll([
           'id', 'createdAt', 'updatedAt', 'createdByUid', 'updatedByUid'
         ])
         && data.size() <= 64
-        && data.id == documentId
-        && data.id is string
-        && data.id.size() > 0
-        && data.id.size() <= 160
-        && data.createdAt is int
-        && data.updatedAt is int
-        && data.createdAt > 0
-        && data.updatedAt >= data.createdAt
-        && data.createdByUid is string
-        && data.createdByUid.size() > 0
+        && id == documentId
+        && id.matches('(?s)^.{1,160}$')
+        && createdAt is int
+        && updatedAt is int
+        && createdAt > 0
+        && updatedAt >= createdAt
+        && createdByUid.matches('(?s)^.+$')
         && data.updatedByUid == request.auth.uid;
     }
 
@@ -116,21 +156,27 @@ service cloud.firestore {
     }
 
     function validRelations(workspaceId, name, creating) {
-      return name == 'projects'
-        || name == 'farms'
+      // The existing project branch has no parent relation. Use an explicit branch
+      // so unrelated relation expressions are not evaluated for project writes.
+      // All collection membership, authentication and project validation stay in place.
+      return name == 'projects' ? true
+        : name == 'farms'
         || name == 'inboxItems'
         || name == 'farmCodeReservations'
         || name == 'farmRecordReservations'
         || (name == 'projectDocuments'
           && request.resource.data.projectId is string
+          && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.get('projectType', 'general') != 'internal'
           && (!creating || getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.get('deletedAt', 0) == 0)
           && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.id == request.resource.data.projectId)
         || (name == 'projectUpdates'
           && request.resource.data.projectId is string
+          && (request.resource.data.kind == 'system' || getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.get('projectType', 'general') != 'internal')
           && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.id == request.resource.data.projectId)
         || (name == 'farmRecords'
           && request.resource.data.farmId is string
           && request.resource.data.projectId is string
+          && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.get('projectType', 'general') != 'internal'
           && (!creating || getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.get('deletedAt', 0) == 0)
           && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/farms/$(request.resource.data.farmId)).data.id == request.resource.data.farmId
           && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(request.resource.data.projectId)).data.id == request.resource.data.projectId)
@@ -157,14 +203,20 @@ service cloud.firestore {
           && validWorkRecord(workspaceId, name, creating));
     }
 
+    function businessWorkProject(workspaceId, data, creating) {
+      let projectId = data.projectId;
+      let project = getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(projectId)).data;
+      return projectId is string && projectId != '' && project.id == projectId
+        && project.get('projectType', 'general') != 'internal'
+        && (!creating || project.get('deletedAt', 0) == 0);
+    }
+
     function workRelations(workspaceId, data, creating) {
       return data.farmRecordId is string && (data.farmRecordId != ''
         ? getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/farmRecords/$(data.farmRecordId)).data.id == data.farmRecordId
         : (data.farmId == '' && data.workType in ['communication', 'installation', 'service', 'note']
-          && (data.get('scope', '') == 'internal' ? data.get('projectId', '') == ''
-            : data.projectId is string && data.projectId != ''
-              && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(data.projectId)).data.id == data.projectId
-              && (!creating || getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(data.projectId)).data.get('deletedAt', 0) == 0))));
+          && (data.get('scope', '') == 'internal' ? true
+            : businessWorkProject(workspaceId, data, creating))));
     }
 
     function workUpdate(workspaceId, documentId) {
@@ -174,8 +226,8 @@ service cloud.firestore {
         ? workLifecycleChange(workspaceId, documentId, before, after)
           && (after.get('parentWorkItemId', '') == '' || linkedParent(workspaceId, documentId, before, after, false, openTask(after)))
         : before.get('deletedAt', 0) == 0
-          && !after.diff(before).affectedKeys().hasAny(['deletedAt', 'deletedByUid', 'workLifecycleEntryId', 'workType'])
-          && validWorkTree(workspaceId, documentId, false) && validWorkAssignment(workspaceId, false)
+          && !after.diff(before).affectedKeys().hasAny(['deletedAt', 'deletedByUid', 'workLifecycleEntryId', 'workType', 'scope', 'assigneeUid', 'assignedByUid', 'departmentId', 'headAssigned', 'assignedAt'])
+          && validWorkTree(workspaceId, documentId, false) && validWorkAssignment(workspaceId, false, after, before)
           // Internal links are already fully checked by validWorkAssignment.
           && (after.get('scope', '') == 'internal' || workRelations(workspaceId, after, false));
     }
@@ -200,7 +252,9 @@ service cloud.firestore {
         ? get(/databases/$(database)/documents/workspaces/$(workspaceId)/farmRecords/$(work.farmRecordId)).data.projectId
         : work.projectId;
       let project = getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/projects/$(projectId)).data;
-      return project.get('deletedAt', 0) == 0 && (work.status == 'completed' || project.status != 'completed');
+      return project.id == projectId && project.get('deletedAt', 0) == 0
+        && ((work.get('scope', '') == 'internal') == (project.get('projectType', 'general') == 'internal'))
+        && (work.status == 'completed' || project.status != 'completed');
     }
 
     function workLifecycleChange(workspaceId, documentId, before, after) {
@@ -219,7 +273,7 @@ service cloud.firestore {
         && after.deletedAt is int && after.deletedAt >= 0
         && ((deleting && before.get('deletedAt', 0) == 0 && after.deletedAt == after.updatedAt && after.deletedByUid == request.auth.uid)
           || (!deleting && before.get('deletedAt', 0) > 0 && after.deletedByUid == ''
-            && (after.get('scope', '') == 'internal' || restorableWorkProject(workspaceId, after))))
+            && ((after.get('scope', '') == 'internal' && after.get('projectId', '') == '') || restorableWorkProject(workspaceId, after))))
         && audit.id == auditId && audit.workItemId == documentId
         && audit.workLifecycleAction == (deleting ? 'delete' : 'restore')
         && audit.channel == 'system' && audit.amount == 0
@@ -246,13 +300,12 @@ service cloud.firestore {
     }
 
     function validSettlement(entry) {
-      return entry is map && entry.keys().hasOnly(['status', 'dueDate', 'claimAmount', 'approvedAmount', 'paidAmount', 'settledAt', 'owner', 'evidenceUrl', 'note'])
-        && entry.status in ['not_started', 'collecting', 'submitted', 'revision', 'approved', 'paid', 'closed']
-        && entry.claimAmount is int && entry.claimAmount >= 0 && entry.claimAmount <= 1000000000000000
-        && entry.approvedAmount is int && entry.approvedAmount >= 0 && entry.approvedAmount <= 1000000000000000
+      // Field count is checked before required field reads, including an empty map.
+      return entry is map && entry.size() == 9 && entry.claimAmount is int && entry.claimAmount >= 0
+        && entry.approvedAmount is int
         && entry.paidAmount is int && entry.paidAmount >= 0 && entry.paidAmount <= entry.approvedAmount
-        && entry.dueDate is string && entry.dueDate.size() <= 10
-        && entry.settledAt is string && entry.settledAt.size() <= 10
+        && entry.dueDate.matches('(?s)^.{0,10}$') && entry.settledAt.matches('(?s)^.{0,10}$')
+        && entry.status.matches('^(not_started|collecting|submitted|revision|approved|paid|closed)$')
         && entry.owner is string && entry.evidenceUrl is string && entry.note is string;
     }
 
@@ -266,32 +319,91 @@ service cloud.firestore {
       return {'status': 'not_started', 'dueDate': '', 'claimAmount': 0, 'approvedAmount': 0, 'paidAmount': 0, 'settledAt': '', 'owner': '', 'evidenceUrl': '', 'note': ''};
     }
 
-    function preservesOldSettlement(before, rounds) {
-      let previous = before.get('settlementRounds', {});
-      let original = previous == {} ? oldSettlement(before) : previous.get('unassigned', {});
-      return original == {} ? !rounds.keys().hasAny(['unassigned'])
-        : (rounds.keys().hasAny(['unassigned']) ? rounds.unassigned == original
-          : ((rounds.first == original && (previous == {} || previous.first == emptySettlement()))
-            || (rounds.second == original && (previous == {} || previous.second == emptySettlement()))));
+    function preservesOldSettlement(before, rounds, previous) {
+      return previous == {} && 'unassigned' in rounds
+        ? rounds.unassigned == oldSettlement(before)
+        : preservesAssignedSettlement(before, rounds, previous);
     }
 
-    function roundStatus(rounds) {
-      let statuses = rounds.keys().hasAny(['unassigned']) ? [rounds.first.status, rounds.second.status, rounds.unassigned.status] : [rounds.first.status, rounds.second.status];
-      return statuses.hasOnly(['closed']) ? 'closed' : statuses.hasOnly(['paid', 'closed']) ? 'paid'
-        : statuses.hasAny(['revision']) ? 'revision' : statuses.hasOnly(['not_started']) ? 'not_started'
-        : statuses.hasOnly(['approved', 'paid', 'closed']) ? 'approved'
-        : statuses.hasOnly(['submitted', 'approved', 'paid', 'closed']) ? 'submitted' : 'collecting';
+    function preservesAssignedSettlement(before, rounds, previous) {
+      let original = previous == {} ? oldSettlement(before) : previous.get('unassigned', {});
+      return original == {} ? !('unassigned' in rounds)
+        : ('unassigned' in rounds ? rounds.unassigned == original
+          : ((rounds.get('third', {}) == original && (!('third' in previous) || previous.third == emptySettlement()))
+            || (rounds.get('second', {}) == original && (!('second' in previous) || previous.second == emptySettlement()))
+            || (rounds.get('first', {}) == original && (!('first' in previous) || previous.first == emptySettlement()))));
+    }
+
+    function validRoundStatus(first, second, third, unassigned, status) {
+      let statuses = [first, second, third, unassigned];
+      return (status == first && statuses.hasOnly([status]))
+        || (status == 'submitted' ? statuses.hasOnly(['submitted', 'approved', 'paid', 'closed']) && statuses.hasAny(['submitted'])
+          : status == 'revision' ? statuses.hasAny(['revision'])
+          : status == 'collecting' ? !statuses.hasAny(['revision']) && statuses.hasAny(['not_started', 'collecting']) && !statuses.hasOnly(['not_started'])
+          : status == 'approved' ? statuses.hasOnly(['approved', 'paid', 'closed']) && statuses.hasAny(['approved'])
+          : status == 'paid' && statuses.hasOnly(['paid', 'closed']) && statuses.hasAny(['paid']));
     }
 
     function validRoundTotals(after) {
       let rounds = after.settlementRounds;
-      let extra = rounds.get('unassigned', {'claimAmount': 0, 'approvedAmount': 0, 'paidAmount': 0});
-      return after.contractAmount is int && after.contractAmount >= 0 && after.contractAmount <= 1000000000000000
-        && after.settlementClaimAmount == rounds.first.claimAmount + rounds.second.claimAmount + extra.claimAmount
-        && after.settlementApprovedAmount == rounds.first.approvedAmount + rounds.second.approvedAmount + extra.approvedAmount
-        && after.settlementPaidAmount == rounds.first.paidAmount + rounds.second.paidAmount + extra.paidAmount
-        && after.settlementStatus == roundStatus(rounds)
+      let first = rounds.first;
+      let zero = {'claimAmount': 0, 'approvedAmount': 0, 'paidAmount': 0, 'status': first.status};
+      let second = rounds.get('second', zero);
+      let third = rounds.get('third', zero);
+      let unassigned = rounds.get('unassigned', zero);
+      let contract = after.contractAmount;
+      let claim = after.settlementClaimAmount;
+      let approved = after.settlementApprovedAmount;
+      let paid = after.settlementPaidAmount;
+      return contract is int && contract >= 0 && contract <= 1000000000000000
+        // All terms are nonnegative, so each round is also bounded by the capped totals.
+        && (!('unassigned' in rounds) || (unassigned.claimAmount >= 0 && unassigned.approvedAmount >= 0 && unassigned.paidAmount >= 0))
+        && claim <= 1000000000000000 && approved <= 1000000000000000 && paid <= 1000000000000000
+        && claim == first.claimAmount + second.claimAmount + third.claimAmount + unassigned.claimAmount
+        && approved == first.approvedAmount + second.approvedAmount + third.approvedAmount + unassigned.approvedAmount
+        && paid == first.paidAmount + second.paidAmount + third.paidAmount + unassigned.paidAmount
+        && validRoundStatus(first.status, second.status, third.status, unassigned.status, after.settlementStatus)
         && (after.status != 'completed' || after.settlementStatus in ['paid', 'closed']);
+    }
+
+    function unusedProjectSettlement(project) {
+      let rounds = project.get('settlementRounds', {});
+      return project.get('contractAmount', 0) == 0
+        && project.get('settlementStatus', 'not_started') == 'not_started'
+        && project.get('settlementClaimAmount', 0) == 0
+        && project.get('settlementApprovedAmount', 0) == 0
+        && project.get('settlementPaidAmount', 0) == 0
+        && project.get('settlementDueDate', '') == '' && project.get('settledAt', '') == ''
+        && project.get('settlementOwner', '') == '' && project.get('settlementEvidenceUrl', '') == ''
+        && project.get('settlementNote', '') == ''
+        && rounds is map && rounds.keys().hasOnly(['first', 'second', 'third', 'unassigned'])
+        && (!rounds.keys().hasAny(['first']) || rounds.first == emptySettlement())
+        && (!rounds.keys().hasAny(['second']) || rounds.second == emptySettlement())
+        && (!rounds.keys().hasAny(['third']) || rounds.third == emptySettlement())
+        && (!rounds.keys().hasAny(['unassigned']) || rounds.unassigned == emptySettlement());
+    }
+
+    function unusedBusinessToInternal(before, after) {
+      return before.get('projectType', 'general') in ['general', 'research']
+        && after.get('projectType', 'general') == 'internal'
+        && before.get('deletedAt', 0) == 0
+        && before.status != 'completed' && after.status != 'completed'
+        && unusedProjectSettlement(before);
+    }
+
+    function validProjectKind(creating) {
+      let after = request.resource.data;
+      let before = creating ? {} : resource.data;
+      let internal = after.get('projectType', 'general') == 'internal';
+      return after.get('projectType', 'general') in ['general', 'research', 'internal']
+        && (creating || internal == (before.get('projectType', 'general') == 'internal')
+          || unusedBusinessToInternal(before, after))
+        && (!internal || (after.targetFarmCount == 0 && after.contractAmount == 0
+          && after.settlementStatus == 'not_started' && after.settlementClaimAmount == 0
+          && after.settlementApprovedAmount == 0 && after.settlementPaidAmount == 0
+          && after.settlementDueDate == '' && after.settledAt == ''
+          && !after.keys().hasAny(['settlementRounds'])
+          && after.currentStage == (after.status == 'completed' ? 'closed' : 'operation')));
     }
 
 
@@ -300,16 +412,22 @@ service cloud.firestore {
       let after = request.resource.data;
       let previous = before.get('settlementRounds', {});
       let rounds = after.get('settlementRounds', {});
-      return !after.keys().hasAny(['settlementRounds']) ? !before.keys().hasAny(['settlementRounds'])
-        : (before.keys().hasAny(['settlementRounds']) && rounds == previous && !after.diff(before).affectedKeys().hasAny(['settlementStatus', 'settlementClaimAmount', 'settlementApprovedAmount', 'settlementPaidAmount', 'contractAmount', 'status', 'settlementDueDate', 'settledAt']))
-        || (rounds is map && rounds.keys().hasAll(['first', 'second']) && rounds.keys().hasOnly(['first', 'second', 'unassigned'])
-          && (rounds.first == previous.get('first', {}) || validSettlement(rounds.first))
-          && (rounds.second == previous.get('second', {}) || validSettlement(rounds.second))
+      let roundsChanged = rounds != previous;
+      return !('settlementRounds' in after) ? (!('settlementRounds' in before)
+          || (!creating && unusedBusinessToInternal(before, after)))
+        : ('settlementRounds' in before && !roundsChanged && !after.diff(before).affectedKeys().hasAny(['settlementStatus', 'settlementClaimAmount', 'settlementApprovedAmount', 'settlementPaidAmount', 'contractAmount', 'status', 'settlementDueDate', 'settledAt']))
+        || (rounds is map && 'first' in rounds && rounds.keys().hasOnly(['first', 'second', 'third', 'unassigned'])
+          && validSettlement(rounds.first)
+          && (!('second' in rounds)
+            ? (!('second' in previous) || previous.second == emptySettlement())
+            : validSettlement(rounds.second))
+          && (!('third' in rounds)
+            ? (!('third' in previous) || previous.third == emptySettlement())
+            : 'second' in rounds && validSettlement(rounds.third))
           && validRoundTotals(after)
-          && (rounds != previous || (after.settlementDueDate == before.settlementDueDate && after.settledAt == before.settledAt))
-          && (creating ? !rounds.keys().hasAny(['unassigned']) : preservesOldSettlement(before, rounds))
-          && (creating || before.get('status', '') != 'completed' || after.status != 'completed' || (rounds == previous && !after.diff(before).affectedKeys().hasAny(['contractAmount', 'settlementClaimAmount', 'settlementApprovedAmount', 'settlementPaidAmount', 'settlementStatus', 'settlementDueDate', 'settledAt'])))
-          && (creating || before.get('deletedAt', 0) == 0));
+          && (roundsChanged || (after.settlementDueDate == before.settlementDueDate && after.settledAt == before.settledAt))
+          && (creating ? !('unassigned' in rounds) : preservesOldSettlement(before, rounds, previous))
+          && (creating || (before.get('deletedAt', 0) == 0 && (before.get('status', '') != 'completed' || after.status != 'completed' || (!roundsChanged && !after.diff(before).affectedKeys().hasAny(['contractAmount', 'settlementClaimAmount', 'settlementApprovedAmount', 'settlementPaidAmount', 'settlementStatus', 'settlementDueDate', 'settledAt']))))));
     }
 
     function validProjectLifecycle(workspaceId, documentId, creating) {
@@ -352,17 +470,22 @@ service cloud.firestore {
       let child = getAfter(childPath).data;
       let oldIds = before.get('childWorkItemIds', []);
       let newIds = after.get('childWorkItemIds', []);
+      // Cache lifecycle values and take the ordinary status-change path first.
+      // Nested parent counter updates must retain every integrity check without
+      // re-evaluating deletion/restoration branches on each completion.
+      let oldDeleted = oldChild.get('deletedAt', 0);
+      let newDeleted = child.get('deletedAt', 0);
       return childId != '' && childId != documentId
         && child.get('parentWorkItemId', '') == documentId
         && sameTaskContext(child, after)
-        && after.get('openChildCount', 0) == before.get('openChildCount', 0) + openTask(child) - openTask(oldChild)
+        && after.get('openChildCount', 0) == before.get('openChildCount', 0) + openTask(child) - (existed ? openTask(oldChild) : 0)
         && (existed
-          ? oldChild.get('parentWorkItemId', '') == documentId && (
-            (oldChild.get('deletedAt', 0) == 0 && child.get('deletedAt', 0) > 0
-              && childId in oldIds && !(childId in newIds) && oldIds.hasAll(newIds) && newIds.size() == oldIds.size() - 1)
-            || (oldChild.get('deletedAt', 0) > 0 && child.get('deletedAt', 0) == 0
+          ? oldChild.get('parentWorkItemId', '') == documentId && (oldDeleted == 0
+            ? (newDeleted == 0
+              ? newIds == oldIds && childId in newIds
+              : newDeleted > 0 && childId in oldIds && !(childId in newIds) && oldIds.hasAll(newIds) && newIds.size() == oldIds.size() - 1)
+            : oldDeleted > 0 && newDeleted == 0
               && !(childId in oldIds) && childId in newIds && newIds.hasAll(oldIds) && newIds.size() == oldIds.size() + 1)
-            || (oldChild.get('deletedAt', 0) == 0 && child.get('deletedAt', 0) == 0 && newIds == oldIds && childId in newIds))
           : !(childId in oldIds) && childId in newIds && newIds.hasAll(oldIds) && newIds.size() == oldIds.size() + 1);
     }
 
@@ -410,14 +533,14 @@ service cloud.firestore {
     }
 
     match /appMembers/{userId} {
+      allow get: if registrationActor() && userId.matches('^staff-member-[a-f0-9-]{36}$');
       allow get: if signedIn() && (request.auth.uid == userId
         || organizationAdmin(resource.data.get('workspaceId', ''))
         || resource.data.active == true && personalMember(resource.data.get('workspaceId', ''), request.auth.uid));
       allow list: if signedIn() && request.query.limit != null && request.query.limit <= 5000
         && (organizationAdmin(resource.data.get('workspaceId', ''))
           || personalMember(resource.data.get('workspaceId', ''), request.auth.uid) && resource.data.active == true);
-      // Accounts and memberships are created by the authenticated, restricted server only.
-      allow create: if false;
+      allow create: if registrationActor() && validRegisteredMember(userId);
       allow update: if organizationAdmin(resource.data.get('workspaceId', ''))
         && resource.data.email != 'team-access@smartfarm-work-manager.firebaseapp.com'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active', 'departmentId', 'jobTitle', 'updatedAt'])
@@ -454,6 +577,18 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Literal work path avoids evaluating unrelated farm/project rules on deep task trees.
+    // Read/list permissions remain in the collection matcher below.
+    match /workspaces/{workspaceId}/workItems/{documentId} {
+      allow create: if activeMember(workspaceId) && validCreate(documentId)
+        && !request.resource.data.keys().hasAny(['deletedAt', 'deletedByUid', 'workLifecycleEntryId'])
+        && validWorkTree(workspaceId, documentId, true)
+        && validWorkAssignment(workspaceId, true, request.resource.data, {})
+        && workRelations(workspaceId, request.resource.data, true);
+      allow update: if activeMember(workspaceId) && validUpdate(documentId)
+        && workUpdate(workspaceId, documentId);
+    }
+
     match /workspaces/{workspaceId}/{collectionName}/{documentId} {
       allow get: if activeMember(workspaceId) && knownCollection(collectionName);
       allow list: if activeMember(workspaceId)
@@ -461,24 +596,20 @@ service cloud.firestore {
         && request.query.limit != null
         && request.query.limit <= 5000;
 
-      allow create: if activeMember(workspaceId)
+      allow create: if collectionName != 'workItems' && activeMember(workspaceId)
         && knownCollection(collectionName)
         && validCreate(documentId)
         && (collectionName != 'farms' || validFarmImages(workspaceId, documentId, true))
-        && (collectionName != 'projects' || (validProjectLifecycle(workspaceId, documentId, true) && validProjectSettlements(true)))
-        && (collectionName == 'workItems'
-          ? !request.resource.data.keys().hasAny(['deletedAt', 'deletedByUid', 'workLifecycleEntryId'])
-            && validWorkTree(workspaceId, documentId, true) && validWorkAssignment(workspaceId, true)
-            && workRelations(workspaceId, request.resource.data, true)
-          : validRelations(workspaceId, collectionName, true));
+        && (collectionName != 'projects' || (validProjectKind(true) && validProjectLifecycle(workspaceId, documentId, true) && validProjectSettlements(true)))
+        && validRelations(workspaceId, collectionName, true);
 
-      allow update: if activeMember(workspaceId)
+      allow update: if collectionName != 'workItems' && activeMember(workspaceId)
         && knownCollection(collectionName)
         && !(collectionName in ['subscriptionEvents', 'historyEntries'])
         && validUpdate(documentId)
         && (collectionName != 'farms' || validFarmImages(workspaceId, documentId, false))
-        && (collectionName != 'projects' || (validProjectLifecycle(workspaceId, documentId, false) && validProjectSettlements(false)))
-        && (collectionName == 'workItems' ? workUpdate(workspaceId, documentId) : validRelations(workspaceId, collectionName, false));
+        && (collectionName != 'projects' || (validProjectKind(false) && validProjectLifecycle(workspaceId, documentId, false) && validProjectSettlements(false)))
+        && validRelations(workspaceId, collectionName, false);
 
       allow delete: if false;
     }

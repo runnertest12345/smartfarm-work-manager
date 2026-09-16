@@ -26,17 +26,18 @@ export type WorkBoardGroup = {
   needsConfirmation: boolean;
 };
 
-/** A parent drop selects an individual task; it never bulk-updates its family. */
+/** Move only the dragged task; completion still requires every child to finish. */
 export function workBoardDropIntent(
   group: WorkBoardGroup,
   target: FarmWorkStatus,
 ) {
   if (group.missing) return 'blocked';
-  if (group.lane === target) return 'none';
+  if (group.item.status === target) return 'none';
   if (!group.hasChildren) return 'move';
   if (group.item.status === 'completed') return 'reopen';
-  if (target === 'completed' && group.readyToConfirm) return 'confirm';
-  return 'choose';
+  if (target === 'completed')
+    return group.readyToConfirm ? 'confirm' : 'incomplete';
+  return 'move';
 }
 
 /** The board is a projection only. Never rewrite parent or child statuses here. */
@@ -130,18 +131,11 @@ export function buildWorkBoardGroups(
       .map((row) => row.item)
       .filter((task) => task.status === 'waiting');
     let lane: FarmWorkStatus;
-    if (!hasChildren)
-      lane =
-        missing && item.status === 'completed' ? 'in_progress' : item.status;
-    else if (missing) lane = 'in_progress';
-    else if (item.status === 'completed') lane = 'completed';
-    else if (active.length || allDone) lane = 'in_progress';
-    else if (
-      counts.waiting &&
-      counts.waiting + counts.completed === leaves.length
-    )
-      lane = 'waiting';
-    else lane = 'open';
+    // Waiting anywhere in the family takes priority, without rewriting stored status.
+    if (waiting.length) lane = 'waiting';
+    else if (missing && (hasChildren || item.status === 'completed'))
+      lane = 'in_progress';
+    else lane = item.status;
     return {
       item,
       rows,

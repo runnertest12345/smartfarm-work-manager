@@ -139,6 +139,9 @@ const { ProjectManagementList } = load(
   'app/project-management-list.tsx',
   aliases,
 );
+const { InternalWorkKpiPanel } = load('app/internal-work-kpis.tsx', aliases);
+const { InternalProjectDetail } = load('app/internal-project-detail.tsx', aliases);
+const { ProjectDetailActions } = load('app/project-detail-actions.tsx', aliases);
 const { ProjectDeletionDialog } = load(
   'app/project-deletion-dialog.tsx',
   aliases,
@@ -197,6 +200,32 @@ const farmRecord = (farmId, patch = {}) => ({
   ...patch,
 });
 
+test('내부 KPI는 네 개의 별도 지표와 연결 버튼을 표시한다', () => {
+  const selected = [];
+  const tree = render(InternalWorkKpiPanel, { summary: { projects: 2, activeProjects: 1, completedProjects: 1, tasks: 4, rootTasks: 2, subtasks: 2, incompleteTasks: 1, waitingTasks: 1, overdueTasks: 0, completionRate: 50, completedTasks: 1, executableTasks: 2 }, onSelect: (target) => selected.push(target) });
+  const html = renderToStaticMarkup(tree);
+  assert.match(html, /전체 기간/);
+  assert.match(html, /상위 최종 완료와 별도/);
+  for (const button of nodes(tree).filter((node) => node.type === 'button')) button.props.onClick();
+  assert.deepEqual(selected, ['projects', 'tasks', 'incomplete', 'tasks']);
+});
+
+test('내부 프로젝트 상세는 업무만 보여주고 공통 작업 영역이 공용·완료 프로젝트 등록을 제한한다', () => {
+  for (const [status, canAddTask, disabled] of [['active', true, false], ['active', false, true], ['completed', true, true]]) {
+    const project = { projectType: 'internal', name: '사내 행사', year: 2026, status, manager: '담당' };
+    const tree = render(InternalProjectDetail, { project, canAddTask, children: '내부 업무 목록' });
+    const html = renderToStaticMarkup(tree);
+    assert.match(html, /연결된 내부 업무/);
+    assert.doesNotMatch(html, /정산|참여 농가|필수서류|프로젝트 수정|사내 행사|2026/);
+    assert.equal(nodes(tree).filter((node) => node.type === button).length, 0);
+    if (!canAddTask) assert.match(html, /승인된 개인 계정/);
+    if (status === 'completed') assert.match(html, /완료된 프로젝트/);
+    const actions = render(ProjectDetailActions, { project, canAddTask });
+    const add = find(actions, (node) => node.type === button && renderToStaticMarkup(node).includes('내부 업무 등록'));
+    assert.equal(Boolean(add.props.disabled), disabled);
+  }
+});
+
 test('프로젝트 진행·완료 KPI는 접힘 밖에 표시하고 업무 완료율과 구분한다', () => {
   reset();
   const tree = render(ProjectKpiPanel, {
@@ -226,7 +255,7 @@ test('프로젝트 진행·완료 KPI는 접힘 밖에 표시하고 업무 완�
   );
 });
 
-test('정산 입력은 두 회차를 접어 표시하고 기존 내역 전환·지정에도 금액을 한 번만 집계한다', () => {
+test('정산 입력은 1차부터 추가하며 기존 내역 전환·지정에도 금액을 한 번만 집계한다', () => {
   reset();
   let value = {
     contractAmount: 1000,
@@ -255,7 +284,7 @@ test('정산 입력은 두 회차를 접어 표시하고 기존 내역 전환·�
   ).props.onClick();
   tree = render(ProjectSettlementEditor, { value, onChange, locked: false });
   const details = nodes(tree).filter((node) => node.type === 'details');
-  assert.equal(details.length, 2);
+  assert.equal(details.length, 1);
   assert.ok(details.every((node) => !node.props.open));
   find(
     tree,
@@ -270,21 +299,104 @@ test('정산 입력은 두 회차를 접어 표시하고 기존 내역 전환·�
   assert.equal(value.settlementRounds.first.note, '보존 메모');
   tree = render(ProjectSettlementEditor, { value, onChange, locked: false });
   assert.match(
-    find(tree, (node) => node.props?.role === 'status').props.children,
+    find(tree, (node) => node.type === 'output').props.children,
     /먼저 수정 저장/,
   );
   const markup = renderToStaticMarkup(
     render(ProjectSettlementDetails, { project: value }),
   );
   assert.match(markup, /1차 정산/);
-  assert.match(markup, /2차 정산/);
-  assert.match(markup, /총 입금액/);
+  assert.doesNotMatch(markup, /2차 정산/);
+  assert.match(markup, /받은 입금액/);
   assert.equal(
     render(ProjectSettlementEditor, { value, onChange, locked: true }).props
       .disabled,
     true,
   );
+  for (let count = 2; count <= 3; count++) {
+    tree = render(ProjectSettlementEditor, { value, onChange, locked: false });
+    find(tree, (node) => node.type === button && String(node.props.children).includes('차수 추가')).props.onClick();
+    assert.equal(Object.keys(value.settlementRounds).length, count);
+    assert.equal(value.settlementPaidAmount, 300);
+  }
+  tree = render(ProjectSettlementEditor, { value, onChange, locked: false });
+  assert.equal(find(tree, (node) => node.type === button && String(node.props.children).includes('차수 추가')).props.disabled, true);
+  assert.match(renderToStaticMarkup(render(ProjectSettlementDetails, { project: value })), /3차 정산/);
+  find(tree, (node) => node.type === button && React.Children.toArray(node.props.children).join('').includes('비어 있는 3차 삭제')).props.onClick();
+  assert.equal(value.settlementRounds.third, undefined);
+  assert.equal(value.settlementRounds.first.note, '보존 메모');
 });
+
+test('수금 조회는 받은 대금·계약 잔액·승인 후 미입금을 구분하고 회차 원본으로 계산한다', () => {
+  reset();
+  const project = {
+    contractAmount: 10000000,
+    settlementClaimAmount: 99999999, settlementApprovedAmount: 99999999, settlementPaidAmount: 99999999,
+    settlementRounds: {
+      first: { ...settlements.emptySettlement(), status: 'closed', claimAmount: 7260000, approvedAmount: 7260000, paidAmount: 7260000 },
+      unassigned: { ...settlements.emptySettlement(), note: '기존 기록' },
+    },
+  };
+  const before = structuredClone(project);
+  const tree = render(ProjectSettlementDetails, { project });
+  const summary = find(tree, (node) => node.props?.['aria-label'] === '프로젝트 대금 수금 현황');
+  const html = renderToStaticMarkup(summary);
+  assert.equal(nodes(summary).filter((node) => node.type === 'dt').length, 3);
+  assert.match(html, /전체 계약금액.*10,000,000원/);
+  assert.match(html, /받은 입금액.*7,260,000원/);
+  assert.match(html, /계약 기준 남은 금액.*2,740,000원/);
+  const full = renderToStaticMarkup(tree);
+  assert.match(full, /승인 후 미입금 0원/);
+  assert.match(full, /미청구분도 포함/);
+  assert.match(full, /연체 금액을 뜻하지 않습니다/);
+  assert.match(full, /회차 상태: 정산 마감/);
+  assert.doesNotMatch(full, /99,999,999/);
+  assert.deepEqual(project, before);
+});
+
+test('계약금액 미확인·초과 입금은 숨기거나 수금 완료로 단정하지 않는다', () => {
+  for (const contractAmount of [0, 100]) {
+    reset();
+    const project = settlements.withSettlementRounds({ contractAmount }, {
+      first: { ...settlements.emptySettlement(), status: 'paid', approvedAmount: 150, paidAmount: 150 },
+    });
+    const html = renderToStaticMarkup(render(ProjectSettlementDetails, { project }));
+    if (contractAmount === 0) assert.match(html, /계약금액 확인 필요/);
+    else {
+      assert.match(html, /계약 기준 남은 금액.*0원/);
+      assert.match(html, /<output[^>]*>받은 입금액이 계약금액보다 50원 많습니다/);
+    }
+    assert.doesNotMatch(html, /전체 수금 완료/);
+  }
+});
+
+test('정산 입력도 실제 받은 누적 입금액 설명과 동일한 잔액을 보여준다', () => {
+  reset();
+  let value = settlements.withSettlementRounds({ contractAmount: 1000 }, {
+    first: { ...settlements.emptySettlement(), claimAmount: 800, approvedAmount: 600, paidAmount: 100 },
+  });
+  const before = structuredClone(value);
+  const onChange = () => assert.fail('Rendering never saves or changes a draft');
+  let tree = render(ProjectSettlementEditor, { value, onChange, locked: false });
+  let html = renderToStaticMarkup(tree);
+  assert.match(html, /고객·기관에서 받을 프로젝트 전체 대금/);
+  assert.match(html, /우리 회사가 이 회차에서 실제로 입금받은 누적 금액/);
+  assert.match(html, /청구한 금액 \(원\)/);
+  assert.match(html, /청구 승인액 \(원\)/);
+  assert.match(html, /받은 입금액 \(원\)/);
+  assert.match(html, /받은 입금 합계 100원 · 계약 기준 남은 금액 900원/);
+  assert.match(html, /승인 후 미입금 500원/);
+  assert.deepEqual(JSON.parse(JSON.stringify(value)), before);
+  value = settlements.withSettlementRounds(value, { first: { ...value.settlementRounds.first, paidAmount: 400 } });
+  tree = render(ProjectSettlementEditor, { value, onChange, locked: false });
+  html = renderToStaticMarkup(tree);
+  assert.match(html, /받은 입금 합계 400원 · 계약 기준 남은 금액 600원/);
+  assert.match(html, /승인 후 미입금 200원/);
+  assert.match(html, /정산 기한/);
+  assert.match(html, /입금·마감일/);
+  assert.doesNotMatch(html, /입금 예정일|실제 입금일/);
+});
+
 const records = [
   farmRecord('a', {
     installationDate: '2026-01-02',
@@ -461,11 +573,11 @@ test('통합 현황은 연도 드롭다운을 사용하고 같은 선택값을 K
   assert.match(overview, /<ProjectYearSelector/);
   assert.doesNotMatch(overview, /<ProjectYearSummary/);
   assert.match(overview, /value=\{projectYearFilter\}/);
-  assert.match(overview, /summary=\{yearProjectKpis\}/);
-  assert.match(overview, /overviewProjectRows.map/);
+  assert.match(overview, /<AnnualOverviewPanel\s+projects=\{annualProjects\}\s+snapshots=\{projectSnapshots\}\s+year=\{projectYearFilter\}/);
+  assert.match(overview, /<ProjectManagementList rows=\{annualProjectRows\}/);
   assert.match(
     dashboard,
-    /const yearProjects = filterProjectsByScope\(\s*activeProjects,\s*projectYearFilter/,
+    /const annualProjects = filterProjectsByScope\(activeProjects, projectYearFilter, projectTypeFilter\)/,
   );
 });
 
@@ -491,10 +603,10 @@ test('프로젝트 관리는 조회 조건을 모으고 간결한 프로젝트 �
     /<ProjectKpiPanel|프로젝트 표시 방식|설치 \/ 시운전 \/ 교육/,
   );
   assert.equal((projects.match(/filteredProjects\.map/g) || []).length, 1);
-  assert.match(dashboard, /const filteredProjects = yearProjects\s*\.filter/);
+  assert.match(dashboard, /const filteredProjects = filterProjectsByScope\(activeProjects, projectYearFilter, projectTypeFilter\)/);
 });
 
-test('프로젝트 요약은 4개이며 상태 기준 집계와 중복 없는 확인 필요 개수를 사용한다', () => {
+test('프로젝트 요약은 전체·진행·보류·완료 4개이며 확인 필요는 별도 필터다', () => {
   reset();
   const rows = ['active', 'completed', 'on_hold'].map((status, index) => ({
     id: String(index),
@@ -515,13 +627,15 @@ test('프로젝트 요약은 4개이며 상태 기준 집계와 중복 없는 �
       (node) => typeof node.props?.['aria-pressed'] === 'boolean',
     );
   let tree = render(ProjectManagementList, props);
-  assert.equal(buttons(tree).length, 4);
+  assert.equal(buttons(tree).length, 5);
   const labels = buttons(tree).map((button) => renderToStaticMarkup(button));
   assert.match(labels[0], /3<span/);
   assert.match(labels[1], /1<span/);
-  assert.match(labels[2], /프로젝트 완료율 33%/);
-  assert.match(labels[3], /2<span/);
-  buttons(tree)[3].props.onClick();
+  assert.match(labels[2], /보류/);
+  assert.match(labels[2], /1<span/);
+  assert.match(labels[3], /완료/);
+  assert.match(labels[4], /확인 필요 2개/);
+  buttons(tree)[4].props.onClick();
   tree = render(ProjectManagementList, props);
   const body = renderToStaticMarkup(
     find(tree, (node) => node.type === table.TableBody),
@@ -529,7 +643,7 @@ test('프로젝트 요약은 4개이며 상태 기준 집계와 중복 없는 �
   assert.match(body, /프로젝트0/);
   assert.match(body, /프로젝트1/);
   assert.doesNotMatch(body, /프로젝트2/);
-  buttons(tree)[2].props.onClick();
+  buttons(tree)[3].props.onClick();
   tree = render(ProjectManagementList, props);
   assert.match(
     renderToStaticMarkup(find(tree, (node) => node.type === table.TableBody)),
@@ -583,16 +697,16 @@ test('간결한 프로젝트 목록은 클릭한 프로젝트를 열고 빈 필�
   props.rows = [];
   assert.match(
     renderToStaticMarkup(render(ProjectManagementList, props)),
-    /프로젝트 완료율 -/,
+    /전체 프로젝트 · 0개/,
   );
 });
 
 test('상세는 핵심 요약과 확인 항목 뒤에 농가 진행 카드를 한 번만 배치한다', () => {
   const dashboard = source('app/farm-ledger-dashboard.tsx');
-  assert.match(
-    dashboard,
-    /selectedProject.description && \([\s\S]{0,700}\{selectedProject.description\}/,
-  );
+  assert.ok(!dashboard.includes('{selectedProject.description}'), '설명은 기본정보 편집 영역에만 표시한다');
+  const editor = source('app/project-quick-editor.tsx');
+  assert.match(editor, /name="description"/);
+  assert.match(editor, /value=\{draft.description\}/);
   const summary = dashboard.slice(
     dashboard.indexOf('<TabsContent value="summary" className="space-y-4">'),
     dashboard.indexOf('<TabsContent value="farms">'),
@@ -608,8 +722,9 @@ test('상세는 핵심 요약과 확인 항목 뒤에 농가 진행 카드를 �
   assert.equal((summary.match(/<ProjectFarmProgressCard/g) || []).length, 1);
   assert.doesNotMatch(summary, /설치·운영 완료율/);
   assert.match(summary, /사업 진행률 산정 근거/);
-  assert.match(summary, /setProjectDetailTab\('farms'\)/);
-  assert.match(summary, /setProjectDetailTab\('settlement'\)/);
+  assert.match(summary, /changeProjectDetailTab\('farms'\)/);
+  assert.match(summary, /changeProjectDetailTab\('settlement'\)/);
+  assert.match(dashboard, /function changeProjectDetailTab\(value: string\) \{\s*if \(value !== projectDetailTab && !canGoBackDetail\(\)\) return;\s*setProjectDetailTab\(value\);/);
 });
 
 test('연도 선택은 빈 연도와 전체 연도를 유지하며 두 화면의 라벨을 연결한다', () => {
@@ -947,9 +1062,10 @@ test('날짜 없는 완료 확인도 설치·시운전·교육 KPI와 상세에 
 
 test('삭제는 서버 최신 문서의 트랜잭션과 감사 기록만 쓰고 연결 컬렉션은 보존한다', () => {
   const store = source('lib/firebase/farm-ledger-store.ts');
+  const deletionStart = store.indexOf('async function changeProjectDeletion');
   const deletion = store.slice(
-    store.indexOf('async function changeProjectDeletion'),
-    store.indexOf('async function changeWorkDeletion'),
+    deletionStart,
+    store.indexOf('\nasync function ', deletionStart + 1),
   );
   assert.match(deletion, /runTransaction/);
   assert.match(deletion, /transaction.get\(reference\)/);

@@ -57,6 +57,7 @@ export function summarizeProjectKpis(
   snapshots: ReadonlyMap<string, ProjectKpiSnapshot>,
   today: string,
 ) {
+  projects = projects.filter((project) => project.projectType !== 'internal' && !project.deletedAt);
   const selected = projects.flatMap((project) => {
     const snapshot = snapshots.get(project.id);
     return snapshot ? [snapshot] : [];

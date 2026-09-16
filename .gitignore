@@ -1,5 +1,6 @@
 # dependencies
 /node_modules
+/server/members/node_modules/
 /.pnpm-store/
 /.pnp
 .pnp.*
@@ -51,3 +52,8 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+/calendar-candidate-manifest.json
+/calendar-status-candidate-manifest.json
+/server/members/config.json
+/deploy/gce/members/install-input.json
+/deploy/gce/members/bootstrap-input.json

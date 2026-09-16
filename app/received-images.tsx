@@ -81,9 +81,8 @@ export function ReceivedContentInput({
   return (
     <div className="space-y-2">
       {imageOnly ? (
-        <div
+        <fieldset
           tabIndex={props.disabled ? -1 : 0}
-          role="group"
           aria-label="농장 위치도 사진 붙여넣기"
           aria-disabled={props.disabled || processing}
           onPaste={onPaste}
@@ -91,7 +90,7 @@ export function ReceivedContentInput({
         >
           이 영역을 선택한 뒤 Ctrl+V로 위치도 캡처를 붙여넣거나 아래에서 사진을
           선택하세요.
-        </div>
+        </fieldset>
       ) : (
         <Textarea {...props} onPaste={onPaste} />
       )}

@@ -165,10 +165,10 @@ function ServiceRegistrationDialog({
                 </SelectContent>
               </Select>
               {farmId && !records.length && (
-                <p role="status" className="text-sm text-slate-600">
+                <output className="block text-sm text-slate-600">
                   이 농가에 연결된 참여 사업이 없습니다. 농가 관리대장에서 참여
                   사업을 등록하거나 삭제된 사업을 복구한 뒤 A/S를 등록해 주세요.
-                </p>
+                </output>
               )}
             </div>
           </>
@@ -274,12 +274,12 @@ export function ServiceWorkPanel({
             </SelectContent>
           </Select>
         </div>
-        <p className="pb-1 text-sm text-slate-600" role="status">
+        <output className="block pb-1 text-sm text-slate-600">
           {yearLabel} · A/S{' '}
           <span className="font-semibold text-slate-900">
             {visible.length}건
           </span>
-        </p>
+        </output>
       </div>
       {visible.length ? (
         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">

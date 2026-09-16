@@ -805,6 +805,54 @@ settlementRule(
   },
 );
 
+const roundKeys = ['first', 'second', 'third'];
+const maximumRounds = Object.fromEntries(roundKeys.map((key) => [key, { ...settledRound, status: 'submitted', dueDate: '2026-10-01', settledAt: '', note: key }]));
+const maximumProject = { ...legacyProject, updatedAt: 5, settlementStatus: 'submitted', settlementClaimAmount: 900, settlementApprovedAmount: 900, settlementPaidAmount: 900, settlementRounds: maximumRounds, settlementDueDate: '2026-10-01' };
+settlementRule('maximum populated rounds stay within rule limits', 'ALLOW', null, maximumProject);
+settlementRule('maximum changed populated rounds stay within rule limits', 'ALLOW', maximumProject, { ...maximumProject, updatedAt: 6, settlementRounds: Object.fromEntries(roundKeys.map((key) => [key, { ...maximumRounds[key], owner: 'changed', note: key + '-changed' }])) });
+settlementRule('maximum simultaneous amount changes', 'ALLOW', maximumProject, { ...maximumProject, updatedAt: 6, settlementClaimAmount: 1200, settlementApprovedAmount: 1200, settlementPaidAmount: 1200, settlementRounds: Object.fromEntries(roundKeys.map((key) => [key, { ...maximumRounds[key], claimAmount: 400, approvedAmount: 400, paidAmount: 400 }])) });
+const singleProject = { ...legacyProject, updatedAt: 4, settlementRounds: { first: settledRound } };
+settlementRule('maximum simultaneous complete field changes', 'ALLOW', maximumProject, { ...maximumProject, updatedAt: 6, settlementStatus: 'approved', settlementDueDate: '2026-11-01', settlementClaimAmount: 1200, settlementApprovedAmount: 1200, settlementPaidAmount: 1200, settlementRounds: Object.fromEntries(roundKeys.map((key) => [key, { ...maximumRounds[key], status: 'approved', dueDate: '2026-11-01', settledAt: '2026-10-01', claimAmount: 400, approvedAmount: 400, paidAmount: 400, owner: 'changed', note: 'changed', evidenceUrl: 'https://example.com/proof' }])) });
+settlementRule('one round can be the whole settlement', 'ALLOW', null, singleProject);
+settlementRule('one round allows completion', 'ALLOW', singleProject, { ...singleProject, updatedAt: 5, status: 'completed' });
+settlementRule('explicitly remove an empty final round', 'ALLOW', firstAssignedProject, singleProject);
+const threeProject = { ...firstAssignedProject, updatedAt: 4, settlementClaimAmount: 600, settlementApprovedAmount: 600, settlementPaidAmount: 600, settlementRounds: { ...firstAssignedProject.settlementRounds, third: settledRound } };
+settlementRule('add third round with correct totals', 'ALLOW', firstAssignedProject, threeProject);
+settlementRule('old client cannot drop a populated third round', 'DENY', threeProject, { ...firstAssignedProject, updatedAt: 5 });
+settlementRule('third round prevents false all-done', 'DENY', null, { ...singleProject, settlementRounds: { first: settledRound, second: settledRound, third: emptyRound }, settlementClaimAmount: 600, settlementApprovedAmount: 600, settlementPaidAmount: 600 });
+settlementRule('third round cannot inflate totals', 'DENY', null, { ...threeProject, settlementPaidAmount: 999 });
+settlementRule('rounds cannot have gaps', 'DENY', null, { ...singleProject, settlementRounds: { first: settledRound, third: settledRound }, settlementClaimAmount: 600, settlementApprovedAmount: 600, settlementPaidAmount: 600 });
+settlementRule('unsupported fourth round rejected', 'DENY', null, { ...maximumProject, settlementRounds: { ...maximumRounds, fourth: emptyRound } });
+settlementRule('blank map is not a round', 'DENY', null, { ...singleProject, settlementRounds: { first: settledRound, second: {} } });
+settlementRule('negative third amount rejected', 'DENY', null, { ...maximumProject, settlementRounds: { ...maximumRounds, third: { ...maximumRounds.third, paidAmount: -1 } } });
+settlementRule('aggregate amount bound enforced', 'DENY', null, { ...singleProject, settlementClaimAmount: 1000000000000001, settlementRounds: { first: { ...settledRound, claimAmount: 1000000000000000 }, second: { ...emptyRound, claimAmount: 1 } } });
+settlementRule('unassigned may move to new third unchanged', 'ALLOW', splitProject, { ...firstAssignedProject, settlementRounds: { first: emptyRound, second: emptyRound, third: settledRound } });
+settlementRule('completed maximum-round project cannot rewrite a round', 'DENY', { ...maximumProject, status: 'completed' }, { ...maximumProject, status: 'completed', updatedAt: 6, settlementRounds: { ...maximumRounds, third: { ...maximumRounds.third, note: 'rewritten' } } });
+
+settlementRule('legacy maximum rounds preserve unassigned original', 'ALLOW', legacyProject, { ...maximumProject, settlementClaimAmount: 1200, settlementApprovedAmount: 1200, settlementPaidAmount: 1200, settlementRounds: { ...maximumRounds, unassigned: settledRound } });
+settlementRule('maximum rounds assign original to third while editing first and second', 'ALLOW', splitProject, { ...maximumProject, settlementRounds: { ...maximumRounds, third: settledRound } });
+for (const [statuses, expected] of [
+  [['not_started', 'revision', 'approved'], 'revision'],
+  [['submitted', 'approved', 'paid'], 'submitted'],
+  [['collecting', 'paid', 'closed'], 'collecting'],
+  [['closed', 'paid', 'closed'], 'paid'],
+  [['approved', 'paid', 'closed'], 'approved'],
+  [['not_started', 'not_started', 'closed'], 'collecting'],
+]) {
+  const mixed = { ...maximumProject, updatedAt: 6, settlementStatus: expected, settlementClaimAmount: 600, settlementApprovedAmount: 600, settlementPaidAmount: 300, settlementRounds: Object.fromEntries(roundKeys.map((key, index) => [key, { ...maximumRounds[key], status: statuses[index], dueDate: `2026-${10 + index}-01`, claimAmount: (index + 1) * 100, approvedAmount: (index + 1) * 100, paidAmount: 100, owner: key, note: key + '-mixed' }])) };
+  settlementRule(`maximum distinct fields ${statuses.join('/')}`, 'ALLOW', maximumProject, mixed);
+  settlementRule(`legacy maximum mixed fields ${statuses.join('/')}`, 'ALLOW', legacyProject, { ...mixed, settlementClaimAmount: 900, settlementApprovedAmount: 900, settlementPaidAmount: 600, settlementRounds: { ...mixed.settlementRounds, unassigned: settledRound } });
+}
+for (const { name, test } of cases.filter((entry) => entry.name.includes('maximum') && entry.test.expectation === 'ALLOW')) {
+  cases.push({ name: `staff login: ${name}`, test: { ...test, request: { ...test.request, auth: { uid: 'test-user', token: { email: 'u74657374@staff.smartfarm-work-manager.invalid', email_verified: false, firebase: { sign_in_provider: 'password' } } } } } });
+}
+
+if (process.env.RULE_TEST_NAME) {
+  const selected = cases.filter((entry) => entry.name.includes(process.env.RULE_TEST_NAME));
+  assert.ok(selected.length, 'Requested rule test does not exist');
+  cases.splice(0, cases.length, ...selected);
+}
+
 try {
   const options = { project: 'smartfarm-work-manager', nonInteractive: true };
   const account = auth.getGlobalDefaultAccount();
@@ -812,6 +860,8 @@ try {
   auth.setActiveAccount(options, account);
   await requireAuth(options);
   const client = new Client({ urlPrefix: rulesOrigin(), apiVersion: 'v1' });
+  const body = { issues: [], testResults: [] };
+  async function evaluate(entries) {
   const response = await client.post(
     '/projects/smartfarm-work-manager:test',
     {
@@ -825,11 +875,34 @@ try {
           },
         ],
       },
-      testSuite: { testCases: cases.map(({ test }) => test) },
+      testSuite: { testCases: entries.map(({ test }) => test) },
     },
     { skipLog: { body: true, resBody: true, queryParams: true } },
   );
-  const body = response.body;
+  return response.body;
+  }
+  for (let offset = 0; offset < cases.length; offset += 20) {
+  console.log(`Rules batch ${offset + 1}-${Math.min(offset + 20, cases.length)}/${cases.length}`);
+  const entries = cases.slice(offset, offset + 20);
+  let response;
+  try {
+    response = { body: await evaluate(entries) };
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('500')) throw error;
+    response = { body: { issues: [], testResults: [] } };
+    for (const entry of entries) {
+      try {
+        const result = await evaluate([entry]);
+        response.body.issues.push(...(result.issues || []));
+        response.body.testResults.push(...(result.testResults || []));
+      } catch (singleError) {
+        response.body.testResults.push({ state: 'FAILURE', debugMessages: [singleError instanceof Error ? singleError.message : 'Rules API error'] });
+      }
+    }
+  }
+  body.issues.push(...(response.body.issues || []));
+  body.testResults.push(...(response.body.testResults || []));
+  }
   if (body.issues?.length) console.log(JSON.stringify({ issues: body.issues }));
   assert.equal(
     body.issues?.some((issue) => issue.severity === 'ERROR') || false,
@@ -837,19 +910,15 @@ try {
     'Rules compilation failed',
   );
   assert.equal(body.testResults?.length, cases.length, 'Missing rule results');
+  let failures = 0;
   for (let i = 0; i < cases.length; i++) {
     const result = body.testResults[i];
-    if (result.state !== 'SUCCESS')
-      console.log(JSON.stringify({ failure: result }));
-    console.log(
-      JSON.stringify({
-        test: cases[i].name,
-        state: result.state,
-        errors: result.errors,
-      }),
-    );
-    assert.equal(result.state, 'SUCCESS', cases[i].name);
+    if (result.state !== 'SUCCESS') {
+      failures++;
+      console.log(JSON.stringify({ test: cases[i].name, failure: result }));
+    }
   }
+  assert.equal(failures, 0, 'Rules validation failures');
   console.log(`Rules: ${cases.length} tests passed; no data writes.`);
 } catch (error) {
   // Do not print raw SDK objects, which can include authentication headers.

@@ -1,4 +1,4 @@
-export const FARM_PROJECT_TYPES = ['general', 'research'] as const;
+export const FARM_PROJECT_TYPES = ['general', 'research', 'internal'] as const;
 export type FarmProjectType = (typeof FARM_PROJECT_TYPES)[number];
 
 export const FARM_PROJECT_STATUSES = [
@@ -126,6 +126,7 @@ export type FarmHistoryChannel = (typeof FARM_HISTORY_CHANNELS)[number];
 export const FARM_PROJECT_TYPE_LABELS: Record<FarmProjectType, string> = {
   general: '일반 사업',
   research: '연구 사업',
+  internal: '내부 프로젝트',
 };
 
 export const FARM_PROJECT_STATUS_LABELS: Record<FarmProjectStatus, string> = {
@@ -264,15 +265,20 @@ export interface ProjectSettlement {
   note: string;
 }
 
-export interface ProjectSettlementRounds {
+export type ProjectSettlementRoundKey = 'first' | 'second' | 'third';
+
+export type ProjectSettlementRounds = Partial<Record<ProjectSettlementRoundKey, ProjectSettlement>> & {
   first: ProjectSettlement;
-  second: ProjectSettlement;
   /** Original single settlement, counted once until explicitly assigned. */
   unassigned?: ProjectSettlement;
 }
 
 export interface FarmProject {
   id: string;
+  /** Registration-only snapshot; changing the editable count never deletes farms. */
+  installationFarmSetup?: { requestedCount: number; completedCount: number };
+  registrationRequestId?: string;
+  registrationInputSignature?: string;
   /** Recoverable removal from project lists; linked records remain intact. */
   deletedAt?: number;
   deletedByUid?: string;

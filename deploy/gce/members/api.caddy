@@ -1,0 +1,14 @@
+# Replace the existing adjacent try_files/file_server pair with this entire
+# route block, inside the existing HTTPS site. Preserve the site's headers.
+# The exact API path is proxied before static file rewriting. /_health remains
+# loopback-only and is never exposed by this route.
+route {
+	reverse_proxy /api/admin/members 127.0.0.1:8787 {
+		transport http {
+			dial_timeout 3s
+			response_header_timeout 40s
+		}
+	}
+	try_files {path} {path}.html {path}/index.html
+	file_server
+}

@@ -41,7 +41,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22
+          node-version-file: .node-version
           cache: pnpm
 
       - name: Validate public build settings
@@ -106,14 +106,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           pnpm lint
-          node scripts/test-dashboard-kpis.mjs
-          node scripts/test-workspace-navigation.mjs
-          node scripts/test-subscription-renewal-report.mjs
-          node scripts/test-subscription-payment.mjs
-          node scripts/test-subscription-payment-report.mjs
-          node scripts/test-subscription-report-ui.mjs
-          pnpm exec tsc --noEmit --incremental false
-          pnpm build
+          pnpm test:release
+          pnpm build:release --release "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA:0:12}"
           test -f out/index.html
 
       - name: Package immutable release
@@ -122,9 +116,7 @@ jobs:
           set -Eeuo pipefail
           release_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA:0:12}"
           archive="site-${release_id}.tar.gz"
-          printf '{"releaseId":"%s","commit":"%s","runId":"%s","runAttempt":"%s"}\n' \
-            "${release_id}" "${GITHUB_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" \
-            > out/release.json
+          test -f out/release.json
           tar --create --gzip --file "${archive}" --directory out .
           sha256sum "${archive}" > "${archive}.sha256"
 
@@ -237,7 +229,7 @@ jobs:
                 --proto '=https' --tlsv1.2 --max-time 15 \
                 "https://${VM_SITE_HOST}/release.json?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             } || true)"
-            if grep --fixed-strings --quiet "\"releaseId\":\"${release_id}\"" <<<"${response}"; then
+            if EXPECTED_RELEASE="${release_id}" python3 -c 'import json, os, sys; sys.exit(0 if json.load(sys.stdin).get("release") == os.environ["EXPECTED_RELEASE"] else 1)' <<<"${response}"; then
               exit 0
             fi
             sleep 5

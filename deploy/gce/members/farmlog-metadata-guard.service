@@ -1,0 +1,13 @@
+[Unit]
+Description=FarmLog service identity metadata isolation
+Before=farmlog-members.service ssh.service caddy.service
+After=local-fs.target nftables.service
+PartOf=nftables.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/farmlog-members/provision/metadata-guard.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

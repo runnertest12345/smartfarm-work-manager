@@ -69,6 +69,23 @@ export function isOrganizationAdmin(
   return isPersonalMember(member, workspaceId) && member?.admin === true;
 }
 
+// Creation authority is separate from organization-wide editing authority.
+export const MEMBER_REGISTRAR_IDS = [
+  'staff-bootstrap-3c039722dfe5ab50da57d128',
+  'staff-bootstrap-cbbc0b0b0bce4dfea455a415',
+] as const;
+
+export function canRegisterMembers(
+  member?: AppMember | null,
+  workspaceId?: string,
+) {
+  return (
+    isPersonalMember(member, workspaceId) &&
+    member?.passwordChangeRequired === false &&
+    MEMBER_REGISTRAR_IDS.some((id) => id === member?.id)
+  );
+}
+
 /** Capture the relationship when the assignment is made, not a later promotion. */
 export function isDepartmentHeadAssignment(
   actor: AppMember,

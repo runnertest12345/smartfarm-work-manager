@@ -4,6 +4,7 @@ import {
   useEffect,
   useRef,
   useState,
+  isValidElement,
   type DragEvent,
   type ReactNode,
 } from 'react';
@@ -13,6 +14,7 @@ import {
   ChevronRight,
   Plus,
   Pencil,
+  MoreHorizontal,
   X,
 } from 'lucide-react';
 import {
@@ -36,6 +38,12 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu';
 import {
   Select,
   SelectTrigger,
@@ -82,6 +90,62 @@ const statusColors: Record<FarmWorkStatus, string> = {
   waiting: 'bg-amber-50 text-amber-900',
   completed: 'bg-emerald-50 text-emerald-800',
 };
+type QuickWorkField = 'status' | 'owner' | 'dueDate';
+
+/** Compose the supplied deletion trigger so its permission and confirmation stay intact. */
+export function WorkTaskMoreMenu({
+  title,
+  onAddChild,
+  addChildDisabled = false,
+  deleteAction,
+  disabled = false,
+}: {
+  title: string;
+  onAddChild?: () => void;
+  addChildDisabled?: boolean;
+  deleteAction?: ReactNode;
+  disabled?: boolean;
+}) {
+  const deleteButton = isValidElement<{ disabled?: boolean }>(deleteAction)
+    ? deleteAction
+    : null;
+  if (!onAddChild && !deleteButton) return null;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        disabled={disabled}
+        aria-label={`${title} 더보기`}
+        title={onAddChild ? '세부 업무 추가·삭제' : '업무 삭제'}
+        render={<Button type="button" variant="ghost" size="icon" />}
+      >
+        <MoreHorizontal className="size-4" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-40">
+        {onAddChild && (
+          <DropdownMenuItem
+            aria-label={`${title} 세부 업무 추가`}
+            disabled={disabled || addChildDisabled}
+            onClick={onAddChild}
+            className="min-h-10"
+          >
+            <Plus className="size-4" />
+            세부 업무 추가
+          </DropdownMenuItem>
+        )}
+        {deleteButton && (
+          <DropdownMenuItem
+            nativeButton
+            disabled={disabled || deleteButton.props.disabled}
+            variant="destructive"
+            label="삭제"
+            className="min-h-10 w-full justify-start"
+            render={deleteButton}
+          />
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 export function WorkStatusSelect({
   value,
@@ -120,6 +184,7 @@ export function WorkStatusSelect({
 export function WorkQuickEditor({
   task,
   initialStatus,
+  initialField = 'status',
   recorder,
   onSave,
   onCancel,
@@ -131,6 +196,7 @@ export function WorkQuickEditor({
 }: {
   task: FarmWorkItem;
   initialStatus?: FarmWorkStatus;
+  initialField?: QuickWorkField;
   recorder: string;
   onSave: QuickWorkSave;
   onCancel: () => void;
@@ -373,7 +439,7 @@ export function WorkQuickEditor({
             />
           </CollapsibleContent>
         </Collapsible>
-        <Collapsible>
+        <Collapsible defaultOpen={initialField === 'owner' || initialField === 'dueDate'}>
           <CollapsibleTrigger className="flex min-h-10 items-center gap-2 text-sm font-medium text-emerald-800">
             <ChevronDown className="size-4" />
             담당자·기한·다음 행동 (선택)
@@ -486,7 +552,11 @@ export function WorkQuickEditor({
           interaction === 'touch'
             ? true
             : document.getElementById(
-                `${prefix}-${statusLocked ? 'action' : 'status'}`,
+                initialField === 'owner' && !task.assigneeUid
+                  ? `work-control-3-${task.id}`
+                  : initialField === 'dueDate' || initialField === 'owner'
+                    ? `work-control-4-${task.id}`
+                    : `${prefix}-${statusLocked ? 'action' : 'status'}`,
               ) || true
         }
         finalFocus={returnFocus}
@@ -574,22 +644,20 @@ export function WorkTaskSurface({
   const tree = buildWorkHierarchy(allItems);
   const projectLabel = (item: FarmWorkItem) =>
     [projectName(item), farmLabel(item)].filter(Boolean).join(' · ');
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // Store only explicit user choices. New deep branches stay collapsed on live updates.
+  const [expansion, setExpansion] = useState<Map<string, boolean>>(new Map());
   const [editing, setEditing] = useState<{
     id: string;
     status?: FarmWorkStatus;
+    field?: QuickWorkField;
   } | null>(null);
   const [dragged, setDragged] = useState<FarmWorkItem | null>(null);
   const [over, setOver] = useState<FarmWorkStatus | null>(null);
   const [savingId, setSavingId] = useState('');
   const [notice, setNotice] = useState('');
-  const [moveChoice, setMoveChoice] = useState<{
-    id: string;
-    status: FarmWorkStatus;
-  } | null>(null);
   const surfaceElement = useRef<HTMLDivElement>(null);
   const editorTrigger = useRef<HTMLElement | null>(null);
-  const editorOpen = Boolean(editing || moveChoice);
+  const editorOpen = Boolean(editing);
   useEffect(() => {
     if (
       !editing ||
@@ -613,7 +681,11 @@ export function WorkTaskSurface({
   const canEdit = (item: FarmWorkItem) =>
     !isClosed(item) &&
     !tree.ancestors(item.id).some((parent) => parent.status === 'completed');
-  function beginEdit(item: FarmWorkItem, status?: FarmWorkStatus) {
+  function beginEdit(
+    item: FarmWorkItem,
+    status?: FarmWorkStatus,
+    field: QuickWorkField = 'status',
+  ) {
     if (editing || savingId) {
       setNotice('작성 중인 내용을 적용하거나 취소한 뒤 수정해 주세요.');
       return;
@@ -626,11 +698,11 @@ export function WorkTaskSurface({
       typeof document !== 'undefined'
         ? (document.activeElement as HTMLElement | null)
         : null;
-    setEditing({ id: item.id, status });
+    setEditing({ id: item.id, status, field });
   }
   function openItem(item: FarmWorkItem, clickedAt: number) {
     if (clickedAt - lastDrag.current <= 500) return;
-    if (editing || savingId || moveChoice) {
+    if (editing || savingId) {
       setNotice(
         '작성 중인 내용을 적용하거나 취소한 뒤 다른 업무를 열어 주세요.',
       );
@@ -644,19 +716,16 @@ export function WorkTaskSurface({
   const included = new Set(visible);
   for (const item of items)
     tree.ancestors(item.id).forEach((ancestor) => included.add(ancestor.id));
-  const toggle = (id: string) =>
-    setCollapsed((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
   const status = (item: FarmWorkItem) => (
-    <span
-      className={`inline-block rounded-full px-2.5 py-1 text-sm font-medium ${statusColors[item.status]}`}
+    <button
+      type="button"
+      aria-label={`${item.title} 상태 확인·수정`}
+      disabled={Boolean(savingId || editing)}
+      onClick={() => beginEdit(item)}
+      className={`inline-block min-h-9 rounded-full px-2.5 py-1 text-sm font-medium hover:ring-1 hover:ring-current focus-visible:outline-2 focus-visible:outline-emerald-700 disabled:opacity-50 ${statusColors[item.status]}`}
     >
       {FARM_WORK_STATUS_LABELS[item.status]}
-    </span>
+    </button>
   );
   const actions = (item: FarmWorkItem) => (
     <div className="flex flex-wrap gap-1">
@@ -665,31 +734,19 @@ export function WorkTaskSurface({
         size="sm"
         variant="outline"
         aria-label={`${item.title} 빠른 수정`}
-        disabled={Boolean(savingId || editing || moveChoice)}
+        disabled={Boolean(savingId || editing)}
         onClick={() => beginEdit(item)}
       >
         <Pencil className="size-4" />
         빠른 수정
       </Button>
-      {isStandaloneWork(item) && (
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          aria-label={`${item.title} 세부 업무 추가`}
-          disabled={
-            item.status === 'completed' ||
-            isClosed(item) ||
-            !canEdit(item) ||
-            Boolean(savingId || editing || moveChoice)
-          }
-          onClick={() => onAddChild(item)}
-        >
-          <Plus className="size-4" />
-          세부 업무
-        </Button>
-      )}
-      {deleteAction?.(item, Boolean(savingId || editing || moveChoice))}
+      <WorkTaskMoreMenu
+        title={item.title}
+        onAddChild={isStandaloneWork(item) ? () => onAddChild(item) : undefined}
+        addChildDisabled={item.status === 'completed' || isClosed(item) || !canEdit(item)}
+        disabled={Boolean(savingId || editing)}
+        deleteAction={deleteAction?.(item, Boolean(savingId || editing))}
+      />
     </div>
   );
   const historySummary = (item: FarmWorkItem) => {
@@ -709,17 +766,46 @@ export function WorkTaskSurface({
       </div>
     ) : null;
   };
+  const executableIds = new Set(tree.leaves.map((item) => item.id));
   const progress = (item: FarmWorkItem) => {
     if (!tree.children.get(item.id)?.length && !item.childWorkItemIds?.length)
       return null;
     const summary = tree.progress(item.id);
+    const executable = tree.descendants(item.id).filter((child) => executableIds.has(child.id));
+    const processing = executable.filter((child) => child.status === 'in_progress').length;
+    const waiting = executable.filter((child) => child.status === 'waiting').length;
+    // Completion and execution states use leaves only. A waiting intermediate
+    // parent remains important, but must not be added to that denominator.
+    const intermediateWaiting = summary.blocked - waiting;
     return (
-      <p className="mt-2 text-sm text-slate-600">
-        세부 실행 업무 {summary.completed}/{summary.total} 완료
-        {summary.rate !== null ? ` · ${summary.rate}%` : ''}
-        {summary.blocked ? ` · 막힘 ${summary.blocked}건` : ''}
-        {summary.missing ? ' · 일부 업무 조회 필요' : ''}
-      </p>
+      <div
+        data-child-progress={item.id}
+        aria-label={`${item.title} 하위 업무 진행 요약`}
+        title="전체 하위 업무 기준입니다. 완료율·처리 중·대기·막힘은 최하위 실행 업무만 집계하며, 중간 업무의 대기·막힘은 별도로 표시합니다. 접기와 검색은 집계에 영향을 주지 않습니다."
+        className="mb-1 max-w-md space-y-1 text-xs tabular-nums"
+      >
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className={summary.rate === 100 ? 'font-medium text-emerald-800' : 'font-medium text-slate-600'}>
+            {summary.total ? `최하위 실행 완료 ${summary.completed}/${summary.total}` : '하위 실행 업무 확인 필요'}
+            {summary.rate !== null ? ` · ${summary.rate}%` : ''}
+          </span>
+          {summary.total > 0 && <>
+            <span className={processing ? 'text-blue-800' : 'text-slate-400'}>처리 중 {processing}</span>
+            <span className={waiting ? 'rounded bg-amber-50 px-1 text-amber-900' : 'text-slate-400'}>대기·막힘 {waiting}</span>
+          </>}
+        </p>
+        {summary.rate !== null && (
+          <div aria-hidden="true" className="h-1 overflow-hidden rounded-full bg-slate-200">
+            <div className="h-full rounded-full bg-emerald-600" style={{ width: `${summary.rate}%` }} />
+          </div>
+        )}
+        {(intermediateWaiting > 0 || summary.missing) && (
+          <p className="flex flex-wrap gap-x-2 gap-y-1 text-amber-900">
+            {intermediateWaiting > 0 && <span>중간 업무 대기·막힘 {intermediateWaiting}건</span>}
+            {summary.missing && <span>일부 하위 업무 미조회 · 완료율 확인 필요</span>}
+          </p>
+        )}
+      </div>
     );
   };
   function beginDrag(
@@ -731,7 +817,6 @@ export function WorkTaskSurface({
     if (
       editing ||
       savingId ||
-      moveChoice ||
       dragLock.current ||
       !canEdit(item)
     ) {
@@ -751,7 +836,7 @@ export function WorkTaskSurface({
     lastDrag.current = occurredAt;
   }
   const handle = (item: FarmWorkItem) => {
-    // Root families use a chooser. Nested parents keep the explicit status editor.
+    // Nested parents keep the explicit status editor in the expanded family.
     if (
       item.parentWorkItemId &&
       (tree.children.get(item.id)?.length || item.childWorkItemIds?.length)
@@ -760,12 +845,12 @@ export function WorkTaskSurface({
     return (
       <button
         type="button"
-        draggable={!savingId && !editing && !moveChoice && canEdit(item)}
+        draggable={!savingId && !editing && canEdit(item)}
         aria-label={`${item.title} 이동 또는 상태 선택`}
         title="드래그로 상태 이동 · 클릭하여 빠른 수정"
         onDragStart={(event) => beginDrag(item, event, Date.now())}
         onDragEnd={() => endDrag(Date.now())}
-        disabled={Boolean(savingId || editing || moveChoice) || !canEdit(item)}
+        disabled={Boolean(savingId || editing) || !canEdit(item)}
         onClick={() => {
           if (Date.now() - lastDrag.current > 500) beginEdit(item);
         }}
@@ -780,7 +865,7 @@ export function WorkTaskSurface({
     setDragged(null);
     setOver(null);
     lastDrag.current = occurredAt;
-    if (!item || dragLock.current || savingId || moveChoice) return;
+    if (!item || dragLock.current || savingId) return;
     const current = tree.byId.get(item.id);
     if (!current || current.deletedAt || current.updatedAt !== item.updatedAt) {
       setNotice(
@@ -807,9 +892,15 @@ export function WorkTaskSurface({
         );
         return;
       }
-      if (intent === 'none') return;
+      if (intent === 'none') {
+        if (group.lane !== status)
+          setNotice(
+            '상위 업무의 상태는 그대로입니다. 하위 업무에 대기·막힘이 있어 카드는 대기·막힘 열에 표시됩니다.',
+          );
+        return;
+      }
       if (intent === 'confirm' || intent === 'reopen') {
-        beginEdit(item, intent === 'confirm' ? 'completed' : 'in_progress');
+        beginEdit(item, status);
         setNotice(
           intent === 'confirm'
             ? '세부 업무가 모두 완료되었습니다. 상위 업무의 최종 완료를 확인하고 적용해 주세요.'
@@ -817,8 +908,10 @@ export function WorkTaskSurface({
         );
         return;
       }
-      if (intent === 'choose') {
-        setMoveChoice({ id: item.id, status });
+      if (intent === 'incomplete') {
+        setNotice(
+          '하위 업무를 모두 완료한 뒤 상위 업무를 완료할 수 있습니다. 상위·하위 업무 상태는 변경하지 않았습니다.',
+        );
         return;
       }
     }
@@ -850,7 +943,7 @@ export function WorkTaskSurface({
         [],
       );
       setNotice(
-        `‘${item.title}’ 상태를 ${FARM_WORK_STATUS_LABELS[status]}(으)로 변경했습니다.`,
+        `‘${item.title}’ 상태를 ${FARM_WORK_STATUS_LABELS[status]}(으)로 변경했습니다.${group?.waiting.some((task) => task.id !== item.id) ? ' 하위 업무에 대기·막힘이 있어 카드는 대기·막힘 열에 표시됩니다.' : ''}`,
       );
     } catch (error) {
       setNotice(
@@ -879,20 +972,36 @@ export function WorkTaskSurface({
   let fallbackNumber = displayRoots.length;
   for (const item of items)
     if (!outlineNumbers.has(item.id)) numberBranch(item, String(++fallbackNumber));
-  const expanded = (id: string) => searching || !collapsed.has(id) || !visible.has(id);
+  const expansionKey = (id: string) => `${contextRootId || 'all'}:${id}`;
+  const expanded = (id: string) =>
+    searching ||
+    !visible.has(id) ||
+    (expansion.get(expansionKey(id)) ??
+      (!contextRootId && outlineNumbers.get(id)?.split('.').length === 1));
+  const toggle = (id: string) => {
+    const nextExpanded = !expanded(id);
+    setExpansion((current) => new Map(current).set(expansionKey(id), nextExpanded));
+  };
   const branches = [...outlineNumbers.keys()].filter((id) =>
     included.has(id) && tree.children.get(id)?.length,
   );
-  const rows: { item: FarmWorkItem; depth: number }[] = [];
+  const setAllExpanded = (open: boolean) => setExpansion((current) => {
+    const next = new Map(current);
+    branches.forEach((id) => next.set(expansionKey(id), open));
+    return next;
+  });
+  const rows: { item: FarmWorkItem; depth: number; branchGuides: boolean[] }[] = [];
   const visited = new Set<string>();
-  function visit(item: FarmWorkItem, depth: number) {
+  function visit(item: FarmWorkItem, depth: number, branchGuides: boolean[] = []) {
     if (visited.has(item.id) || !included.has(item.id)) return;
     visited.add(item.id);
-    rows.push({ item, depth });
-    if (expanded(item.id))
-      (tree.children.get(item.id) || []).forEach((child) =>
-        visit(child, depth + 1),
+    rows.push({ item, depth, branchGuides });
+    if (expanded(item.id)) {
+      const children = (tree.children.get(item.id) || []).filter((child) => included.has(child.id));
+      children.forEach((child, index) =>
+        visit(child, depth + 1, [...branchGuides, index < children.length - 1]),
       );
+    }
   }
   displayRoots.forEach((item) => visit(item, 0));
   for (const item of items)
@@ -903,40 +1012,20 @@ export function WorkTaskSurface({
         .some((parent) => !expanded(parent.id))
     )
       visit(item, 0);
-  const movingGroup = moveChoice
-    ? buildWorkBoardGroups(allItems).find(
-        (group) => group.item.id === moveChoice.id,
-      )
-    : undefined;
-  const moveOptions =
-    movingGroup?.rows.slice(1).filter(({ item }) => {
-      if (item.status === moveChoice?.status) return false;
-      const hasChildren = Boolean(
-        tree.children.get(item.id)?.length || item.childWorkItemIds?.length,
-      );
-      return (
-        !hasChildren ||
-        (moveChoice?.status === 'completed' &&
-          !(item.openChildCount || 0) &&
-          tree
-            .descendants(item.id)
-            .every((child) => child.status === 'completed'))
-      );
-    }) ?? [];
   return (
     <div ref={surfaceElement} tabIndex={-1} className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-slate-600">
           {mode === 'board'
-          ? '프로젝트명과 업무명을 표시합니다. 카드 제목이나 손잡이를 잡아 원하는 상태 열로 옮기세요. 세부 업무가 있으면 이동할 업무를 선택합니다. 상세 보기에서 담당자·기한·처리 내용을 확인하고 수정할 수 있습니다.'
+          ? '업무명을 누르면 전체 팝업에서 조회·수정합니다. 카드를 옮기면 상위 상태만 변경하며, 하위 대기·막힘이 있으면 해당 열에 우선 표시됩니다.'
           : searching
             ? '검색 결과의 상하위 관계를 펼쳐서 표시합니다. 검색을 지우면 기존 접힘 상태로 돌아갑니다.'
-            : '목록 번호로 상하위 관계를 확인하세요. 최근 기록은 각 업무에서 펼칠 수 있습니다.'}
+            : '업무명으로 조회하고 상태·담당자·기한을 눌러 바로 수정하세요. 깊은 세부 업무는 화살표로 펼칩니다.'}
         </p>
         {mode === 'list' && branches.length > 0 && (
           <div className="flex shrink-0 gap-2">
-            <Button type="button" size="sm" variant="outline" disabled={searching} onClick={() => setCollapsed(new Set(branches))}>모두 접기</Button>
-            <Button type="button" size="sm" variant="outline" disabled={searching} onClick={() => setCollapsed(new Set())}>모두 펼치기</Button>
+            <Button type="button" size="sm" variant="outline" disabled={searching} onClick={() => setAllExpanded(false)}>모두 접기</Button>
+            <Button type="button" size="sm" variant="outline" disabled={searching} onClick={() => setAllExpanded(true)}>모두 펼치기</Button>
           </div>
         )}
       </div>
@@ -959,91 +1048,19 @@ export function WorkTaskSurface({
           key={`${editing.id}-${editing.status || ''}`}
           task={tree.byId.get(editing.id)!}
           initialStatus={editing.status}
+          initialField={editing.field}
           statusLocked={!canEdit(tree.byId.get(editing.id)!)}
           recorder={recorder}
           onSave={onSave}
           onCancel={() => setEditing(null)}
         />
       )}
-      {moveChoice && (
-        <Dialog
-          open
-          onOpenChange={(open) => {
-            if (!open) setMoveChoice(null);
-          }}
-        >
-          <DialogContent
-            className="sm:max-w-xl"
-            finalFocus={() => surfaceElement.current}
-            showCloseButton={false}
-          >
-            <DialogHeader>
-              <DialogTitle>이동할 세부 업무 선택</DialogTitle>
-              <DialogDescription>
-                ‘{movingGroup?.item.title || '업무'}’에서{' '}
-                {FARM_WORK_STATUS_LABELS[moveChoice.status]}(으)로 변경할 업무를
-                선택하세요. 선택한 업무만 수정하며, 상위 카드의 위치는 세부 업무
-                상태에 따라 결정됩니다.
-              </DialogDescription>
-            </DialogHeader>
-            {!movingGroup || movingGroup.missing ? (
-              <output>
-                업무가 삭제되었거나 연결이 변경되었습니다. 창을 닫고 최신 내용을
-                확인해 주세요.
-              </output>
-            ) : (
-              <div
-                className="max-h-[50vh] space-y-2 overflow-y-auto"
-                aria-label="이동할 세부 업무"
-              >
-                {moveOptions.map(({ item, depth }) => (
-                  <Button
-                    key={item.id}
-                    aria-label={`${item.title} ${FARM_WORK_STATUS_LABELS[moveChoice.status]}로 이동`}
-                    variant="outline"
-                    className="h-auto min-h-12 w-full justify-between gap-3 whitespace-normal py-3 text-left"
-                    disabled={!canEdit(item)}
-                    onClick={() => {
-                      setMoveChoice(null);
-                      beginEdit(item, moveChoice.status);
-                    }}
-                  >
-                    <span className="min-w-0 break-words">
-                      {depth > 1 ? '↳ ' : ''}
-                      {item.title}
-                      <span className="mt-1 block text-xs font-normal text-slate-500">
-                        {item.owner || '담당자 미지정'}
-                        {!canEdit(item)
-                          ? ' · 완료된 상위 업무를 먼저 다시 열어 주세요'
-                          : ''}
-                      </span>
-                    </span>
-                    <span className="shrink-0 text-xs">
-                      {FARM_WORK_STATUS_LABELS[item.status]} →{' '}
-                      {FARM_WORK_STATUS_LABELS[moveChoice.status]}
-                    </span>
-                  </Button>
-                ))}
-                {moveOptions.length === 0 && (
-                  <p>
-                    이동 가능한 세부 업무가 없습니다. 상세 보기에서 상위 업무의
-                    완료 확인 상태를 확인해 주세요.
-                  </p>
-                )}
-              </div>
-            )}
-            <Button variant="outline" onClick={() => setMoveChoice(null)}>
-              취소
-            </Button>
-          </DialogContent>
-        </Dialog>
-      )}
       {mode === 'board' ? (
         <WorkBoard
           items={items}
           allItems={allItems}
           searching={searching}
-          busy={Boolean(editing || savingId || moveChoice)}
+          busy={Boolean(editing || savingId)}
           dragged={Boolean(dragged)}
           over={over}
           savingId={savingId}
@@ -1063,21 +1080,24 @@ export function WorkTaskSurface({
         />
       ) : (
         <div className="overflow-hidden rounded-xl border bg-white">
-          <Table className="min-w-[760px] border-separate border-spacing-y-1">
+          <Table className="work-outline min-w-[860px] border-collapse">
             <TableHeader>
               <TableRow>
                 <TableHead>업무·세부 업무</TableHead>
                 <TableHead>상태</TableHead>
-                <TableHead>담당자·기한</TableHead>
+                <TableHead>담당자</TableHead>
+                <TableHead>기한</TableHead>
                 <TableHead>작업</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map(({ item, depth }) => (
+              {rows.map(({ item, depth, branchGuides }, index) => (
                 <TaskTableRows
                   key={item.id}
                   item={item}
                   depth={depth}
+                  branchGuides={branchGuides}
+                  connectChildren={rows[index + 1]?.depth > depth}
                   number={outlineNumbers.get(item.id) || ''}
                   level={tree.ancestors(item.id).length}
                   hasChildren={Boolean(tree.children.get(item.id)?.length)}
@@ -1085,6 +1105,8 @@ export function WorkTaskSurface({
                   searching={searching}
                   onToggle={() => { if (!searching) toggle(item.id); }}
                   onOpen={() => openItem(item, Date.now())}
+                  onEditField={(field) => beginEdit(item, undefined, field)}
+                  editingDisabled={Boolean(savingId || editing)}
                   projectLabel={projectLabel(item)}
                   parentTitle={
                     tree.byId.get(item.parentWorkItemId || '')?.title
@@ -1099,7 +1121,7 @@ export function WorkTaskSurface({
               {!rows.length && (
                 <TableRow>
                   <TableCell
-                    colSpan={4}
+                    colSpan={5}
                     className="py-10 text-center text-sm text-slate-500"
                   >
                     등록된 업무가 없습니다.
@@ -1117,6 +1139,8 @@ export function WorkTaskSurface({
 function TaskTableRows({
   item,
   depth,
+  branchGuides,
+  connectChildren,
   number,
   level,
   hasChildren,
@@ -1124,6 +1148,8 @@ function TaskTableRows({
   searching,
   onToggle,
   onOpen,
+  onEditField,
+  editingDisabled,
   projectLabel,
   parentTitle,
   status,
@@ -1134,6 +1160,8 @@ function TaskTableRows({
 }: {
   item: FarmWorkItem;
   depth: number;
+  branchGuides: boolean[];
+  connectChildren: boolean;
   number: string;
   level: number;
   hasChildren: boolean;
@@ -1141,6 +1169,8 @@ function TaskTableRows({
   searching: boolean;
   onToggle: () => void;
   onOpen: () => void;
+  onEditField: (field: QuickWorkField) => void;
+  editingDisabled: boolean;
   projectLabel: string;
   parentTitle?: string;
   status: ReactNode;
@@ -1149,30 +1179,48 @@ function TaskTableRows({
   actions: ReactNode;
   editor: ReactNode;
 }) {
+  const isSubtask = Boolean(item.parentWorkItemId || level);
+  const visualDepth = Math.min(depth, 4);
+  const needsParentContext = Boolean(parentTitle && (!depth || searching || depth > 4));
   return (
     <>
       <TableRow
         data-work-id={item.id}
         data-work-depth={depth}
+        data-parent-work-id={item.parentWorkItemId || undefined}
         data-work-number={number}
         className={
-          depth === 0
-            ? 'bg-emerald-50 [&>td]:border-y [&>td]:border-emerald-200 [&>td:first-child]:border-l-4 [&>td:first-child]:border-l-emerald-700'
-            : hasChildren
-              ? 'bg-slate-100 [&>td]:border-y [&>td]:border-slate-200 [&>td:first-child]:border-l-4 [&>td:first-child]:border-l-slate-400'
-              : 'bg-white [&>td]:border-b [&>td]:border-slate-200 [&>td:first-child]:border-l-4 [&>td:first-child]:border-l-transparent'
+          !isSubtask
+            ? 'bg-emerald-50/60 hover:bg-emerald-50 has-aria-expanded:bg-emerald-50/60 [&>td]:border-b [&>td]:border-emerald-100'
+            : 'bg-white hover:bg-slate-50 has-aria-expanded:bg-white [&>td]:border-b [&>td]:border-slate-100'
         }
       >
-        <TableCell className="w-[48%] whitespace-normal align-top">
+        <TableCell className="relative w-[52%] whitespace-normal px-2 py-0 align-top">
+          {connectChildren && depth < 4 && (
+            <span aria-hidden="true" data-tree-stem className="pointer-events-none absolute bottom-0 top-10 border-l border-slate-300" style={{ left: `${22 + visualDepth * 32}px` }} />
+          )}
+          {/* Each rail belongs to a displayed ancestor, so siblings share the same gutter. */}
+          {branchGuides.slice(0, 4).map((continues, index) => {
+            const currentBranch = index === visualDepth - 1;
+            return (
+              <span key={index} aria-hidden="true" data-tree-guide={currentBranch ? 'branch' : 'ancestor'}>
+                {(currentBranch || continues) && (
+                  <span
+                    className="pointer-events-none absolute top-0 border-l border-slate-300"
+                    style={{ left: `${22 + index * 32}px`, ...(currentBranch && !continues ? { height: '24px' } : { bottom: 0 }) }}
+                  />
+                )}
+                {currentBranch && (
+                  <span className="pointer-events-none absolute top-6 w-[18px] border-t border-slate-300" style={{ left: `${22 + index * 32}px` }} />
+                )}
+              </span>
+            );
+          })}
           <div
-            style={{ marginLeft: `${Math.min(depth, 3) * 24}px` }}
-            className={
-              depth
-                ? 'relative border-l-2 border-[#91b8a0] pl-4 before:absolute before:left-0 before:top-5 before:h-px before:w-4 before:bg-[#91b8a0]'
-                : ''
-            }
+            style={{ marginLeft: `${visualDepth * 32}px` }}
+            className="relative py-2"
           >
-            <div className="flex min-w-0 items-start gap-2">
+            <div className="flex min-w-0 items-start gap-1">
               {hasChildren ? (
                 <Button
                   type="button"
@@ -1182,7 +1230,8 @@ function TaskTableRows({
                   aria-label={`${item.title} 세부 업무 ${searching ? '검색 중 펼침' : expanded ? '접기' : '펼치기'}`}
                   disabled={searching}
                   onClick={onToggle}
-                  className="shrink-0 border border-slate-200 bg-white"
+                  data-tree-toggle
+                  className="size-8 shrink-0 p-0 text-slate-600 hover:bg-slate-200/60"
                 >
                   {expanded ? (
                     <ChevronDown className="size-4" />
@@ -1191,47 +1240,46 @@ function TaskTableRows({
                   )}
                 </Button>
               ) : (
-                <span className="w-8 shrink-0" aria-hidden="true" />
+                <span className="flex size-8 shrink-0 items-center justify-center" aria-hidden="true"><span className="size-1.5 rounded-full bg-slate-300" /></span>
               )}
               <div className="min-w-0 flex-1">
-                <div className="mb-1 flex flex-wrap items-center gap-2">
-                  <span aria-label={`목록 번호 ${number}`} className={`max-w-full break-all rounded-md px-2 py-1 font-mono text-sm font-semibold tabular-nums ${depth === 0 ? 'bg-emerald-800 text-white' : 'border border-slate-300 bg-white text-slate-700'}`}>{number}</span>
-                  <span className="text-sm font-semibold text-slate-600">
-                    {item.parentWorkItemId && !parentTitle
-                      ? '상위 업무 연결 확인 필요'
-                      : level ? `세부 업무 · ${level}단계` : '상위 업무'}
-                    {hasChildren ? ' · 묶음' : ''}
-                  </span>
-                </div>
                 {isHeadPriority(item) && (
                   <p className="mb-1 text-sm font-bold text-amber-900">
                     부서장 지시 · 최우선
                   </p>
                 )}
-                <button
-                  type="button"
-                  onClick={onOpen}
-                  className="min-h-9 w-full break-words whitespace-normal text-left text-base font-bold hover:text-emerald-800 hover:underline"
-                >
-                  {item.title}
-                </button>
-                {parentTitle && (
-                  <p className="mt-1 break-words text-xs text-slate-600">
+                <div className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1">
+                  <button
+                    type="button"
+                    onClick={onOpen}
+                    title={`목록 ${number}${parentTitle ? ` · 상위: ${parentTitle}` : ''}`}
+                    className={`min-h-8 min-w-0 break-words whitespace-normal text-left text-sm hover:text-emerald-800 hover:underline focus-visible:outline-2 focus-visible:outline-emerald-700 ${!isSubtask || hasChildren ? 'font-semibold' : 'font-medium'}`}
+                  >
+                    {item.title}
+                  </button>
+                  <span className="sr-only" aria-label={`목록 번호 ${number}`}>{number}</span>
+                  {isSubtask && <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500" title={`목록 ${number}`}>
+                    하위 업무{level > 1 ? ` · ${level}단계` : ''}
+                  </span>}
+                </div>
+                {progress}
+                {item.parentWorkItemId && !parentTitle && <p className="text-xs text-amber-800">상위 업무 연결 확인 필요</p>}
+                {needsParentContext && (
+                  <p className="break-words text-xs text-slate-500">
                     상위: {parentTitle}
                   </p>
                 )}
-                {!depth && <p className="mt-1 break-words text-xs text-slate-500">{projectLabel}</p>}
-                {progress}
-                {history && (
-                  <details className="mt-2 text-sm text-slate-600">
-                    <summary className="w-fit cursor-pointer rounded py-1 font-medium focus-visible:outline-2 focus-visible:outline-emerald-700">최근 기록</summary>
+                {!isSubtask && <p className="break-words text-xs text-slate-500">{projectLabel}</p>}
+                {(history || item.nextAction) && (
+                  <details className="text-xs text-slate-500">
+                    <summary className="w-fit cursor-pointer rounded py-0.5 focus-visible:outline-2 focus-visible:outline-emerald-700">최근 기록·다음 행동</summary>
                     {history}
+                    {item.nextAction && (
+                      <p className="mt-1 max-w-sm whitespace-normal text-sm text-slate-600">
+                        다음: {item.nextAction}
+                      </p>
+                    )}
                   </details>
-                )}
-                {item.nextAction && (
-                  <p className="mt-1 max-w-sm whitespace-normal text-sm text-slate-600">
-                    다음: {item.nextAction}
-                  </p>
                 )}
               </div>
             </div>
@@ -1239,16 +1287,32 @@ function TaskTableRows({
         </TableCell>
         <TableCell>{status}</TableCell>
         <TableCell>
-          <p className="text-sm">{item.owner || '미지정'}</p>
-          <p className="mt-1 text-sm text-slate-500">
+          <button
+            type="button"
+            aria-label={`${item.title} 담당자 확인·수정`}
+            onClick={() => onEditField('owner')}
+            disabled={editingDisabled}
+            className="block min-h-9 rounded px-1 text-left text-sm hover:bg-emerald-50 hover:text-emerald-800 focus-visible:outline-2 focus-visible:outline-emerald-700 disabled:opacity-50"
+          >
+            {item.owner || '미지정'}
+          </button>
+        </TableCell>
+        <TableCell>
+          <button
+            type="button"
+            aria-label={`${item.title} 기한 수정`}
+            onClick={() => onEditField('dueDate')}
+            disabled={editingDisabled}
+            className="block min-h-9 rounded px-1 text-left text-sm text-slate-500 hover:bg-emerald-50 hover:text-emerald-800 focus-visible:outline-2 focus-visible:outline-emerald-700 disabled:opacity-50"
+          >
             {item.dueDate || '기한 미지정'}
-          </p>
+          </button>
         </TableCell>
         <TableCell>{actions}</TableCell>
       </TableRow>
       {editor && (
         <TableRow>
-          <TableCell colSpan={4} className="bg-emerald-50 p-3">
+          <TableCell colSpan={5} className="bg-emerald-50 p-3">
             {editor}
           </TableCell>
         </TableRow>

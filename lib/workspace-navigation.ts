@@ -1,6 +1,7 @@
 import type { FarmRecord, FarmWorkItem } from './farm-types';
 
 export interface WorkListScope {
+  source?: 'internal';
   projectIds: string[];
   label: string;
   status: 'all' | 'open' | 'overdue';
@@ -8,13 +9,15 @@ export interface WorkListScope {
 
 /** Match the same project and date scope as the KPI that opened the list. */
 export function workMatchesScope(
-  item: Pick<FarmWorkItem, 'status' | 'dueDate'>,
+  item: Pick<FarmWorkItem, 'status' | 'dueDate'> & Partial<Pick<FarmWorkItem, 'scope' | 'farmRecordId' | 'workType'>>,
   projectId: string | undefined,
   scope: WorkListScope | null,
   today: string,
 ) {
   if (!scope) return true;
-  if (!projectId || !scope.projectIds.includes(projectId)) return false;
+  if (scope.source === 'internal') {
+    if (item.scope !== 'internal' || item.farmRecordId || ['payment', 'subscription'].includes(item.workType || '')) return false;
+  } else if (!projectId || !scope.projectIds.includes(projectId)) return false;
   if (scope.status !== 'all' && item.status === 'completed') return false;
   return (
     scope.status !== 'overdue' || Boolean(item.dueDate && item.dueDate < today)

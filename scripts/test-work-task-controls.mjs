@@ -57,6 +57,7 @@ const tag = (name) =>
     variant,
     size,
     keepMounted,
+    defaultOpen,
     containerClassName,
     onValueChange,
     finalFocus,
@@ -98,6 +99,10 @@ const alerts = Object.fromEntries(
     'AlertDialogAction',
   ].map((name) => [name, tag('div')]),
 );
+const menus = Object.fromEntries(
+  ['DropdownMenu', 'DropdownMenuTrigger', 'DropdownMenuContent', 'DropdownMenuItem']
+    .map((name) => [name, tag('div')]),
+);
 const { ProjectWorkTree } = load('app/project-work-tree.tsx', {
   react: { ...React, useState: hook },
   '@/lib/work-hierarchy': hierarchy,
@@ -116,7 +121,7 @@ const { ProjectWorkTree } = load('app/project-work-tree.tsx', {
     ]),
   ),
 });
-const { WorkQuickEditor, WorkTaskSurface, ChildTaskForm } = load(
+const { WorkQuickEditor, WorkTaskSurface, WorkTaskMoreMenu, ChildTaskForm } = load(
   'app/work-task-controls.tsx',
   {
     react: {
@@ -134,6 +139,7 @@ const { WorkQuickEditor, WorkTaskSurface, ChildTaskForm } = load(
     '@/components/ui/textarea': { Textarea: tag('textarea') },
     '@/components/ui/dialog': dialogs,
     '@/components/ui/alert-dialog': alerts,
+    '@/components/ui/dropdown-menu': menus,
     '@/components/ui/select': Object.fromEntries(
       [
         'Select',
@@ -392,7 +398,7 @@ test('목록은 중첩 업무를 펼치고 접을 수 있으며 세부 실행 �
   const html = renderToStaticMarkup(tree);
   assert.match(html, /data-work-id="b" data-work-depth="1"/);
   assert.match(html, /상위: 견적서 제출/);
-  assert.match(html, /margin-left:24px/);
+  assert.match(html, /margin-left:32px/);
   let row = find(tree, (x) => x.props?.item?.id === 'a' && x.props?.onToggle);
   row.props.onToggle();
   tree = render(WorkTaskSurface, props);
@@ -401,6 +407,64 @@ test('목록은 중첩 업무를 펼치고 접을 수 있으며 세부 실행 �
   row.props.onToggle();
   tree = render(WorkTaskSurface, props);
   assert.equal(nodes(tree).filter((x) => x.props?.item?.id === 'b').length, 1);
+});
+
+test('목록은 부모 아래 자식·손자를 연속 행과 같은 형제 들여쓰기로 연결한다', () => {
+  reset();
+  const allItems = [
+    { ...item, childWorkItemIds: ['child', 'sibling'] },
+    { ...item, id: 'child', title: '직접 하위', parentWorkItemId: item.id, childWorkItemIds: ['leaf'] },
+    { ...item, id: 'leaf', title: '손자 업무', parentWorkItemId: 'child' },
+    { ...item, id: 'sibling', title: '형제 업무', parentWorkItemId: item.id },
+    { ...item, id: 'other', title: '다른 상위 업무' },
+  ];
+  const props = surface({ mode: 'list', items: allItems, allItems });
+  let tree = render(WorkTaskSurface, props);
+  find(tree, (node) => node.props?.children === '모두 펼치기').props.onClick();
+  tree = render(WorkTaskSurface, props);
+  const rows = nodes(tree).filter((node) => node.props?.onToggle);
+  assert.deepEqual(rows.map((node) => node.props.item.id), ['a', 'child', 'leaf', 'sibling', 'other']);
+  assert.deepEqual(rows.map((node) => Array.from(node.props.branchGuides)), [[], [true], [true, false], [false], []]);
+  const rendered = rows.map((node) => node.type(node.props));
+  assert.deepEqual(rendered.map((row) => find(row, (node) => node.props?.style?.marginLeft !== undefined).props.style.marginLeft), ['0px', '32px', '64px', '32px', '0px']);
+  const guides = (row) => nodes(row).filter((node) => node.props?.['data-tree-guide']);
+  assert.equal(guides(rendered[0]).length, 0);
+  assert.deepEqual(guides(rendered[2]).map((node) => node.props['data-tree-guide']), ['ancestor', 'branch']);
+  assert.ok(guides(rendered[2]).every((node) => String(node.props['aria-hidden']) === 'true'));
+  const guideLines = (row) => guides(row).flatMap((guide) => nodes(guide)).filter((node) => node.props?.style?.left !== undefined && node.props?.className?.includes('border-l'));
+  assert.ok(find(rendered[0], (node) => node.props?.['data-tree-stem']), 'an expanded parent connects its arrow to the children below');
+  assert.equal(nodes(rendered[3]).find((node) => node.props?.['data-tree-stem']), undefined, 'a leaf has no outgoing stem');
+  assert.deepEqual(guideLines(rendered[2]).map((node) => ({ ...node.props.style })), [{ left: '22px', bottom: 0 }, { left: '54px', height: '24px' }]);
+  assert.equal(guideLines(rendered[1])[0].props.style.bottom, 0, 'the parent rail continues toward the next sibling');
+  assert.equal(guideLines(rendered[3])[0].props.style.height, '24px', 'the final sibling rail ends at its title');
+  for (const row of rendered.slice(1, 4)) {
+    assert.match(renderToStaticMarkup(row), /하위 업무/);
+    assert.match(find(row, (node) => node.props?.['aria-label']?.startsWith('목록 번호 ')).props.className, /sr-only/);
+  }
+  const html = renderToStaticMarkup(tree);
+  assert.match(html, /border-collapse/);
+  assert.doesNotMatch(html, /border-spacing-y/);
+  assert.equal((html.match(/<th(?:\s|>)/g) || []).length, 5);
+  assert.match(html, /<th>담당자<\/th><th>기한<\/th>/);
+});
+
+test('검색된 손자의 연결선은 제외된 형제를 향해 이어지지 않는다', () => {
+  reset();
+  const allItems = [
+    { ...item, childWorkItemIds: ['child', 'sibling'] },
+    { ...item, id: 'child', parentWorkItemId: item.id, childWorkItemIds: ['leaf'] },
+    { ...item, id: 'leaf', parentWorkItemId: 'child' },
+    { ...item, id: 'sibling', parentWorkItemId: item.id },
+  ];
+  const tree = render(WorkTaskSurface, surface({ mode: 'list', items: [allItems[2]], allItems, searching: true }));
+  const rows = nodes(tree).filter((node) => node.props?.onToggle);
+  assert.deepEqual(rows.map((node) => node.props.item.id), ['a', 'child', 'leaf']);
+  assert.deepEqual(rows.map((node) => Array.from(node.props.branchGuides)), [[], [false], [false, false]]);
+  const leaf = rows[2].type(rows[2].props);
+  const verticals = nodes(leaf).filter((node) => node.props?.style?.left !== undefined && node.props?.className?.includes('border-l'));
+  assert.equal(verticals.length, 1, 'an excluded sibling does not leave an ancestor continuation line');
+  assert.equal(verticals[0].props.style.left, '54px');
+  assert.match(renderToStaticMarkup(leaf), /상위: 견적서 제출/);
 });
 
 test('목록 번호는 접기·검색과 무관하게 계층을 유지하고 전체 접기를 지원한다', () => {
@@ -415,7 +479,7 @@ test('목록 번호는 접기·검색과 무관하게 계층을 유지하고 전
   const props = surface({ mode: 'list', items: allItems, allItems });
   const numbers = (tree) => nodes(tree).filter((node) => node.props?.onToggle && node.props?.number).map((node) => node.props.number);
   let tree = render(WorkTaskSurface, props);
-  assert.deepEqual(numbers(tree), ['1', '1.1', '1.1.1', '1.2', '2']);
+  assert.deepEqual(numbers(tree), ['1', '1.1', '1.2', '2']);
   find(tree, (node) => node.props?.children === '모두 접기').props.onClick();
   tree = render(WorkTaskSurface, props);
   assert.deepEqual(numbers(tree), ['1', '2']);
@@ -445,7 +509,15 @@ test('선택한 중간 업무 상세는 자손만 표시하고 전체 조상의 
   let tree = render(WorkTaskSurface, props);
   const rows = nodes(tree).filter((node) => node.props?.item && node.props?.onToggle);
   assert.deepEqual(rows.map((node) => node.props.item.id), ['leaf']);
+  assert.equal(rows[0].props.depth, 0);
   assert.equal(rows[0].props.level, 2);
+  const renderedRow = rows[0].type(rows[0].props);
+  const actualRow = find(renderedRow, (node) => node.props?.['data-work-id'] === 'leaf');
+  assert.equal(actualRow.props['data-parent-work-id'], selected.id);
+  assert.match(actualRow.props.className, /bg-white/);
+  assert.doesNotMatch(actualRow.props.className, /bg-emerald/);
+  assert.match(renderToStaticMarkup(renderedRow), /하위 업무 · 2단계/);
+  assert.equal(find(renderedRow, (node) => node.props?.style?.marginLeft !== undefined).props.style.marginLeft, '0px');
   const html = renderToStaticMarkup(tree);
   assert.match(html, /상위: 선택한 상위 업무/);
   assert.doesNotMatch(html, /상위 업무 연결 확인 필요/);
@@ -454,17 +526,227 @@ test('선택한 중간 업무 상세는 자손만 표시하고 전체 조상의 
   assert.equal(find(tree, (node) => node.type === WorkQuickEditor).props.statusLocked, true);
 });
 
-test('깊은 목록은 단계와 번호를 보존하고 최근 기록은 기본 접힘으로 표시한다', () => {
+test('깊은 목록은 단계와 번호를 보존하고 최근 기록은 접혀도 진행 요약은 보인다', () => {
   reset();
-  const allItems = Array.from({ length: 9 }, (_, index) => ({ ...item, id: `depth-${index}`, parentWorkItemId: index ? `depth-${index - 1}` : '' }));
-  const tree = render(WorkTaskSurface, surface({ mode: 'list', items: allItems, allItems, latestSummary: () => ({ action: '최근 처리 내용', received: '받은 내용' }) }));
+  const allItems = Array.from({ length: 9 }, (_, index) => ({ ...item, id: `depth-${index}`, parentWorkItemId: index ? `depth-${index - 1}` : '', nextAction: '다음 처리 계획' }));
+  const props = surface({ mode: 'list', items: allItems, allItems, latestSummary: () => ({ action: '최근 처리 내용', received: '받은 내용' }) });
+  let tree = render(WorkTaskSurface, props);
+  find(tree, (node) => node.props?.children === '모두 펼치기').props.onClick();
+  tree = render(WorkTaskSurface, props);
   const row = find(tree, (node) => node.props?.item?.id === 'depth-8' && node.props?.onToggle);
   assert.equal(row.props.number, '1.1.1.1.1.1.1.1.1');
   const renderedRow = row.type(row.props);
-  assert.equal(find(renderedRow, (node) => node.props?.style?.marginLeft).props.style.marginLeft, '72px');
-  assert.equal(find(renderedRow, (node) => node.type === 'details').props.open, undefined);
-  assert.match(renderToStaticMarkup(renderedRow), /세부 업무 · 8단계/);
-  assert.match(renderToStaticMarkup(renderedRow), /최근 처리 내용/);
+  assert.equal(find(renderedRow, (node) => node.props?.style?.marginLeft).props.style.marginLeft, '128px');
+  assert.equal(nodes(renderedRow).filter((node) => node.props?.['data-tree-guide']).length, 4);
+  const details = find(renderedRow, (node) => node.type === 'details');
+  assert.equal(details.props.open, undefined);
+  assert.equal(find(details, (node) => node.type === 'summary').props.children, '최근 기록·다음 행동');
+  assert.match(renderToStaticMarkup(renderedRow), /하위 업무 · 8단계/);
+  assert.match(renderToStaticMarkup(details), /최근 처리 내용/);
+  assert.match(renderToStaticMarkup(details), /다음: 다음 처리 계획/);
+  const parent = find(tree, (node) => node.props?.item?.id === 'depth-7' && node.props?.onToggle);
+  const parentDetails = find(parent.type(parent.props), (node) => node.type === 'details');
+  assert.equal(parentDetails.props.open, undefined);
+  assert.doesNotMatch(renderToStaticMarkup(parentDetails), /최하위 실행 완료/);
+  assert.match(renderToStaticMarkup(parent.type(parent.props)), /최하위 실행 완료 0\/1 · 0%/);
+});
+
+test('접힌 부모의 제목 아래 최하위 진행 요약을 항상 보이며 자신의 상태는 유지한다', () => {
+  reset();
+  const root = { ...item, childWorkItemIds: ['child'] };
+  const child = { ...item, id: 'child', title: '접힌 중간 업무', status: 'waiting', parentWorkItemId: root.id, childWorkItemIds: ['done', 'active', 'blocked', 'open'] };
+  const leaves = ['completed', 'in_progress', 'waiting', 'open'].map((status, index) => ({
+    ...item, id: ['done', 'active', 'blocked', 'open'][index], title: `세부 ${index}`, status, parentWorkItemId: child.id,
+  }));
+  const allItems = [root, child, ...leaves];
+  const before = JSON.stringify(allItems);
+  const props = surface({ mode: 'list', items: allItems, allItems });
+  let tree = render(WorkTaskSurface, props);
+  const rootRow = () => find(tree, (node) => node.props?.item?.id === root.id && node.props?.onToggle);
+  const summary = () => find(rootRow().type(rootRow().props), (node) => node.props?.['data-child-progress'] === root.id);
+  const html = renderToStaticMarkup(summary());
+  assert.match(html, /최하위 실행 완료 1\/4 · 25%/);
+  assert.match(html, /처리 중 1/);
+  assert.match(html, /대기·막힘 1/);
+  assert.match(html, /중간 업무 대기·막힘 1건/);
+  assert.match(html, /width:25%/);
+  assert.equal(nodes(summary()).some((node) => node.type === 'button' || node.type === 'details'), false);
+  assert.equal(find(rootRow().props.status, (node) => node.type === 'button').props.children, '접수');
+  rootRow().props.onToggle();
+  tree = render(WorkTaskSurface, props);
+  assert.equal(rootRow().props.expanded, false);
+  assert.equal(nodes(tree).some((node) => node.props?.onToggle && node.props.item.id === child.id), false);
+  assert.equal(renderToStaticMarkup(summary()), html);
+  assert.equal(JSON.stringify(allItems), before, 'view changes do not mutate any work or status');
+});
+
+test('상태·검색으로 보이지 않는 자손도 전체 하위 진행 요약에 포함하고 동일 ID는 한 번만 센다', () => {
+  reset();
+  const root = { ...item, childWorkItemIds: ['done', 'active', 'waiting'] };
+  const done = { ...item, id: 'done', status: 'completed', parentWorkItemId: root.id };
+  const active = { ...item, id: 'active', status: 'in_progress', parentWorkItemId: root.id };
+  const waiting = { ...item, id: 'waiting', status: 'waiting', parentWorkItemId: root.id };
+  const allItems = [root, done, active, waiting, { ...active }];
+  const props = surface({ mode: 'list', items: [waiting], allItems, searching: true });
+  const tree = render(WorkTaskSurface, props);
+  const rows = nodes(tree).filter((node) => node.props?.onToggle);
+  assert.deepEqual(rows.map((node) => node.props.item.id), [root.id, waiting.id]);
+  const row = rows[0].type(rows[0].props);
+  const summary = find(row, (node) => node.props?.['data-child-progress'] === root.id);
+  const html = renderToStaticMarkup(summary);
+  assert.match(html, /최하위 실행 완료 1\/3 · 33%/);
+  assert.match(html, /처리 중 1/);
+  assert.match(html, /대기·막힘 1/);
+  assert.doesNotMatch(html, /중간 업무 대기/);
+});
+
+test('최하위가 모두 완료여도 중간 업무 막힘은 별도 표시하고 부모 상태를 대체하지 않는다', () => {
+  reset();
+  const root = { ...item, status: 'in_progress', childWorkItemIds: ['middle'] };
+  const middle = { ...item, id: 'middle', status: 'waiting', parentWorkItemId: root.id, childWorkItemIds: ['leaf'] };
+  const leaf = { ...item, id: 'leaf', status: 'completed', parentWorkItemId: middle.id };
+  const allItems = [root, middle, leaf];
+  const tree = render(WorkTaskSurface, surface({ mode: 'list', items: allItems, allItems }));
+  const row = find(tree, (node) => node.props?.onToggle && node.props.item.id === root.id);
+  const summary = find(row.type(row.props), (node) => node.props?.['data-child-progress'] === root.id);
+  assert.match(renderToStaticMarkup(summary), /최하위 실행 완료 1\/1 · 100%/);
+  assert.match(renderToStaticMarkup(summary), /대기·막힘 0/);
+  assert.match(renderToStaticMarkup(summary), /중간 업무 대기·막힘 1건/);
+  assert.equal(find(row.props.status, (node) => node.type === 'button').props.children, '처리 중');
+});
+
+test('일부 하위 문서 미조회는 완료율·막대를 숨기며 자식 ID만 있는 부모도 안내한다', () => {
+  reset();
+  const root = { ...item, childWorkItemIds: ['done', 'missing'] };
+  const done = { ...item, id: 'done', status: 'completed', parentWorkItemId: root.id };
+  const emptyParent = { ...item, id: 'empty-parent', childWorkItemIds: ['also-missing'] };
+  const allItems = [root, done, emptyParent];
+  const tree = render(WorkTaskSurface, surface({ mode: 'list', items: allItems, allItems }));
+  for (const id of [root.id, emptyParent.id]) {
+    const row = find(tree, (node) => node.props?.onToggle && node.props.item.id === id);
+    const summary = find(row.type(row.props), (node) => node.props?.['data-child-progress'] === id);
+    const html = renderToStaticMarkup(summary);
+    assert.match(html, /일부 하위 업무 미조회 · 완료율 확인 필요/);
+    assert.doesNotMatch(html, /\d+%|style="width/);
+  }
+  const leafRow = find(tree, (node) => node.props?.onToggle && node.props.item.id === done.id);
+  assert.equal(leafRow.props.progress, null, 'leaf rows do not repeat a child summary');
+});
+
+test('펼침 상태를 보존한 실시간 갱신은 완료율과 상태 건수를 새 업무 값으로 갱신한다', () => {
+  reset();
+  const root = { ...item, childWorkItemIds: ['child'] };
+  const child = { ...item, id: 'child', status: 'in_progress', parentWorkItemId: root.id };
+  let props = surface({ mode: 'list', items: [root, child], allItems: [root, child] });
+  let tree = render(WorkTaskSurface, props);
+  find(tree, (node) => node.props?.onToggle && node.props.item.id === root.id).props.onToggle();
+  const updated = { ...child, status: 'completed', updatedAt: 99 };
+  props = { ...props, items: [root, updated], allItems: [root, updated] };
+  tree = render(WorkTaskSurface, props);
+  const row = find(tree, (node) => node.props?.onToggle && node.props.item.id === root.id);
+  assert.equal(row.props.expanded, false);
+  const summary = find(row.type(row.props), (node) => node.props?.['data-child-progress'] === root.id);
+  assert.match(renderToStaticMarkup(summary), /최하위 실행 완료 1\/1 · 100%/);
+  assert.match(renderToStaticMarkup(summary), /처리 중 0/);
+});
+
+test('기본 목록은 상위·바로 아래만 보이고 새 깊은 묶음도 사용자 펼침을 유지하며 접힌다', () => {
+  reset();
+  const root = { ...item, childWorkItemIds: ['child'] };
+  const child = { ...item, id: 'child', parentWorkItemId: root.id, childWorkItemIds: ['leaf'] };
+  const leaf = { ...item, id: 'leaf', parentWorkItemId: child.id };
+  let props = surface({ mode: 'list', items: [root, child, leaf], allItems: [root, child, leaf] });
+  const ids = (tree) => nodes(tree).filter((node) => node.props?.onToggle).map((node) => node.props.item.id);
+  let tree = render(WorkTaskSurface, props);
+  assert.deepEqual(ids(tree), [root.id, child.id]);
+  find(tree, (node) => node.props?.onToggle && node.props.item.id === child.id).props.onToggle();
+  tree = render(WorkTaskSurface, props);
+  assert.deepEqual(ids(tree), [root.id, child.id, leaf.id]);
+  const incoming = { ...item, id: 'new-deep', parentWorkItemId: leaf.id };
+  const allItems = [root, child, { ...leaf, childWorkItemIds: [incoming.id] }, incoming];
+  props = { ...props, items: allItems, allItems };
+  tree = render(WorkTaskSurface, props);
+  assert.deepEqual(ids(tree), [root.id, child.id, leaf.id]);
+  assert.equal(find(tree, (node) => node.props?.onToggle && node.props.item.id === child.id).props.expanded, true);
+  assert.equal(find(tree, (node) => node.props?.onToggle && node.props.item.id === leaf.id).props.expanded, false);
+  tree = render(WorkTaskSurface, { ...props, items: [incoming], searching: true });
+  assert.deepEqual(ids(tree), [root.id, child.id, leaf.id, incoming.id]);
+  tree = render(WorkTaskSurface, props);
+  assert.deepEqual(ids(tree), [root.id, child.id, leaf.id]);
+});
+
+test('선택 업무 상세는 직접 자식만 기본 노출하고 전체 펼침 후 도착한 깊은 묶음은 접힌다', () => {
+  reset();
+  const root = { ...item, childWorkItemIds: ['child'] };
+  const child = { ...item, id: 'child', parentWorkItemId: root.id, childWorkItemIds: ['leaf'] };
+  const leaf = { ...item, id: 'leaf', parentWorkItemId: child.id };
+  const props = surface({ mode: 'list', items: [child, leaf], allItems: [root, child, leaf], contextRootId: root.id });
+  const ids = (tree) => nodes(tree).filter((node) => node.props?.onToggle).map((node) => node.props.item.id);
+  let tree = render(WorkTaskSurface, props);
+  assert.deepEqual(ids(tree), [child.id]);
+  find(tree, (node) => node.props?.children === '모두 펼치기').props.onClick();
+  tree = render(WorkTaskSurface, props);
+  assert.deepEqual(ids(tree), [child.id, leaf.id]);
+  const incoming = { ...item, id: 'new-deep', parentWorkItemId: leaf.id };
+  tree = render(WorkTaskSurface, { ...props, items: [child, leaf, incoming], allItems: [root, child, leaf, incoming] });
+  assert.deepEqual(ids(tree), [child.id, leaf.id]);
+});
+
+test('상태·담당자·기한 클릭은 해당 필드의 편집만 열고 적용 전에는 저장하지 않는다', () => {
+  for (const field of ['status', 'owner', 'dueDate']) {
+    reset();
+    let saves = 0;
+    const props = surface({ mode: 'list', onSave: async () => saves++ });
+    let tree = render(WorkTaskSurface, props);
+    const row = find(tree, (node) => node.props?.onToggle);
+    if (field === 'status') row.props.status.props.onClick();
+    else row.props.onEditField(field);
+    tree = render(WorkTaskSurface, props);
+    const editor = find(tree, (node) => node.type === WorkQuickEditor);
+    assert.equal(editor.props.initialField, field);
+    assert.equal(editor.props.task.id, item.id);
+    assert.equal(saves, 0);
+    const busyRow = find(tree, (node) => node.props?.onToggle);
+    assert.equal(busyRow.props.editingDisabled, true);
+    assert.equal(busyRow.props.status.props.disabled, true);
+  }
+});
+
+test('추가·삭제는 더보기 안에 있으며 기존 삭제 확인 트리거를 그대로 합성한다', () => {
+  reset();
+  let confirmations = 0;
+  const deletion = React.createElement('button', { onClick: () => confirmations++, disabled: false }, '삭제');
+  const props = surface({ mode: 'list', deleteAction: () => deletion });
+  const tree = render(WorkTaskSurface, props);
+  const row = find(tree, (node) => node.props?.onToggle);
+  const directButtons = React.Children.toArray(row.props.actions.props.children);
+  assert.equal(directButtons.length, 2, 'only quick edit and more are exposed on a row');
+  const menu = find(row.props.actions, (node) => node.type === WorkTaskMoreMenu);
+  const rendered = WorkTaskMoreMenu(menu.props);
+  assert.equal(find(rendered, (node) => node.type === menus.DropdownMenuTrigger).props['aria-label'], `${item.title} 더보기`);
+  const deletionItem = find(rendered, (node) => node.type === menus.DropdownMenuItem && node.props.variant === 'destructive');
+  assert.equal(deletionItem.props.render, deletion);
+  assert.equal(deletionItem.props.nativeButton, true, 'no nested button inside menu item');
+  assert.equal(confirmations, 0);
+  deletionItem.props.render.props.onClick();
+  assert.equal(confirmations, 1, 'existing confirmation trigger is retained');
+});
+
+test('더보기는 완료·상위 완료의 세부 업무 추가 잠금과 편집 중 비활성화를 유지한다', () => {
+  for (const lockedParent of [false, true]) {
+    reset();
+    const parent = { ...item, id: 'parent', status: 'completed', childWorkItemIds: [item.id] };
+    const task = { ...item, status: lockedParent ? 'open' : 'completed', parentWorkItemId: lockedParent ? parent.id : '' };
+    const props = surface({ mode: 'list', items: [task], allItems: lockedParent ? [parent, task] : [task] });
+    const tree = render(WorkTaskSurface, props);
+    const row = find(tree, (node) => node.props?.onToggle && node.props.item.id === task.id);
+    const menu = find(row.props.actions, (node) => node.type === WorkTaskMoreMenu);
+    assert.equal(menu.props.addChildDisabled, true);
+    const rendered = WorkTaskMoreMenu(menu.props);
+    assert.equal(find(rendered, (node) => node.props?.['aria-label'] === `${item.title} 세부 업무 추가`).props.disabled, true);
+    const busy = WorkTaskMoreMenu({ ...menu.props, disabled: true });
+    assert.equal(find(busy, (node) => node.type === menus.DropdownMenuTrigger).props.disabled, true);
+  }
 });
 
 test('상위 손잡이가 표시되며 자식 실행 업무의 드래그는 해당 업무만 변경한다', async () => {
@@ -520,7 +802,7 @@ const family = () => [
   },
 ];
 
-test('상위 카드를 접수로 드롭하면 선택창만 열고 취소해도 상태를 저장하지 않는다', () => {
+test('상위 카드를 직접 옮기면 부모만 저장하고 하위 대기 때문에 열이 유지됨을 알린다', async () => {
   reset();
   const tasks = family();
   const saved = [];
@@ -529,18 +811,22 @@ test('상위 카드를 접수로 드롭하면 선택창만 열고 취소해도 �
     allItems: tasks,
     onSave: async (input) => saved.push(input),
   });
-  let tree = dragTo(props, tasks[0], 'open');
-  assert.match(renderToStaticMarkup(tree), /이동할 세부 업무 선택/);
-  assert.equal(boardOf(tree).props.busy, true);
-  assert.equal(saved.length, 0);
-  find(tree, (node) => node.props?.children === '취소').props.onClick();
-  tree = render(WorkTaskSurface, props);
+  let tree = dragTo(props, tasks[0], 'in_progress');
   assert.doesNotMatch(renderToStaticMarkup(tree), /이동할 세부 업무 선택/);
-  assert.equal(saved.length, 0);
+  assert.equal(boardOf(tree).props.busy, true);
+  await new Promise(setImmediate);
+  tree = render(WorkTaskSurface, props);
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].workItemId, 'a');
+  assert.equal(saved[0].newStatus, 'in_progress');
+  assert.match(renderToStaticMarkup(tree), /하위 업무에 대기·막힘/);
   assert.equal(tasks[0].status, 'open');
+  assert.equal(tasks[1].status, 'in_progress');
+  assert.equal(tasks[2].status, 'waiting');
+  assert.equal(tasks[0].openChildCount, 2);
 });
 
-test('상위 드롭에서 선택한 세부 업무의 빠른 수정만 열고 부모·형제는 그대로 둔다', () => {
+test('상위 대기 열 드롭은 부모의 대기 사유 편집만 열고 하위 업무는 그대로 둔다', () => {
   reset();
   const tasks = family();
   const saved = [];
@@ -550,21 +836,53 @@ test('상위 드롭에서 선택한 세부 업무의 빠른 수정만 열고 부
     onSave: async (input) => saved.push(input),
   });
   let tree = dragTo(props, tasks[0], 'waiting');
-  const choices = find(
-    tree,
-    (node) => node.props?.['aria-label'] === '이동할 세부 업무',
-  );
-  find(
-    choices,
-    (node) => node.props?.['aria-label'] === '단가 검토 대기·막힘로 이동',
-  ).props.onClick();
-  tree = render(WorkTaskSurface, props);
   const editor = find(tree, (node) => node.type === WorkQuickEditor);
-  assert.equal(editor.props.task.id, 'b');
+  assert.equal(editor.props.task.id, 'a');
   assert.equal(editor.props.initialStatus, 'waiting');
   assert.equal(saved.length, 0);
   assert.equal(tasks[0].status, 'open');
   assert.equal(tasks[2].status, 'waiting');
+});
+
+test('하위 상태와 관계없이 처리 중인 상위를 접수로 옮기고 부모만 한 번 저장한다', async () => {
+  reset();
+  const tasks = family().map((task, index) => ({
+    ...task, status: index === 0 ? 'in_progress' : 'open',
+  }));
+  const saved = [];
+  const props = surface({ items: tasks, allItems: tasks, onSave: async (input) => saved.push(input) });
+  dragTo(props, tasks[0], 'open');
+  await new Promise(setImmediate);
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].workItemId, 'a');
+  assert.equal(saved[0].newStatus, 'open');
+  assert.equal(saved[0].expectedUpdatedAt, tasks[0].updatedAt);
+  assert.equal(tasks[0].openChildCount, 2);
+  assert.equal(tasks[1].status, 'open');
+  assert.equal(tasks[2].status, 'open');
+});
+
+test('완료된 상위를 다시 열 때 드롭한 접수 상태를 그대로 사용한다', () => {
+  reset();
+  const tasks = family().map((task) => ({ ...task, status: 'completed', openChildCount: 0 }));
+  const saved = [];
+  const props = surface({ items: tasks, allItems: tasks, onSave: async (input) => saved.push(input) });
+  const tree = dragTo(props, tasks[0], 'open');
+  const editor = find(tree, (node) => node.type === WorkQuickEditor);
+  assert.equal(editor.props.task.id, 'a');
+  assert.equal(editor.props.initialStatus, 'open');
+  assert.equal(saved.length, 0);
+});
+
+test('자동 대기 카드의 실제 부모 상태로 드롭하면 저장 없이 우선 표시 이유를 알린다', () => {
+  reset();
+  const tasks = family();
+  const saved = [];
+  const props = surface({ items: tasks, allItems: tasks, onSave: async (input) => saved.push(input) });
+  const tree = dragTo(props, tasks[0], 'open');
+  assert.equal(saved.length, 0);
+  assert.match(renderToStaticMarkup(tree), /상위 업무의 상태는 그대로/);
+  assert.match(renderToStaticMarkup(tree), /대기·막힘 열에 표시/);
 });
 
 test('완료 열 드롭은 준비된 부모도 최종 확인을 열며 미완료 세부 업무를 자동 완료하지 않는다', () => {
@@ -592,7 +910,7 @@ test('완료 열 드롭은 준비된 부모도 최종 확인을 열며 미완료
     unfinished[0],
     'completed',
   );
-  assert.match(renderToStaticMarkup(next), /이동할 세부 업무 선택/);
+  assert.match(renderToStaticMarkup(next), /하위 업무를 모두 완료한 뒤/);
   assert.equal(
     nodes(next).some((node) => node.type === WorkQuickEditor),
     false,
@@ -650,17 +968,14 @@ test('드래그 중 변경·삭제된 업무와 누락 연결은 이동하지 �
   );
 });
 
-test('선택창에서 상위 업무가 삭제되면 선택 대신 안내를 표시한다', () => {
+test('상위 대기 편집 중 업무가 삭제되면 오래된 업무의 편집기를 표시하지 않는다', () => {
   reset();
   const tasks = family();
   const props = surface({ items: tasks, allItems: tasks });
   dragTo(props, tasks[0], 'waiting');
   const tree = render(WorkTaskSurface, { ...props, items: [], allItems: [] });
-  assert.match(renderToStaticMarkup(tree), /삭제되었거나 연결이 변경/);
   assert.equal(
-    nodes(tree).some(
-      (node) => node.props?.['aria-label'] === '이동할 세부 업무',
-    ),
+    nodes(tree).some((node) => node.type === WorkQuickEditor),
     false,
   );
 });
@@ -1214,6 +1529,25 @@ test('바깥 클릭은 닫지 않으며 입력 전 Esc는 팝업을 닫는다', 
   assert.equal(closed, 0);
   modal(tree).props.onOpenChange(false, closeEvent('escape-key'));
   assert.equal(closed, 1);
+});
+
+test('담당자·기한 직접 편집은 선택 영역을 펼치고 해당 입력에 초점을 준다', () => {
+  for (const field of ['owner', 'dueDate']) {
+    reset();
+    const tree = render(WorkQuickEditor, popupProps({ initialField: field }));
+    const openedSection = find(tree, (node) => node.props?.defaultOpen === true);
+    assert.match(renderToStaticMarkup(openedSection), /담당자·기한·다음 행동/);
+    const fieldFocus = {};
+    focusElements.set(`work-control-${field === 'owner' ? '3' : '4'}-${item.id}`, fieldFocus);
+    const content = find(tree, (node) => node.type === dialogs.DialogContent);
+    assert.equal(content.props.initialFocus('keyboard'), fieldFocus);
+  }
+  reset();
+  const assigned = render(WorkQuickEditor, popupProps({ task: { ...item, assigneeUid: 'assigned' }, initialField: 'owner' }));
+  assert.equal(find(assigned, (node) => node.props?.id === `work-control-3-${item.id}`).props.disabled, true);
+  const dueFocus = {};
+  focusElements.set(`work-control-4-${item.id}`, dueFocus);
+  assert.equal(find(assigned, (node) => node.type === dialogs.DialogContent).props.initialFocus('keyboard'), dueFocus);
 });
 
 test('입력 후 취소·닫기·Esc는 취소 확인을 띄우고 계속 작성하면 초안을 유지한다', () => {

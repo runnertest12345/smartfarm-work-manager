@@ -11,6 +11,52 @@ const compile = (path, module = ts.ModuleKind.ESNext) =>
   ts.transpileModule(source(path), {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module },
   }).outputText;
+function functionSource(path, name) {
+  const file = ts.createSourceFile(path, source(path), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const matches = [];
+  function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === name)
+      matches.push(node);
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  assert.equal(matches.length, 1, `${path} must contain exactly one ${name} function`);
+  return matches[0].getText(file);
+}
+function runDashboardFunction(name, context, args = '') {
+  const code = ts.transpileModule(
+    functionSource('app/farm-ledger-dashboard.tsx', name),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  return vm.runInNewContext(`${code}\n${name}(${args});`, context);
+}
+
+test('외부 삭제 수신은 업무명 초안이 있는 상세를 닫거나 편집기를 제거하지 않는다', () => {
+  const path = 'app/farm-ledger-dashboard.tsx';
+  const dashboard = source(path);
+  const file = ts.createSourceFile(path, dashboard, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let deletionEffect;
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(file) === 'useEffect' &&
+      node.arguments[0]?.getText(file).includes('selectedWorkItem?.deletedAt')) deletionEffect = node;
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  assert.ok(deletionEffect);
+  assert.match(deletionEffect.arguments[1].getText(file), /workTitleEditing/);
+  const callback = deletionEffect.arguments[0].getText(file);
+  for (const dirty of [true, false]) {
+    let scheduled = 0;
+    const context = {
+      selectedWorkItem: { deletedAt: 123 }, workDeletionTarget: null, dialog: null,
+      quickDetailTaskId: '', workQuickEditOpen: false, workTitleEditingRef: { current: dirty },
+      closeDetails: () => {}, requestAnimationFrame: () => { scheduled++; return 1; }, cancelAnimationFrame: () => {},
+    };
+    vm.runInNewContext(`(${callback})();`, context);
+    assert.equal(scheduled, dirty ? 0 : 1);
+  }
+  assert.match(dashboard, /\{selectedWorkItem &&\s+isStandaloneWork\(selectedWorkItem\) &&/);
+});
 const navigationModule = await import(
   `data:text/javascript;base64,${Buffer.from(compile('lib/detail-navigation.ts')).toString('base64')}`
 );
@@ -535,10 +581,8 @@ test('hook은 렌더 전 뒤로·앞으로 왕복해 같은 snapshot으로 돌�
 
 test('대시보드 복원은 검색·필터·펼침 상태를 초기화하지 않고 DOM을 history에서 제외한다', () => {
   const dashboard = source('app/farm-ledger-dashboard.tsx');
-  const restore = dashboard.slice(
-    dashboard.indexOf('  function restoreDetailNavigation('),
-    dashboard.indexOf('  function openScopedWork('),
-  );
+  // Extract the actual function, not a range ending at an unrelated helper.
+  const restore = functionSource('app/farm-ledger-dashboard.tsx', 'restoreDetailNavigation');
   assert.doesNotMatch(restore, /set\w*(?:Filter|Search|Expanded|Collapsed)\(/);
   assert.match(restore, /focusElement: null/);
   assert.match(
@@ -553,7 +597,7 @@ test('대시보드 복원은 검색·필터·펼침 상태를 초기화하지 �
   assert.match(capture, /pendingNavigationScrollRef.current \?\?/);
   const open = dashboard.slice(
     dashboard.indexOf('  function openDetail('),
-    dashboard.indexOf('  function closeDetails('),
+    dashboard.indexOf('  function closeDetailPanel('),
   );
   assert.match(open, /sameDetailTarget\(current, target\)/);
   assert.match(open, /detailNavigation.current.push\(next\)/);
@@ -571,7 +615,7 @@ test('빠른 수정 팝업은 기존 뒤로가기 보호에 포함되고 모든 
       /<WorkTaskSurface\b([\s\S]*?)\bonSave=\{saveQuickWork\}/g,
     ),
   ];
-  assert.equal(surfaces.length, 4);
+  assert.equal(surfaces.length, 5);
   for (const [, props] of surfaces)
     assert.match(props, /onEditingChange=\{setWorkQuickEditOpen\}/);
   const list = surfaces.find(([, props]) => props.includes('items={filteredWorkItems}') && props.includes('mode="list"'));
@@ -579,4 +623,170 @@ test('빠른 수정 팝업은 기존 뒤로가기 보호에 포함되고 모든 
   assert.match(list[1], /searching=\{Boolean\(workSearch.trim\(\)\)\}/);
   const controls = source('app/work-task-controls.tsx');
   assert.doesNotMatch(controls, /scrollIntoView/);
+});
+
+test('같은 화면 상세 패널은 배경 목록을 유지하고 패널 스크롤을 별도로 저장·복원한다', () => {
+  const dashboard = source('app/farm-ledger-dashboard.tsx');
+  assert.match(dashboard, /<Sheet\s+open=\{Boolean\(selectedProject \|\| selectedFarm \|\| selectedWorkItem\)\}/);
+  assert.match(dashboard, /data-active-content=\{\s*!selectedProject && !selectedFarm && !selectedWorkItem[\s\S]*?className="page-content"/);
+  assert.match(dashboard, /<div ref=\{detailPanelRef\}/);
+  const capture = dashboard.slice(
+    dashboard.indexOf('  function captureDetailNavigation('),
+    dashboard.indexOf('  function canGoBackDetail('),
+  );
+  assert.match(capture, /currentDetailTarget\(\) \? detailPanelRef.current\?\.scrollTop \?\? 0/);
+  assert.match(capture, /listScrollY: Math.max\(0, listScrollYRef.current\)/);
+  const open = dashboard.slice(
+    dashboard.indexOf('  function openDetail('),
+    dashboard.indexOf('  function closeDetailPanel('),
+  );
+  assert.match(open, /scrollY: detailPanelRef.current\?\.scrollTop \?\? 0/);
+  assert.match(open, /listScrollYRef.current = Math.max\(0, window.scrollY\)/);
+  assert.match(open, /detailPanelRef.current\?\.scrollTo\(\{ top: 0/);
+  assert.doesNotMatch(open, /window.scrollTo/);
+  assert.match(dashboard, /detailPanelRef.current\?\.scrollTo\(\{ top, behavior: 'auto' \}\)/);
+});
+
+test('프로젝트·업무 선택은 중앙 모달 팝업이며 내부에서 농가·업무로 이동해도 팝업 문맥을 유지한다', () => {
+  const dashboard = source('app/farm-ledger-dashboard.tsx');
+  const sheet = source('components/ui/sheet.tsx');
+  assert.match(dashboard, /const detailPopup = Boolean\(selectedProject \|\| selectedWorkItem\) \|\| detailTrail.some\(\(\{ target \}\) => target.kind === 'project' \|\| target.kind === 'work'\)/);
+  assert.ok(dashboard.indexOf('const detailPopup =') > dashboard.indexOf('const selectedWorkItem ='), 'resolve the selected task before deriving popup mode');
+  assert.match(dashboard, /modal=\{detailPopup \|\| isMobile\} disablePointerDismissal/);
+  assert.match(dashboard, /displayMode=\{detailPopup \? 'dialog' : 'panel'\} showOverlay=\{detailPopup\}/);
+  assert.match(sheet, /displayMode === 'dialog'[\s\S]*?top-1\/2 left-1\/2[\s\S]*?max-w-\[1200px\][\s\S]*?-translate-x-1\/2 -translate-y-1\/2/);
+  assert.match(sheet, /h-\[min\(92dvh,1100px\)\]/);
+  assert.match(dashboard, /<SheetHeader className="shrink-0/);
+  assert.match(dashboard, /detailPopup \? 'z-50' : 'z-40/);
+});
+
+test('프로젝트 바로 수정 초안도 상세 닫기·뒤로가기·메뉴 전환 보호에 포함된다', () => {
+  const dashboard = source('app/farm-ledger-dashboard.tsx');
+  const guard = dashboard.slice(
+    dashboard.indexOf('  function canGoBackDetail('),
+    dashboard.indexOf('  function restoreDetailNavigation('),
+  );
+  assert.match(guard, /projectQuickEditingRef.current/);
+  const close = dashboard.slice(
+    dashboard.indexOf('  function closeDetailPanel('),
+    dashboard.indexOf('  function backDetail('),
+  );
+  assert.ok(close.indexOf('if (!canGoBackDetail()) return') < close.indexOf('closeDetails()'));
+  assert.match(close, /detailNavigation.current.replace/);
+  assert.match(close, /listFocusRef.current[\s\S]*?focus\(\{ preventScroll: true \}\)/);
+  assert.match(dashboard, /onEditingChange=\{\(editing\) => \{ projectQuickEditingRef.current = editing; \}\}/);
+  const editor = source('app/project-quick-editor.tsx');
+  assert.match(editor, /callback\.current\(\s*JSON\.stringify\(next\)\s*!==\s*JSON\.stringify\(projectQuickValues\(base\)\),?\s*\)/);
+  assert.match(editor, /beforeunload/);
+  assert.match(editor, /if \(busyRef.current \|\| !dirty \|\| project.deletedAt\) return/);
+  const save = dashboard.slice(
+    dashboard.indexOf('  async function saveProjectQuick('),
+    dashboard.indexOf('  function projectListRow('),
+  );
+  assert.match(save, /expectedUpdatedAt: base.updatedAt/);
+  assert.match(save, /projectQuickInput\(base, values\)/);
+});
+
+test('기본정보·정산·업무명 초안은 상세 전환과 브라우저 뒤로가기를 실제로 차단한다', () => {
+  const dashboard = source('app/farm-ledger-dashboard.tsx');
+  assert.match(dashboard, /useDetailNavigation\(\s*captureDetailNavigation,\s*restoreDetailNavigation,\s*canGoBackDetail,?\s*\)/);
+  assert.match(dashboard, /onEditingChange=\{\(editing\) => \{\s*projectSettlementEditingRef\.current = editing;\s*\}\}/);
+  for (const refName of ['projectQuickEditingRef', 'projectSettlementEditingRef', 'workTitleEditingRef']) {
+    const context = {
+      dialog: null,
+      serviceRegistrationOpenRef: { current: false },
+      childTaskParent: null,
+      taskRegistrationOpen: false,
+      quickDetailTaskId: '',
+      workQuickEditOpen: false,
+      projectDeletionTarget: null,
+      workDeletionTarget: null,
+      projectQuickEditingRef: { current: false },
+      projectSettlementEditingRef: { current: false },
+      workTitleEditingRef: { current: false },
+      submitting: false,
+      toast: { add: () => {} },
+    };
+    const canGoBack = () => runDashboardFunction('canGoBackDetail', context);
+    assert.equal(canGoBack(), true, 'a clean project remains navigable');
+    context[refName].current = true;
+    assert.equal(canGoBack(), false, `${refName} must block navigation`);
+    // If the draft guard is missing, execution reaches the mutation path and
+    // fails because mutation helpers are deliberately unavailable here.
+    assert.doesNotThrow(() => runDashboardFunction('openDetail', {
+      ...context,
+      currentDetailTarget: () => project,
+      sameDetailTarget: () => false,
+      target: work,
+    }, 'target'));
+
+    const h = harness();
+    h.push(snapshot({ target: project, projectTab: 'settlement' }));
+    h.guard(canGoBack());
+    h.nativeBack();
+    assert.equal(h.restores.length, 0, 'the dirty project must not be unmounted');
+    h.flush();
+    assert.deepEqual(h.current.target, project);
+    assert.equal(h.current.projectTab, 'settlement');
+    context[refName].current = false;
+    h.guard(canGoBack());
+    h.nativeBack();
+    assert.equal(h.current.target, null, 'saving or cancelling releases the guard');
+  }
+});
+
+test('상세 닫기·프로젝트 탭·메뉴 이동은 동일한 초안 보호를 먼저 적용한다', () => {
+  const close = functionSource('app/farm-ledger-dashboard.tsx', 'closeDetailPanel');
+  const changeView = functionSource('app/farm-ledger-dashboard.tsx', 'changeView');
+  const changeTab = functionSource('app/farm-ledger-dashboard.tsx', 'changeProjectDetailTab');
+  for (const [body, mutation] of [[close, 'closeDetails()'], [changeView, 'setView(next)']]) {
+    const guardIndex = body.indexOf('if (!canGoBackDetail())');
+    assert.ok(guardIndex >= 0);
+    assert.ok(body.indexOf(mutation) > guardIndex, `${mutation} must follow the guard`);
+  }
+  assert.match(changeTab, /if \(value !== projectDetailTab && !canGoBackDetail\(\)\) return;/);
+  assert.ok(changeTab.indexOf('setProjectDetailTab(value)') > changeTab.indexOf('canGoBackDetail()'));
+});
+
+test('업무명 수정은 정확한 업무와 버전만 전용 API로 보내고 다른 업무 정보는 보내지 않는다', async () => {
+  const calls = [], events = [];
+  const base = { id: 'task-to-rename', title: '기존 업무', updatedAt: 100, status: 'waiting', parentWorkItemId: 'parent', childWorkItemIds: ['child'] };
+  const result = { ...base, title: '새 업무', updatedAt: 200 };
+  const context = {
+    base, title: '새 업무', operationId: 'rename-operation-123456', member: { id: 'member' },
+    canRenameWork: () => true,
+    farmLedgerFetch: async (url, init) => { calls.push([url, init]); return { ok: true }; },
+    readResponse: async () => ({ workItem: result }),
+    waitForFarmLedgerSync: async () => { events.push('synced'); },
+    toast: { add: () => events.push('success') },
+  };
+  const saved = await runDashboardFunction('saveWorkTitle', context, 'base, title, operationId');
+  assert.equal(saved, result);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], '/api/farm-ledger');
+  assert.equal(calls[0][1].method, 'PATCH');
+  assert.deepEqual(JSON.parse(calls[0][1].body), { kind: 'work_title', workItemId: base.id, title: '새 업무', expectedUpdatedAt: 100, operationId: 'rename-operation-123456' });
+  assert.deepEqual(events, ['synced', 'success']);
+  context.canRenameWork = () => false;
+  await assert.rejects(runDashboardFunction('saveWorkTitle', context, 'base, title, operationId'), /개인 계정/);
+  assert.equal(calls.length, 1);
+  context.canRenameWork = () => true;
+  context.farmLedgerFetch = async () => ({ ok: false });
+  context.readResponse = async () => ({ error: '최신 업무 확인 필요' });
+  await assert.rejects(runDashboardFunction('saveWorkTitle', context, 'base, title, operationId'), /최신 업무 확인/);
+  assert.deepEqual(events, ['synced', 'success']);
+});
+
+test('업무명 초안 중 기록·세부 업무 추가도 먼저 막고 모든 상세 종류가 같은 편집기를 연결한다', () => {
+  let warned = 0;
+  const context = { workTitleEditingRef: { current: true }, canGoBackDetail: () => { warned++; return false; }, task: { id: 'task' } };
+  assert.doesNotThrow(() => runDashboardFunction('openHistoryDialog', context, 'task'));
+  assert.doesNotThrow(() => runDashboardFunction('addChildTask', context, 'task'));
+  assert.equal(warned, 2);
+  const dashboard = source('app/farm-ledger-dashboard.tsx');
+  assert.equal((dashboard.match(/<WorkTitleEditor key=\{selectedWorkItem.id\}/g) || []).length, 2);
+  assert.equal((dashboard.match(/canEdit=\{canRenameWork\(selectedWorkItem, member\)\}/g) || []).length, 2);
+  assert.equal((dashboard.match(/onEditingChange=\{\(editing\) => \{ workTitleEditingRef.current = editing; setWorkTitleEditing\(editing\); \}\}/g) || []).length, 2);
+  const deletion = functionSource('app/farm-ledger-dashboard.tsx', 'workDeleteAction');
+  assert.ok(deletion.indexOf('workTitleEditingRef.current') < deletion.indexOf('setWorkDeletionTarget(item)'));
 });

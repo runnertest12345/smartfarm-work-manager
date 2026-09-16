@@ -10,6 +10,7 @@ const require = createRequire(import.meta.url);
 let states = [],
   cursor = 0,
   buttons = [],
+  moreMenus = [],
   textareas = [],
   reads = 0;
 const sample = {
@@ -96,10 +97,17 @@ const { ProjectTaskDetail } = load('../app/project-task-detail.tsx', {
   '@/lib/farm-types': types,
   '@/lib/project-work': work,
   './received-images': images,
+  './work-task-controls': {
+    WorkTaskMoreMenu: (props) => {
+      moreMenus.push(props);
+      return null;
+    },
+  },
 });
 function render(component, props) {
   cursor = 0;
   buttons = [];
+  moreMenus = [];
   textareas = [];
   return renderToStaticMarkup(React.createElement(component, props));
 }
@@ -281,6 +289,97 @@ test('농가가 없어도 프로젝트 업무 상세와 수신·처리 기록이
   assert.equal(record, 1);
 });
 
+test('독립·내부·프로젝트 업무 상세는 세부 업무 등록을 더보기 밖의 직접 버튼으로 제공한다', () => {
+  const contexts = [
+    { task: { ...task, projectId: undefined } },
+    { task: { ...task, scope: 'internal', projectId: undefined } },
+    { task, project: { id: 'p', name: '사업 프로젝트', status: 'active' } },
+    {
+      task: { ...task, scope: 'internal' },
+      project: { id: 'p', name: '내부 프로젝트', status: 'active' },
+    },
+  ];
+  for (const context of contexts) {
+    reset();
+    let additions = 0;
+    const onAddChild = () => additions++;
+    const deleteAction = React.createElement('button', null, '삭제');
+    const html = render(ProjectTaskDetail, {
+      ...context,
+      history: [],
+      onBack() {},
+      onRecord() {},
+      onAddChild,
+      deleteAction,
+    });
+    const directButtons = buttons.filter(
+      (button) => button.onClick === onAddChild,
+    );
+    assert.equal(directButtons.length, 1, '직접 등록 버튼은 하나만 노출한다');
+    assert.equal(directButtons[0].type, 'button');
+    assert.ok(!directButtons[0].disabled);
+    assert.match(
+      renderToStaticMarkup(
+        React.createElement('span', null, directButtons[0].children),
+      ),
+      /세부 업무 등록/,
+    );
+    assert.equal((html.match(/세부 업무 등록/g) || []).length, 1);
+    directButtons[0].onClick();
+    assert.equal(additions, 1);
+    assert.equal(moreMenus.length, 1);
+    for (const menu of moreMenus) {
+      assert.equal(
+        Object.hasOwn(menu, 'onAddChild'),
+        false,
+        '더보기에 등록 기능을 중복 전달하지 않는다',
+      );
+      assert.equal(Object.hasOwn(menu, 'addChildDisabled'), false);
+      assert.equal(
+        menu.deleteAction,
+        deleteAction,
+        '기존 더보기 삭제 기능은 유지한다',
+      );
+    }
+  }
+});
+
+test('직접 세부 업무 등록은 완료된 업무·완료된 프로젝트 제한과 콜백 없는 경우의 숨김을 유지한다', () => {
+  const onAddChild = () => {};
+  for (const context of [
+    { task: { ...task, status: 'completed' } },
+    { task, project: { status: 'completed' } },
+    {
+      task: { ...task, status: 'completed' },
+      project: { status: 'completed' },
+    },
+  ]) {
+    reset();
+    render(ProjectTaskDetail, {
+      ...context,
+      history: [],
+      onBack() {},
+      onRecord() {},
+      onAddChild,
+    });
+    const addButton = buttons.find((button) => button.onClick === onAddChild);
+    assert.ok(
+      addButton,
+      '등록 위치는 유지하며 제한 사유가 있는 경우 비활성화한다',
+    );
+    assert.equal(addButton.disabled, true);
+  }
+
+  reset();
+  const html = render(ProjectTaskDetail, {
+    task,
+    history: [],
+    onBack() {},
+    onRecord() {},
+  });
+  assert.doesNotMatch(html, /세부 업무 등록/);
+});
+
 test('이미지는 열 때만 읽고 접었다 다시 열어도 재조회하지 않는다', async () => {
   reset();
   const props = { imageIds: [sample.id] };
@@ -367,7 +466,7 @@ test('KPI drilldown은 프로젝트 업무로 제한하고 일반 업무 목록�
   assert.match(source, /return workSelectionItems\s*\.filter/);
   assert.match(
     source,
-    /if \(workScope && !isProjectTask\(workItem\)\) return false/,
+    /workScope.source === 'internal' \? isInternalTask\(workItem\) : isProjectTask\(workItem\)/,
   );
   assert.match(source, /if \(directTask && isStandaloneWork\(directTask\)\)/);
   assert.match(

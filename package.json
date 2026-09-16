@@ -2,15 +2,21 @@
   "name": "workflow-task-manager",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.19.0",
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "setup": "node scripts/setup.mjs",
+    "env:check": "node scripts/check-environment.mjs",
+    "env:check:production": "node scripts/check-environment.mjs --production",
+    "dev": "node scripts/check-environment.mjs && next dev",
+    "build": "node scripts/check-environment.mjs --build && next build --webpack",
+    "build:release": "node scripts/build-release.mjs",
+    "test:release": "node scripts/test-release.mjs",
     "preview": "firebase emulators:start --only hosting --project demo-farmlog",
     "firebase:emulators": "firebase emulators:start --project demo-farmlog",
-    "firebase:deploy": "firebase deploy --only auth,firestore:rules,firestore:indexes",
+    "firebase:deploy": "node scripts/firebase-deploy-guard.mjs",
     "lint": "oxlint app lib",
     "lint:all": "oxlint",
     "format": "oxfmt"

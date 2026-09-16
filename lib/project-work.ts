@@ -54,10 +54,11 @@ export function isOperationalWork(
 
 /** Project execution tasks are not farm billing or automatic ledger audit records. */
 export function isProjectTask(
-  item: Pick<FarmWorkItem, 'projectId' | 'farmRecordId' | 'workType'>,
+  item: Pick<FarmWorkItem, 'scope' | 'projectId' | 'farmRecordId' | 'workType'>,
 ) {
   return (
     Boolean(item.projectId) &&
+    item.scope !== 'internal' &&
     !item.farmRecordId &&
     item.workType !== 'payment' &&
     item.workType !== 'subscription'
@@ -76,7 +77,6 @@ export function isInternalTask(
 ) {
   return (
     item.scope === 'internal' &&
-    !item.projectId &&
     !item.farmRecordId &&
     !['payment', 'subscription'].includes(item.workType)
   );
@@ -111,6 +111,7 @@ export function sameWorkContext(a: FarmWorkItem, b: FarmWorkItem) {
   return isInternalTask(a) || isInternalTask(b)
     ? isInternalTask(a) &&
         isInternalTask(b) &&
+        (a.projectId || '') === (b.projectId || '') &&
         Boolean(a.departmentId) &&
         a.departmentId === b.departmentId
     : a.projectId === b.projectId;

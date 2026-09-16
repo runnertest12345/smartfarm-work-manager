@@ -28,20 +28,22 @@ export function ProjectTypeSelector({
   id,
   value,
   onChange,
+  includeInternal = false,
 }: {
   id: string;
   value: ProjectTypeScope;
   onChange: (value: ProjectTypeScope) => void;
+  includeInternal?: boolean;
 }) {
   return (
     <Field>
-      <FieldLabel htmlFor={id}>사업 타입</FieldLabel>
+      <FieldLabel htmlFor={id}>{includeInternal ? '프로젝트 유형' : '사업 타입'}</FieldLabel>
       <Select
         value={value}
         onValueChange={(next) => {
           if (
             next === 'all' ||
-            FARM_PROJECT_TYPES.some((type) => type === next)
+            FARM_PROJECT_TYPES.some((type) => type === next && (includeInternal || type !== 'internal'))
           )
             onChange(next as ProjectTypeScope);
         }}
@@ -49,13 +51,13 @@ export function ProjectTypeSelector({
         <SelectTrigger id={id} className="h-10 w-full bg-white">
           <SelectValue>
             {value === 'all'
-              ? '전체 사업 타입'
+              ? (includeInternal ? '전체 프로젝트 유형' : '전체 사업 타입')
               : FARM_PROJECT_TYPE_LABELS[value]}
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="all">전체 사업 타입</SelectItem>
-          {FARM_PROJECT_TYPES.map((type) => (
+          <SelectItem value="all">{includeInternal ? '전체 프로젝트 유형' : '전체 사업 타입'}</SelectItem>
+          {FARM_PROJECT_TYPES.filter((type) => includeInternal || type !== 'internal').map((type) => (
             <SelectItem key={type} value={type}>
               {FARM_PROJECT_TYPE_LABELS[type]}
             </SelectItem>

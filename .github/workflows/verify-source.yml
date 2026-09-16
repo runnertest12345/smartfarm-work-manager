@@ -1,0 +1,43 @@
+name: Verify source without deployment
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Safe demo configuration (no production credentials)
+        run: node scripts/setup.mjs --demo
+      - name: Validate environment, lint, and regression fixtures
+        run: |
+          pnpm env:check
+          pnpm lint
+          pnpm test:release
+      - name: Build static site without deployment
+        run: pnpm build
+      - name: Validate Linux installer syntax without executing it
+        shell: bash
+        run: |
+          for script in deploy/gce/*.sh deploy/gce/members/*.sh; do
+            bash -n "$script"
+          done

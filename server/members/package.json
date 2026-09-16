@@ -1,0 +1,11 @@
+{
+  "name": "farmlog-member-service",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "dependencies": {
+    "firebase-admin": "14.4.0"
+  }
+}

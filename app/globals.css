@@ -199,6 +199,15 @@ body {
 .farm-app [data-slot='table-cell'] {
   padding-block: 0.85rem;
 }
+.farm-app .work-outline [data-slot='table-cell'] {
+  padding-block: 0.4rem;
+}
+.farm-app .work-outline [data-slot='table-cell']:first-child {
+  padding-block: 0;
+}
+.farm-app .work-outline [data-tree-toggle] {
+  min-height: 2rem;
+}
 .farm-app [data-slot='table-row']:hover {
   background-color: #f1f7f5;
 }
@@ -220,6 +229,18 @@ body {
 }
 .farm-app .page-content {
   padding: 1.5rem clamp(1rem, 2vw, 2rem);
+}
+.farm-detail-panel .page-content {
+  padding: 1rem;
+  overscroll-behavior: contain;
+}
+.farm-detail-panel .detail-tabs {
+  top: 0;
+  z-index: 10;
+  position: sticky;
+}
+.farm-detail-panel [data-slot='table-container'] {
+  max-width: 100%;
 }
 .farm-app .detail-tabs {
   position: sticky;

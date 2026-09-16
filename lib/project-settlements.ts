@@ -4,8 +4,36 @@ import {
   type FarmProjectInput,
   type ProjectSettlement,
   type ProjectSettlementRounds,
+  type ProjectSettlementRoundKey,
   type FarmSettlementStatus,
 } from './farm-types';
+
+export const SETTLEMENT_ROUND_KEYS = ['first', 'second', 'third'] as const;
+export const MAX_SETTLEMENT_ROUNDS = SETTLEMENT_ROUND_KEYS.length;
+
+export function settlementRoundKeys(rounds: ProjectSettlementRounds) {
+  return SETTLEMENT_ROUND_KEYS.filter((key) => rounds[key] !== undefined);
+}
+
+export function settlementRoundLabel(key: ProjectSettlementRoundKey) {
+  return `${SETTLEMENT_ROUND_KEYS.indexOf(key) + 1}차 정산`;
+}
+
+export function addSettlementRound(rounds: ProjectSettlementRounds): ProjectSettlementRounds {
+  const key = SETTLEMENT_ROUND_KEYS[settlementRoundKeys(rounds).length];
+  if (!key) throw new Error(`정산은 최대 ${MAX_SETTLEMENT_ROUNDS}차까지 등록할 수 있습니다.`);
+  return { ...rounds, [key]: emptySettlement() };
+}
+
+export function removeLastSettlementRound(rounds: ProjectSettlementRounds): ProjectSettlementRounds {
+  const keys = settlementRoundKeys(rounds);
+  const key = keys.at(-1)!;
+  if (keys.length <= 1 || !settlementsEqual(rounds[key], emptySettlement()))
+    throw new Error('비어 있는 마지막 차수만 삭제할 수 있습니다. 1차는 유지해야 합니다.');
+  const next = { ...rounds };
+  delete next[key];
+  return next;
+}
 
 export function emptySettlement(): ProjectSettlement {
   return {
@@ -41,8 +69,7 @@ export function settlementEntries(
   const rounds = project.settlementRounds;
   return rounds
     ? [
-        ['1차 정산', rounds.first],
-        ['2차 정산', rounds.second],
+        ...settlementRoundKeys(rounds).map((key): [string, ProjectSettlement] => [settlementRoundLabel(key), rounds[key]!]),
         ...(rounds.unassigned
           ? [
               ['회차 미지정 (기존 정산)', rounds.unassigned] as [
@@ -73,8 +100,7 @@ export function settlementsEqual(a: unknown, b: unknown): boolean {
 
 export function settlementSummary(rounds: ProjectSettlementRounds) {
   const entries = [
-    rounds.first,
-    rounds.second,
+    ...settlementRoundKeys(rounds).map((key) => rounds[key]!),
     ...(rounds.unassigned ? [rounds.unassigned] : []),
   ];
   const allDone = entries.every(isSettlementDone);
@@ -144,9 +170,33 @@ export function normalizeProjectSettlement<T extends FarmProjectInput>(
     : project;
 }
 
+/** Display-only incoming-payment amounts. A contract difference is not an
+ * accounting receivable, and saved workflow states never imply received money. */
+export function projectReceivableSummary(project: FarmProjectInput) {
+  const normalized = normalizeProjectSettlement(project);
+  const contractAmount = normalized.contractAmount;
+  const receivedAmount = normalized.settlementPaidAmount;
+  return {
+    contractAmount,
+    claimedAmount: normalized.settlementClaimAmount,
+    approvedAmount: normalized.settlementApprovedAmount,
+    receivedAmount,
+    // Zero does not distinguish an unrecorded contract from a zero-value one.
+    remainingContractAmount:
+      contractAmount > 0 ? Math.max(contractAmount - receivedAmount, 0) : null,
+    // An over-receipt in one round must not hide unpaid money in another.
+    unreceivedApprovedAmount: settlementEntries(normalized).reduce(
+      (sum, [, entry]) => sum + Math.max(entry.approvedAmount - entry.paidAmount, 0),
+      0,
+    ),
+    excessReceivedAmount:
+      contractAmount > 0 ? Math.max(receivedAmount - contractAmount, 0) : 0,
+  };
+}
+
 export function assignLegacySettlement(
   rounds: ProjectSettlementRounds,
-  target: 'first' | 'second',
+  target: ProjectSettlementRoundKey,
 ): ProjectSettlementRounds {
   if (!rounds.unassigned) throw new Error('회차 미지정 내역이 없습니다.');
   if (!settlementsEqual(rounds[target], emptySettlement()))
@@ -157,14 +207,17 @@ export function assignLegacySettlement(
 
 export function parseSettlementRounds(value: unknown): ProjectSettlementRounds {
   if (!value || typeof value !== 'object' || Array.isArray(value))
-    throw new Error('1차·2차 정산 입력을 확인해 주세요.');
+    throw new Error('회차별 정산 입력을 확인해 주세요.');
   const source = value as Record<string, unknown>;
   if (
     Object.keys(source).some(
-      (key) => !['first', 'second', 'unassigned'].includes(key),
+      (key) => ![...SETTLEMENT_ROUND_KEYS, 'unassigned'].includes(key),
     )
   )
     throw new Error('정산 회차를 확인해 주세요.');
+  const keys = SETTLEMENT_ROUND_KEYS.filter((key) => source[key] !== undefined);
+  if (!keys.length || keys.some((key, index) => key !== SETTLEMENT_ROUND_KEYS[index]))
+    throw new Error('정산 차수는 1차부터 순서대로 추가해 주세요.');
   function parse(value: unknown): ProjectSettlement {
     if (!value || typeof value !== 'object' || Array.isArray(value))
       throw new Error('정산 내역을 확인해 주세요.');
@@ -200,18 +253,21 @@ export function parseSettlementRounds(value: unknown): ProjectSettlementRounds {
       throw new Error('정산 증빙은 http 또는 https 주소로 입력해 주세요.');
     return result;
   }
-  return {
-    first: parse(source.first),
-    second: parse(source.second),
+  const result = {
+    ...Object.fromEntries(keys.map((key) => [key, parse(source[key])])),
     ...(source.unassigned === undefined
       ? {}
       : { unassigned: parse(source.unassigned) }),
-  };
+  } as ProjectSettlementRounds;
+  const totals = settlementSummary(result);
+  if ([totals.settlementClaimAmount, totals.settlementApprovedAmount, totals.settlementPaidAmount].some((amount) => !Number.isSafeInteger(amount) || amount > 1e15))
+    throw new Error('정산 합계가 입력 가능한 금액 범위를 초과했습니다.');
+  return result;
 }
 
 export function projectSettlementLabel(project: FarmProjectInput) {
   return project.settlementRounds
-    ? `1차 ${FARM_SETTLEMENT_STATUS_LABELS[project.settlementRounds.first.status]} · 2차 ${FARM_SETTLEMENT_STATUS_LABELS[project.settlementRounds.second.status]}${project.settlementRounds.unassigned ? ' · 회차 미지정 포함' : ''}`
+    ? `${settlementRoundKeys(project.settlementRounds).map((key) => `${settlementRoundLabel(key).replace(' 정산', '')} ${FARM_SETTLEMENT_STATUS_LABELS[project.settlementRounds![key]!.status]}`).join(' · ')}${project.settlementRounds.unassigned ? ' · 회차 미지정 포함' : ''}`
     : FARM_SETTLEMENT_STATUS_LABELS[project.settlementStatus];
 }
 
@@ -229,6 +285,10 @@ export function assertSettlementTransition(
     : legacySettlement(before);
   const next = after.settlementRounds;
   const same = settlementsEqual;
+  for (const key of before.settlementRounds ? settlementRoundKeys(before.settlementRounds) : []) {
+    if (!next[key] && !same(before.settlementRounds![key], emptySettlement()))
+      throw new Error('입력된 정산 차수는 삭제할 수 없습니다. 최신 내용을 다시 열어 주세요.');
+  }
   if (!original) {
     if (next.unassigned)
       throw new Error('회차 미지정 내역을 새로 만들 수 없습니다.');
@@ -236,15 +296,15 @@ export function assertSettlementTransition(
     if (!same(original, next.unassigned))
       throw new Error('기존 정산 원본은 회차 지정 전까지 변경할 수 없습니다.');
   } else if (
-    !(['first', 'second'] as const).some(
+    !settlementRoundKeys(next).some(
       (key) =>
         same(next[key], original) &&
         (!before.settlementRounds ||
-          same(before.settlementRounds[key], emptySettlement())),
+          !before.settlementRounds[key] || same(before.settlementRounds[key], emptySettlement())),
     )
   ) {
     throw new Error(
-      '기존 내역은 비어 있는 1차 또는 2차로 지정한 뒤 저장해 주세요. 지정한 내역 수정은 다음 저장부터 가능합니다.',
+      '기존 내역은 비어 있는 차수로 지정한 뒤 저장해 주세요. 지정한 내역 수정은 다음 저장부터 가능합니다.',
     );
   }
 }

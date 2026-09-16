@@ -1,0 +1,53 @@
+[Unit]
+Description=FarmLog restricted member registration API
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=farmlog-members
+Group=farmlog-members
+WorkingDirectory=/opt/farmlog-members/current/server/members
+ExecStart=/opt/farmlog-members/current/runtime/bin/node /opt/farmlog-members/current/server/members/index.mjs
+Environment=NODE_ENV=production
+UnsetEnvironment=GOOGLE_APPLICATION_CREDENTIALS GOOGLE_CLOUD_PROJECT GCLOUD_PROJECT NODE_OPTIONS FIREBASE_AUTH_EMULATOR_HOST FIRESTORE_EMULATOR_HOST
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=40
+KillSignal=SIGTERM
+UMask=0077
+StateDirectory=farmlog-members
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/farmlog-members
+ReadOnlyPaths=/opt/farmlog-members /etc/farmlog-members
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+LimitNOFILE=4096
+TasksMax=128
+MemoryMax=512M
+CPUQuota=100%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=farmlog-members
+
+[Install]
+WantedBy=multi-user.target

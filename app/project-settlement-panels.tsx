@@ -17,6 +17,7 @@ import {
   type FarmProjectInput,
   type ProjectSettlement,
   type ProjectSettlementRounds,
+  type ProjectSettlementRoundKey,
 } from '@/lib/farm-types';
 import {
   assignLegacySettlement,
@@ -25,6 +26,11 @@ import {
   settlementEntries,
   withSettlementRounds,
   settlementsEqual,
+  settlementRoundKeys,
+  addSettlementRound,
+  removeLastSettlementRound,
+  MAX_SETTLEMENT_ROUNDS,
+  projectReceivableSummary,
 } from '@/lib/project-settlements';
 
 const money = (value: number) => `${value.toLocaleString('ko-KR')}원`;
@@ -35,9 +41,9 @@ function SettlementFacts({ entry }: { entry: ProjectSettlement }) {
       <dl className="grid grid-cols-3 gap-2">
         {(
           [
-            ['청구액', entry.claimAmount],
-            ['승인액', entry.approvedAmount],
-            ['입금액', entry.paidAmount],
+            ['청구한 금액', entry.claimAmount],
+            ['청구 승인액', entry.approvedAmount],
+            ['받은 입금액', entry.paidAmount],
           ] as const
         ).map(([label, value]) => (
           <div key={label} className="rounded-lg bg-slate-50 p-3">
@@ -46,6 +52,9 @@ function SettlementFacts({ entry }: { entry: ProjectSettlement }) {
           </div>
         ))}
       </dl>
+      <p className="text-sm text-slate-600">
+        승인 후 미입금 {money(Math.max(entry.approvedAmount - entry.paidAmount, 0))}
+      </p>
       <p>
         담당자 {entry.owner || '미지정'} · 정산 기한 {entry.dueDate || '미입력'}
       </p>
@@ -72,24 +81,42 @@ export function ProjectSettlementDetails({
 }: {
   project: FarmProjectInput;
 }) {
+  const summary = projectReceivableSummary(project);
   return (
     <div className="space-y-4">
-      <h3 className="font-bold">회차별 정산</h3>
-      <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <dl aria-label="프로젝트 대금 수금 현황" className="grid gap-3 sm:grid-cols-3">
         {(
           [
-            ['전체 계약금액', project.contractAmount],
-            ['총 청구액', project.settlementClaimAmount],
-            ['총 승인액', project.settlementApprovedAmount],
-            ['총 입금액', project.settlementPaidAmount],
+            ['전체 계약금액', summary.contractAmount],
+            ['받은 입금액', summary.receivedAmount],
+            ['계약 기준 남은 금액', summary.remainingContractAmount],
           ] as const
         ).map(([label, value]) => (
-          <div key={label} className="rounded-xl border p-3">
+          <div key={label} className={`rounded-xl border p-3 ${label === '계약 기준 남은 금액' ? 'border-amber-200 bg-amber-50' : label === '받은 입금액' ? 'border-emerald-100 bg-emerald-50/50' : 'bg-white'}`}>
             <dt className="text-sm text-slate-600">{label}</dt>
-            <dd className="mt-1 break-all font-bold">{money(value)}</dd>
+            <dd className="mt-1 break-all text-lg font-bold">
+              {value === null ? '계약금액 확인 필요' : money(value)}
+            </dd>
           </div>
         ))}
       </dl>
+      <div className="space-y-2 text-sm text-slate-600">
+        <p>
+          청구 누계 {money(summary.claimedAmount)} · 승인 누계 {money(summary.approvedAmount)}
+          {' '}· 승인 후 미입금 {money(summary.unreceivedApprovedAmount)}
+        </p>
+        <p className="text-xs">
+          남은 금액은 계약금액에서 받은 입금액을 뺀 금액입니다. 미청구분도 포함하며,
+          연체 금액을 뜻하지 않습니다. 승인과 실제 입금은 구분합니다.
+        </p>
+        {summary.excessReceivedAmount > 0 && (
+          <output className="block font-medium text-amber-800">
+            받은 입금액이 계약금액보다 {money(summary.excessReceivedAmount)} 많습니다.
+            계약금액과 입금 내역을 확인해 주세요.
+          </output>
+        )}
+      </div>
+      <h3 className="font-bold">회차별 청구·수금 내역</h3>
       {(!project.settlementRounds || project.settlementRounds.unassigned) && (
         <p className="text-sm text-slate-600">
           기존 정산은 회차 미지정으로 보존됩니다. 미지정 금액도 총액에 한 번만
@@ -105,7 +132,7 @@ export function ProjectSettlementDetails({
             <div className="flex flex-wrap justify-between gap-2">
               <h4 className="font-semibold">{label}</h4>
               <span className="text-sm font-semibold text-emerald-800">
-                {FARM_SETTLEMENT_STATUS_LABELS[entry.status]}
+                회차 상태: {FARM_SETTLEMENT_STATUS_LABELS[entry.status]}
               </span>
             </div>
             <SettlementFacts entry={entry} />
@@ -174,9 +201,9 @@ function RoundFields({
       ))}
       {(
         [
-          ['청구액', 'claimAmount'],
-          ['승인액', 'approvedAmount'],
-          ['입금액', 'paidAmount'],
+          ['청구한 금액', 'claimAmount'],
+          ['청구 승인액', 'approvedAmount'],
+          ['받은 입금액', 'paidAmount'],
         ] as const
       ).map(([label, key]) => (
         <Field key={key}>
@@ -191,6 +218,11 @@ function RoundFields({
               onChange({ ...entry, [key]: Number(e.target.value) })
             }
           />
+          {key === 'paidAmount' && (
+            <p className="text-xs text-slate-600">
+              우리 회사가 이 회차에서 실제로 입금받은 누적 금액입니다.
+            </p>
+          )}
         </Field>
       ))}
       <Field className="sm:col-span-2">
@@ -227,18 +259,20 @@ export function ProjectSettlementEditor({
   locked: boolean;
 }) {
   const rounds = value.settlementRounds;
-  const [assignedRound, setAssignedRound] = useState<'first' | 'second' | null>(
+  const summary = projectReceivableSummary(value);
+  const [assignedRound, setAssignedRound] = useState<ProjectSettlementRoundKey | null>(
     null,
   );
   const change = (next: ProjectSettlementRounds) => {
     if (!locked) onChange(withSettlementRounds(value, next));
   };
+  const keys = rounds ? settlementRoundKeys(rounds) : [];
   return (
     <fieldset
       disabled={locked}
       className="space-y-4 rounded-2xl border bg-slate-50 p-4 disabled:opacity-70"
     >
-      <legend className="px-1 font-semibold">1차·2차 정산 관리</legend>
+      <legend className="px-1 font-semibold">회차별 정산·수금 관리</legend>
       <Field>
         <FieldLabel htmlFor="project-contractAmount">
           전체 계약금액 (원)
@@ -254,8 +288,8 @@ export function ProjectSettlementEditor({
           }
         />
         <p className="text-sm text-slate-600">
-          계약금액은 프로젝트 전체 금액입니다. 청구·승인·입금액은 회차별로
-          입력합니다.
+          계약금액은 고객·기관에서 받을 프로젝트 전체 대금입니다. 청구한 금액,
+          청구 승인액, 실제 받은 입금액을 회차별로 입력합니다.
         </p>
       </Field>
       {!rounds ? (
@@ -272,12 +306,11 @@ export function ProjectSettlementEditor({
             onClick={() =>
               change({
                 first: emptySettlement(),
-                second: emptySettlement(),
                 unassigned: legacySettlement(value),
               })
             }
           >
-            기존 내역 보존하고 1·2차 관리 시작
+            기존 내역 보존하고 회차별 관리 시작
           </Button>
           <p className="text-sm text-slate-600">
             기존 내역은 그대로 보존하며, 아래에서 회차를 지정할 수 있습니다.
@@ -286,40 +319,51 @@ export function ProjectSettlementEditor({
         </div>
       ) : (
         <>
-          <p className="text-sm text-slate-600">
-            각 회차를 펼쳐 입력하세요. 1차만 끝나면 전체 정산은 완료되지
-            않습니다.
-          </p>
-          {(['first', 'second'] as const).map((key, index) => (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-slate-600">
+              필요한 차수만 추가하세요. 회차의 정산 마감과 전체 계약대금의 입금 완료는 구분합니다.
+            </p>
+            <Button type="button" variant="outline" disabled={locked || keys.length >= MAX_SETTLEMENT_ROUNDS}
+              onClick={() => change(addSettlementRound(rounds))}>
+              + 차수 추가
+            </Button>
+          </div>
+          <p className="text-sm text-slate-600">현재 {keys.length}개 차수 · 최대 {MAX_SETTLEMENT_ROUNDS}차</p>
+          {keys.map((key, index) => (
             <details key={key} className="rounded-xl border bg-white p-4">
               <summary className="cursor-pointer text-sm font-semibold">
                 {index + 1}차 정산 ·{' '}
-                {FARM_SETTLEMENT_STATUS_LABELS[rounds[key].status]} · 입금{' '}
-                {money(rounds[key].paidAmount)}{' '}
+                {FARM_SETTLEMENT_STATUS_LABELS[rounds[key]!.status]} · 받은 입금{' '}
+                {money(rounds[key]!.paidAmount)}{' '}
                 <span className="ml-2 text-emerald-800">상세 입력</span>
               </summary>
               {locked || assignedRound === key ? (
                 <div className="mt-4 space-y-3">
-                  <SettlementFacts entry={rounds[key]} />
+                  <SettlementFacts entry={rounds[key]!} />
                   {assignedRound === key && (
-                    <p
-                      role="status"
-                      className="text-sm font-semibold text-emerald-800"
+                    <output
+                      className="block text-sm font-semibold text-emerald-800"
                     >
                       기존 내역의 회차를 지정했습니다. 먼저 수정 저장한 뒤 다시
                       열어 내용을 변경하세요.
-                    </p>
+                    </output>
                   )}
                 </div>
               ) : (
                 <RoundFields
                   id={`project-settlement-${key}`}
-                  entry={rounds[key]}
+                  entry={rounds[key]!}
                   onChange={(entry) => change({ ...rounds, [key]: entry })}
                 />
               )}
             </details>
           ))}
+          {keys.length > 1 && settlementsEqual(rounds[keys.at(-1)!], emptySettlement()) && (
+            <Button type="button" variant="ghost" disabled={locked}
+              onClick={() => change(removeLastSettlementRound(rounds))}>
+              비어 있는 {keys.length}차 삭제
+            </Button>
+          )}
           {rounds.unassigned && (
             <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
               <h4 className="font-semibold">회차 미지정 (기존 정산)</h4>
@@ -329,7 +373,7 @@ export function ProjectSettlementEditor({
                 회차에만 옮길 수 있으며, 중복 합산되지 않습니다.
               </p>
               <div className="flex flex-wrap gap-2">
-                {(['first', 'second'] as const).map((key, index) => (
+                {keys.map((key, index) => (
                   <Button
                     key={key}
                     type="button"
@@ -351,13 +395,24 @@ export function ProjectSettlementEditor({
               </div>
             </div>
           )}
-          <p className="text-sm font-semibold">
-            총 청구 {money(value.settlementClaimAmount)} · 총 승인{' '}
-            {money(value.settlementApprovedAmount)} · 총 입금{' '}
-            {money(value.settlementPaidAmount)}
-          </p>
         </>
       )}
+      <div aria-label="수금 입력 합계" className="space-y-1 text-sm">
+        <p className="font-semibold">
+          받은 입금 합계 {money(summary.receivedAmount)} · 계약 기준 남은 금액{' '}
+          {summary.remainingContractAmount === null ? '계약금액 확인 필요' : money(summary.remainingContractAmount)}
+        </p>
+        <p className="text-slate-600">
+          청구 누계 {money(summary.claimedAmount)} · 승인 누계 {money(summary.approvedAmount)}
+          {' '}· 승인 후 미입금 {money(summary.unreceivedApprovedAmount)}
+        </p>
+        <p className="text-xs text-slate-600">남은 금액에는 미청구분도 포함됩니다. 연체 금액을 뜻하지 않습니다.</p>
+        {summary.excessReceivedAmount > 0 && (
+          <output className="block text-amber-800">
+            받은 입금액이 계약금액보다 {money(summary.excessReceivedAmount)} 많습니다. 입력 내역을 확인해 주세요.
+          </output>
+        )}
+      </div>
     </fieldset>
   );
 }

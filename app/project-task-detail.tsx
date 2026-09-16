@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/button';
 import type { ReactNode } from 'react';
+import { Plus } from 'lucide-react';
 import {
   FARM_HISTORY_CHANNEL_LABELS,
   FARM_WORK_STATUS_LABELS,
@@ -9,6 +10,7 @@ import {
 } from '@/lib/farm-types';
 import { ReceivedImages } from './received-images';
 import { isInternalTask } from '@/lib/project-work';
+import { WorkTaskMoreMenu } from './work-task-controls';
 
 export function ProjectTaskDetail({
   task,
@@ -22,6 +24,7 @@ export function ProjectTaskDetail({
   onAddChild,
   childrenContent,
   deleteAction,
+  titleContent,
 }: {
   task: FarmWorkItem;
   project?: FarmProject;
@@ -34,6 +37,7 @@ export function ProjectTaskDetail({
   onAddChild?: () => void;
   childrenContent?: ReactNode;
   deleteAction?: ReactNode;
+  titleContent?: ReactNode;
 }) {
   return (
     <section
@@ -51,15 +55,15 @@ export function ProjectTaskDetail({
         </Button>
       )}
       <header className="flex flex-wrap items-start justify-between gap-4 rounded-xl border bg-white p-5">
-        <div>
+        <div className="min-w-0 flex-1">
           <p className="text-sm text-emerald-800">
             {isInternalTask(task)
-              ? `${departmentName || '소속 부서'} · 내부 업무`
+              ? `${project?.name ? `${project.name} · ` : ''}${departmentName || '소속 부서'} · 내부 업무`
               : `${project?.year || ''} · ${project?.name || '프로젝트'} · 하위 업무`}
           </p>
-          <h1 className="mt-2 text-2xl font-bold" tabIndex={-1}>
+          {titleContent ?? <h1 className="mt-2 break-words text-2xl font-bold" tabIndex={-1}>
             {task.title}
-          </h1>
+          </h1>}
           {task.headAssigned && (
             <p className="mt-2 text-sm font-semibold text-red-800">
               부서장 지시 ·{' '}
@@ -72,19 +76,22 @@ export function ProjectTaskDetail({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {deleteAction}
-          <Button onClick={onRecord}>처리 기록·상태 변경</Button>
+          <Button onClick={onRecord} disabled={Boolean(task.deletedAt)}>처리 기록·상태 변경</Button>
           {onAddChild && (
             <Button
+              type="button"
               variant="outline"
               onClick={onAddChild}
-              disabled={
-                task.status === 'completed' || project?.status === 'completed'
-              }
+              disabled={Boolean(task.deletedAt) || task.status === 'completed' || project?.status === 'completed'}
             >
-              세부 업무 추가
+              <Plus className="size-4" aria-hidden="true" />
+              세부 업무 등록
             </Button>
           )}
+          <WorkTaskMoreMenu
+            title={task.title}
+            deleteAction={deleteAction}
+          />
         </div>
       </header>
       {childrenContent}
@@ -150,9 +157,11 @@ export function ProjectTaskDetail({
                 참고 링크
               </a>
             )}
-            <p className="mt-3 text-xs text-slate-500">
-              기록자 {entry.recorder}
-            </p>
+            {entry.sender && entry.sender !== entry.recorder && (
+              <p className="mt-3 text-xs text-slate-500">
+                기록자 {entry.recorder}
+              </p>
+            )}
           </article>
         ))}
       </section>

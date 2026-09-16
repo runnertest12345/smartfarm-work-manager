@@ -1,20 +1,31 @@
 'use client';
 import Image from 'next/image';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { ServiceWorkPanel } from './service-work-panel';
-import { ProjectManagementList } from './project-management-list';
+import { ProjectManagementList, type ProjectListFocus, type ProjectManagementRow, type ProjectQuickEditField } from './project-management-list';
+import { AnnualOverviewPanel } from './annual-overview-panel';
+import { AnnualMetricList } from './annual-metric-list';
+import { SubscriptionMonthlyPayments } from './subscription-monthly-payments';
+import { WorkCalendar } from './work-calendar';
+import { annualOverviewRecords, type AnnualOverviewMetric } from '@/lib/annual-overview';
+import { ProjectQuickEditor } from './project-quick-editor';
+import { ProjectDetailActions } from './project-detail-actions';
+import { ProjectInstallationSetupNotice } from './project-installation-setup';
+import { MAX_PROJECT_INSTALLATION_FARMS, validateInstallationFarmCount } from '@/lib/project-installation-farms';
+import { projectQuickInput, type ProjectQuickValues, type ProjectQuickField } from '@/lib/project-quick-edit';
 import { BusinessCompletionRate } from './business-completion-rate';
 import { isFarmServiceWork, serviceReceivedAt, serviceYear } from '@/lib/service-work';
 import {
-  ProjectSettlementDetails,
   ProjectSettlementEditor,
 } from './project-settlement-panels';
+import { ProjectSettlementWorkspace } from './project-settlement-workspace';
+import { projectSettlementInput } from '@/lib/project-settlement-edit';
 import {
   emptySettlement,
   projectSettlementLabel,
   withSettlementRounds,
 } from '@/lib/project-settlements';
 
-import { ProjectWorkTree } from './project-work-tree';
 import { FarmPaymentHistory } from './farm-payment-history';
 import { ProjectFarmProgressCard } from './project-farm-progress';
 import {
@@ -80,7 +91,6 @@ import {
   Search,
   ShieldCheck,
   TrendingUp,
-  Trash2,
   Warehouse,
   Users,
   Wrench,
@@ -105,6 +115,7 @@ import {
 } from '@/components/ui/dialog';
 import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import {
   Select,
   SelectContent,
@@ -132,7 +143,6 @@ import {
   FARM_PROJECT_STATUS_LABELS,
   FARM_PROJECT_TYPE_LABELS,
   FARM_PROJECT_UPDATE_KIND_LABELS,
-  FARM_SETTLEMENT_STATUS_LABELS,
   FARM_SUBSCRIPTION_EVENT_TYPE_LABELS,
   FARM_VISIT_STATUS_LABELS,
   FARM_WORK_STATUS_LABELS,
@@ -183,7 +193,13 @@ import {
 import type { ReceivedImage } from '@/lib/received-images';
 import { ReceivedContentInput, ReceivedImages } from './received-images';
 import { ProjectTaskDetail } from './project-task-detail';
+import { WorkTitleEditor } from './work-title-editor';
+import { canRenameWork } from '@/lib/work-title';
+import { InternalWorkKpiPanel } from './internal-work-kpis';
+import { InternalProjectDetail } from './internal-project-detail';
+import { isInternalProject, normalizeInternalProject, summarizeInternalWorkKpis } from '@/lib/internal-projects';
 import { OrganizationManagement } from './organization-management';
+import { canRegisterMembers } from '@/lib/organization';
 import { TaskRegistrationDialog } from './task-registration-dialog';
 import { useOrganization } from '@/lib/firebase/organization-store';
 import type { AppMember } from '@/lib/organization';
@@ -213,7 +229,6 @@ import {
   filterSubscriptionsByScope,
   subscriptionCycle,
   subscriptionPaymentCount,
-  summarizeProjectKpis,
   summarizeSubscriptionCycles,
 } from '@/lib/dashboard-kpis';
 import {
@@ -232,7 +247,6 @@ import {
   type SubscriptionPaymentRequest,
 } from '@/lib/subscription-payment';
 import {
-  ProjectKpiPanel,
   ProjectTypeSelector,
   ProjectYearSelector,
   SubscriptionCyclePanel,
@@ -267,7 +281,7 @@ type FormSubmitEvent = Parameters<
 >[0];
 type WorkType = FarmWorkItem['workType'];
 type WorkStatus = FarmWorkItem['status'];
-type WorkMode = 'inbox' | 'control' | 'board' | 'list' | 'review';
+type WorkMode = 'inbox' | 'control' | 'board' | 'list' | 'calendar' | 'review';
 type SubscriptionMode = 'management' | 'report';
 type HistoryChannel = FarmHistoryEntry['channel'];
 
@@ -573,16 +587,6 @@ function dueLabel(dateValue: string, completed = false) {
   return `D-${days}`;
 }
 
-function dueClass(dateValue: string, completed = false) {
-  if (completed) return 'border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]';
-  const days = daysUntil(dateValue);
-  if (days !== null && days < 0)
-    return 'border-[#efc4b7] bg-[#fff1ed] text-[#aa4e30]';
-  if (days !== null && days <= 7)
-    return 'border-[#ead9b8] bg-[#fff9ed] text-[#94601c]';
-  return 'border-[#d9dfda] bg-[#f5f7f5] text-[#707b73]';
-}
-
 type ResponseRisk =
   | 'none'
   | 'stable'
@@ -767,7 +771,7 @@ function emptyProjectForm(): FarmProjectInput {
     settlementOwner: '',
     settlementEvidenceUrl: '',
     settlementNote: '',
-    settlementRounds: { first: emptySettlement(), second: emptySettlement() },
+    settlementRounds: { first: emptySettlement() },
   };
 }
 
@@ -1113,6 +1117,7 @@ export function FarmLedgerDashboard({
   onSignOut,
 }: FarmLedgerDashboardProps) {
   const organization = useOrganization(member);
+  const isMobile = useIsMobile();
   const [taskRegistrationOpen, setTaskRegistrationOpen] = useState(false);
   const [workSourceFilter, setWorkSourceFilter] =
     useState<WorkSourceFilter>('all');
@@ -1130,10 +1135,10 @@ export function FarmLedgerDashboard({
   const [projectSearch, setProjectSearch] = useState('');
   const [overviewSearch, setOverviewSearch] = useState('');
   const [overviewProjectStatus, setOverviewProjectStatus] = useState<
-    'all' | FarmProjectStatus
+    ProjectListFocus
   >('all');
-  const [overviewExpandedTaskProjects, setOverviewExpandedTaskProjects] =
-    useState<string[]>([]);
+  const [annualMetric, setAnnualMetric] = useState<AnnualOverviewMetric | null>(null);
+  const [projectListFocus, setProjectListFocus] = useState<ProjectListFocus>('all');
   const [projectYearFilter, setProjectYearFilter] = useState(() =>
     localDateString().slice(0, 4),
   );
@@ -1193,6 +1198,12 @@ export function FarmLedgerDashboard({
   const [detailTrail, setDetailTrail] = useState<DetailTrailEntry[]>([]);
   const listScrollYRef = useRef(0);
   const listFocusRef = useRef<HTMLElement | null>(null);
+  const detailPanelRef = useRef<HTMLDivElement | null>(null);
+  const projectQuickEditingRef = useRef(false);
+  const projectSettlementEditingRef = useRef(false);
+  const workTitleEditingRef = useRef(false);
+  const [workTitleEditing, setWorkTitleEditing] = useState(false);
+  const [projectQuickFocus, setProjectQuickFocus] = useState<{ field: ProjectQuickField; ticket: number } | null>(null);
   const pendingNavigationScrollRef = useRef<number | null>(null);
   const detailNavigation = useDetailNavigation(
     captureDetailNavigation,
@@ -1216,13 +1227,13 @@ export function FarmLedgerDashboard({
     useState<FarmWorkItem | null>(null);
   const [projectDeletionTarget, setProjectDeletionTarget] =
     useState<FarmProject | null>(null);
-  const [deletedProjectToClose, setDeletedProjectToClose] = useState('');
-  useEffect(() => {
-    if (projectDeletionTarget || !deletedProjectToClose) return;
-    setDeletedProjectToClose('');
-    if (selectedProjectId === deletedProjectToClose) closeDetails();
-  }, [projectDeletionTarget, deletedProjectToClose]);
+  const deletedProjectToClose = useRef('');
   const projectExpectedVersion = useRef(0);
+  const projectRegistrationRequest = useRef('');
+  const projectSaveBusy = useRef(false);
+  const installationResumeBusy = useRef(false);
+  const [installationBusyId, setInstallationBusyId] = useState('');
+  const [installationErrors, setInstallationErrors] = useState<Record<string, string>>({});
   const [projectForm, setProjectForm] =
     useState<FarmProjectInput>(emptyProjectForm);
   const [projectDocumentForm, setProjectDocumentForm] =
@@ -1279,7 +1290,9 @@ export function FarmLedgerDashboard({
     if (loading || pendingNavigationScrollRef.current === null) return;
     const top = pendingNavigationScrollRef.current;
     const frame = requestAnimationFrame(() => {
-      window.scrollTo({ top, behavior: 'auto' });
+      if (selectedProjectId || selectedFarmId || selectedWorkItemId) {
+        detailPanelRef.current?.scrollTo({ top, behavior: 'auto' });
+      } else window.scrollTo({ top, behavior: 'auto' });
       pendingNavigationScrollRef.current = null;
     });
     return () => cancelAnimationFrame(frame);
@@ -1470,6 +1483,7 @@ export function FarmLedgerDashboard({
     () => workspace.projects.filter((project) => Boolean(project.deletedAt)),
     [workspace.projects],
   );
+  const activeBusinessProjects = activeProjects.filter((project) => !isInternalProject(project));
   const projectById = useMemo(
     () => new Map(workspace.projects.map((project) => [project.id, project])),
     [workspace.projects],
@@ -1539,21 +1553,36 @@ export function FarmLedgerDashboard({
       )
     : [];
   const selectedWorkItem = workItemById.get(selectedWorkItemId) ?? null;
+  const detailPopup = Boolean(selectedProject || selectedWorkItem) || detailTrail.some(({ target }) => target.kind === 'project' || target.kind === 'work');
+  const closeDetails = useCallback(() => {
+    setDetailTrail([]);
+    setProjectQuickFocus(null);
+    setFarmContextProjectId('');
+    setSelectedProjectId('');
+    setSelectedFarmId('');
+    setSelectedWorkItemId('');
+  }, []);
   useEffect(() => {
     if (
       selectedWorkItem?.deletedAt &&
       !workDeletionTarget &&
       !dialog &&
       !quickDetailTaskId &&
-      !workQuickEditOpen
-    )
-      closeDetails();
+      !workQuickEditOpen &&
+      !workTitleEditingRef.current
+    ) {
+      // Synchronize the visible panel after an external deletion snapshot.
+      const frame = requestAnimationFrame(closeDetails);
+      return () => cancelAnimationFrame(frame);
+    }
   }, [
     selectedWorkItem,
     workDeletionTarget,
     dialog,
     quickDetailTaskId,
     workQuickEditOpen,
+    workTitleEditing,
+    closeDetails,
   ]);
   const selectedServiceItems = selectedWorkItems.filter(
     (item) => isActiveWork(item) && item.workType === 'service',
@@ -1612,7 +1641,7 @@ export function FarmLedgerDashboard({
     const workItems = workspace.workItems.filter(
       (item) =>
         isActiveWork(item) &&
-        isProjectTask(item) &&
+        (isInternalProject(project) ? isInternalTask(item) : isProjectTask(item)) &&
         item.projectId === project.id,
     );
     const hierarchy = summarizeWorkHierarchy(workItems);
@@ -1773,126 +1802,23 @@ export function FarmLedgerDashboard({
   const projectSnapshots = new Map(
     workspace.projects.map((project) => [project.id, projectSnapshot(project)]),
   );
+  const annualProjects = filterProjectsByScope(activeProjects, projectYearFilter, projectTypeFilter);
+  const annualRecords = annualOverviewRecords(annualProjects, projectSnapshots, projectYearFilter);
+  const annualActiveRecordIds = new Set(annualProjects.flatMap((project) =>
+    projectSnapshots.get(project.id)?.activeSubscriptions.map((record) => record.id) ?? []));
+  const annualLeafTasks = [...new Map(annualProjects.flatMap((project) =>
+    (projectSnapshots.get(project.id)?.hierarchy.leaves ?? []).map((task) => [task.id, task] as const))).values()];
+  const annualWaitingCount = annualLeafTasks.filter((task) => task.status === 'waiting').length;
+  const annualOverdueCount = annualLeafTasks.filter((task) => task.status !== 'completed' && task.dueDate && task.dueDate < subscriptionToday).length;
+  const overviewProjectType = projectTypeFilter === 'internal' ? 'all' : projectTypeFilter;
+  const internalWorkKpis = summarizeInternalWorkKpis(operationalWorkItems, activeProjects, subscriptionToday);
   const yearProjects = filterProjectsByScope(
-    activeProjects,
+    activeBusinessProjects,
     projectYearFilter,
-    projectTypeFilter,
-  );
-  const yearProjectKpis = summarizeProjectKpis(
-    yearProjects,
-    projectSnapshots,
-    subscriptionToday,
+    overviewProjectType,
   );
 
   const overviewQuery = overviewSearch.trim().toLocaleLowerCase('ko-KR');
-  const overviewAllProjectRows = yearProjects
-    .map((project) => {
-      const snapshot = projectSnapshots.get(project.id)!;
-      const workItems = [...snapshot.workItems].sort((left, right) => {
-        const leftDays = daysUntil(left.dueDate);
-        const rightDays = daysUntil(right.dueDate);
-        const leftOverdue =
-          left.status !== 'completed' && leftDays !== null && leftDays < 0;
-        const rightOverdue =
-          right.status !== 'completed' && rightDays !== null && rightDays < 0;
-        const statusRank: Record<WorkStatus, number> = {
-          waiting: 0,
-          in_progress: 1,
-          open: 2,
-          completed: 3,
-        };
-        return (
-          Number(rightOverdue) - Number(leftOverdue) ||
-          statusRank[left.status] - statusRank[right.status] ||
-          (left.dueDate || '9999').localeCompare(right.dueDate || '9999') ||
-          right.lastActivityAt - left.lastActivityAt
-        );
-      });
-      const counts = {
-        open: snapshot.hierarchy.leaves.filter((item) => item.status === 'open')
-          .length,
-        inProgress: snapshot.hierarchy.leaves.filter(
-          (item) => item.status === 'in_progress',
-        ).length,
-        waiting: snapshot.hierarchy.leaves.filter(
-          (item) => item.status === 'waiting',
-        ).length,
-        completed: snapshot.hierarchy.leaves.filter(
-          (item) => item.status === 'completed',
-        ).length,
-      };
-      const overdue = snapshot.hierarchy.leaves.filter((item) => {
-        const days = daysUntil(item.dueDate);
-        return item.status !== 'completed' && days !== null && days < 0;
-      }).length;
-      const dueSoon = snapshot.hierarchy.leaves.filter((item) => {
-        const days = daysUntil(item.dueDate);
-        return (
-          item.status !== 'completed' && days !== null && days >= 0 && days <= 7
-        );
-      }).length;
-      const riskWorkItemCount = snapshot.hierarchy.leaves.filter((item) => {
-        const days = daysUntil(item.dueDate);
-        return (
-          item.status === 'waiting' ||
-          (item.status !== 'completed' && days !== null && days < 0)
-        );
-      }).length;
-      const completionRate = snapshot.hierarchy.completionRate;
-      const projectSearchableText = [
-        project.name,
-        project.institution,
-        project.manager,
-        FARM_PROJECT_STAGE_LABELS[project.currentStage],
-      ]
-        .join(' ')
-        .toLocaleLowerCase('ko-KR');
-      const searchableText = [
-        projectSearchableText,
-        ...workItems.flatMap((item) => [
-          item.title,
-          item.owner,
-          item.nextAction,
-          item.blockedReason,
-          farmById.get(item.farmId)?.name ?? '',
-        ]),
-      ]
-        .join(' ')
-        .toLocaleLowerCase('ko-KR');
-      return {
-        project,
-        snapshot,
-        workItems,
-        counts,
-        overdue,
-        dueSoon,
-        completionRate,
-        riskCount: riskWorkItemCount + snapshot.openProjectBlockers.length,
-        projectSearchableText,
-        searchableText,
-      };
-    })
-    .sort((left, right) => {
-      const projectRank: Record<FarmProjectStatus, number> = {
-        active: 0,
-        on_hold: 1,
-        completed: 2,
-      };
-      return (
-        projectRank[left.project.status] - projectRank[right.project.status] ||
-        right.riskCount - left.riskCount ||
-        right.snapshot.latestActivityAt - left.snapshot.latestActivityAt ||
-        left.project.name.localeCompare(right.project.name, 'ko-KR')
-      );
-    });
-
-  const overviewProjectRows = overviewAllProjectRows.filter(
-    (row) =>
-      (overviewProjectStatus === 'all' ||
-        row.project.status === overviewProjectStatus) &&
-      (!overviewQuery || row.searchableText.includes(overviewQuery)),
-  );
-
   function latestEntryWith(
     workItem: FarmWorkItem,
     field: 'receivedContent' | 'actionContent',
@@ -2047,8 +1973,7 @@ export function FarmLedgerDashboard({
       operationalWorkItems,
       workSourceFilter,
       workAccountFilter,
-      member?.id,
-      member?.departmentId,
+      member,
     ],
   );
   const workSelectionIds = new Set(workSelectionItems.map((item) => item.id));
@@ -2072,7 +1997,7 @@ export function FarmLedgerDashboard({
     const query = workSearch.trim().toLocaleLowerCase('ko-KR');
     return workSelectionItems
       .filter((workItem) => {
-        if (workScope && !isProjectTask(workItem)) return false;
+        if (workScope && !(workScope.source === 'internal' ? isInternalTask(workItem) : isProjectTask(workItem))) return false;
         if (
           workScope &&
           workScope.status !== 'all' &&
@@ -2318,9 +2243,9 @@ export function FarmLedgerDashboard({
   ].sort((a, b) => a.lastActivityAt - b.lastActivityAt);
 
   const businessYears = [
-    ...new Set(activeProjects.map((project) => project.year)),
+    ...new Set(activeBusinessProjects.map((project) => project.year)),
   ].sort((a, b) => b - a);
-  const businessBaseProjects = activeProjects.filter(
+  const businessBaseProjects = activeBusinessProjects.filter(
     (project) =>
       businessTypeFilter === 'all' ||
       project.projectType === businessTypeFilter,
@@ -2912,7 +2837,7 @@ export function FarmLedgerDashboard({
     (project) => projectSnapshots.get(project.id)?.records ?? [],
   );
   const overviewWorkIds = new Set(
-    yearProjects.flatMap(
+    annualProjects.flatMap(
       (project) =>
         projectSnapshots.get(project.id)?.workItems.map((item) => item.id) ??
         [],
@@ -2979,7 +2904,7 @@ export function FarmLedgerDashboard({
     icon: typeof Warehouse;
     count?: number;
   }> = [
-    ...(organization.admin
+    ...(organization.admin || canRegisterMembers(member)
       ? [{ id: 'organization' as View, label: '직원·부서 관리', icon: Users }]
       : []),
     { id: 'overview', label: '통합 현황', icon: Leaf },
@@ -3053,6 +2978,7 @@ export function FarmLedgerDashboard({
   }
 
   function applyDetailTarget(target: DetailTarget | null) {
+    setProjectQuickFocus(null);
     setFarmContextProjectId(
       target && target.kind !== 'project' ? (target.projectId ?? '') : '',
     );
@@ -3073,15 +2999,19 @@ export function FarmLedgerDashboard({
     setSelectedWorkItemId(target.kind === 'work' ? target.workItemId : '');
   }
 
-  function openDetail(target: DetailTarget) {
+  function openDetail(target: DetailTarget, focusField?: ProjectQuickField) {
     const current = currentDetailTarget();
     if (sameDetailTarget(current, target)) return;
+    if (projectQuickEditingRef.current || projectSettlementEditingRef.current || workTitleEditingRef.current) {
+      toast.add({ title: '변경 내용을 저장하거나 취소한 뒤 이동해 주세요.', type: 'error' });
+      return;
+    }
     const nextTrail: DetailTrailEntry[] = current
       ? [
           ...detailTrail,
           {
             target: current,
-            scrollY: Math.max(0, window.scrollY),
+            scrollY: detailPanelRef.current?.scrollTop ?? 0,
             focusElement:
               document.activeElement instanceof HTMLElement
                 ? document.activeElement
@@ -3121,13 +3051,18 @@ export function FarmLedgerDashboard({
           : null;
     }
     applyDetailTarget(target);
-    focusActiveHeading();
-    requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'auto' }));
+    if (!focusField) focusActiveHeading();
+    else requestAnimationFrame(() => detailPanelRef.current?.querySelector<HTMLElement>(`[name="${focusField}"]`)?.focus({ preventScroll: true }));
+    requestAnimationFrame(() => detailPanelRef.current?.scrollTo({ top: 0, behavior: 'auto' }));
   }
 
-  function closeDetails() {
-    setDetailTrail([]);
-    applyDetailTarget(null);
+  function closeDetailPanel() {
+    if (!canGoBackDetail()) return;
+    if (detailNavigation.current && !detailNavigation.current.replace({
+      ...captureDetailNavigation(), target: null, trail: [], scrollY: window.scrollY,
+    }, true)) return;
+    closeDetails();
+    requestAnimationFrame(() => listFocusRef.current?.isConnected && listFocusRef.current.focus({ preventScroll: true }));
   }
 
   function backDetail() {
@@ -3163,15 +3098,14 @@ export function FarmLedgerDashboard({
         previousFocus.focus({ preventScroll: true });
       else focusActiveHeading();
     });
-    requestAnimationFrame(() =>
-      window.scrollTo({
-        top: previous?.scrollY ?? listScrollYRef.current,
-        behavior: 'auto',
-      }),
-    );
+    requestAnimationFrame(() => {
+      if (previous) detailPanelRef.current?.scrollTo({ top: previous.scrollY, behavior: 'auto' });
+      else window.scrollTo({ top: listScrollYRef.current, behavior: 'auto' });
+    });
   }
 
   function changeView(next: View) {
+    if (!canGoBackDetail()) return false;
     if (
       detailNavigation.current &&
       !detailNavigation.current.replace(
@@ -3220,7 +3154,7 @@ export function FarmLedgerDashboard({
         farmTab,
       })),
       scrollY:
-        pendingNavigationScrollRef.current ?? Math.max(0, window.scrollY),
+        pendingNavigationScrollRef.current ?? (currentDetailTarget() ? detailPanelRef.current?.scrollTop ?? 0 : Math.max(0, window.scrollY)),
       listScrollY: Math.max(0, listScrollYRef.current),
     };
   }
@@ -3235,6 +3169,9 @@ export function FarmLedgerDashboard({
       workQuickEditOpen ||
       projectDeletionTarget ||
       workDeletionTarget ||
+      projectQuickEditingRef.current ||
+      projectSettlementEditingRef.current ||
+      workTitleEditingRef.current ||
       submitting
     ) {
       toast.add({
@@ -3264,27 +3201,38 @@ export function FarmLedgerDashboard({
     });
   }
 
-  function openScopedWork(status: 'all' | 'open' | 'overdue' = 'all') {
+  function openAnnualWork(status: 'all' | 'waiting' | 'overdue' = 'all') {
     if (!changeView('work')) return;
     setWorkMode('list');
     setWorkSourceFilter('all');
     setWorkAccountFilter('all');
     setWorkSearch('');
     setWorkTypeFilter('all');
-    setWorkStatusFilter('all');
+    setWorkStatusFilter(status === 'waiting' ? 'waiting' : 'all');
     setWorkScope({
-      projectIds: yearProjects.map((project) => project.id),
-      label: `${projectYearFilter === 'all' ? '전체 연도' : `${projectYearFilter}년`} · ${projectTypeFilter === 'all' ? '전체 사업 타입' : FARM_PROJECT_TYPE_LABELS[projectTypeFilter]}`,
-      status,
+      projectIds: annualProjects.map((project) => project.id),
+      label: `${projectYearFilter === 'all' ? '전체 연도' : `${projectYearFilter}년`} · ${projectTypeFilter === 'all' ? '전체 프로젝트' : FARM_PROJECT_TYPE_LABELS[projectTypeFilter]}`,
+      status: status === 'waiting' ? 'open' : status,
     });
   }
 
-  function selectProjectKpi(target: 'projects' | 'tasks' | 'attention') {
+  function selectInternalKpi(target: 'projects' | 'tasks' | 'incomplete') {
     if (target === 'projects') {
       if (!changeView('projects')) return;
+      setProjectTypeFilter('internal');
+      setProjectYearFilter('all');
       setProjectSearch('');
       setProjectRiskFilter('all');
-    } else openScopedWork(target === 'attention' ? 'open' : 'all');
+      return;
+    }
+    if (!changeView('work')) return;
+    setWorkMode('list');
+    setWorkSourceFilter('internal');
+    setWorkAccountFilter('all');
+    setWorkSearch('');
+    setWorkTypeFilter('all');
+    setWorkStatusFilter('all');
+    setWorkScope({ source: 'internal', projectIds: [], label: '내부 업무 · 전체 기간', status: target === 'incomplete' ? 'open' : 'all' });
   }
 
   function resetFarmLedgerFilters() {
@@ -3299,13 +3247,73 @@ export function FarmLedgerDashboard({
     openDetail({ kind: 'project', projectId });
   }
 
+  function openProjectQuickEdit(projectId: string, field: ProjectQuickEditField) {
+    if ((projectQuickEditingRef.current || projectSettlementEditingRef.current) && selectedProjectId !== projectId) {
+      toast.add({ title: '프로젝트 변경을 저장하거나 취소한 뒤 이동해 주세요.', type: 'error' });
+      return;
+    }
+    openDetail({ kind: 'project', projectId }, field);
+    setProjectQuickFocus((previous) => ({ field, ticket: (previous?.ticket ?? 0) + 1 }));
+  }
+
+  async function saveProjectQuick(base: FarmProject, values: ProjectQuickValues) {
+    if (projectSettlementEditingRef.current) throw new Error('정산 변경을 저장하거나 취소한 뒤 기본정보를 저장해 주세요.');
+    const response = await farmLedgerFetch('/api/farm-ledger', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'project', projectId: base.id, expectedUpdatedAt: base.updatedAt, project: projectQuickInput(base, values) }),
+    });
+    const data = await readResponse(response);
+    if (!response.ok || !data.project) throw new Error(data.error || '프로젝트를 저장하지 못했습니다.');
+    await waitForFarmLedgerSync();
+    toast.add({ title: '프로젝트 변경을 저장했습니다.', type: 'success' });
+    return data.project as FarmProject;
+  }
+
+  async function saveProjectSettlement(base: FarmProject, values: FarmProjectInput) {
+    if (projectQuickEditingRef.current) throw new Error('기본정보 변경을 저장하거나 취소한 뒤 정산을 저장해 주세요.');
+    const response = await farmLedgerFetch('/api/farm-ledger', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'project', projectId: base.id, expectedUpdatedAt: base.updatedAt, project: projectSettlementInput(base, values) }),
+    });
+    const data = await readResponse(response);
+    if (!response.ok || !data.project) throw new Error(data.error || '정산을 저장하지 못했습니다.');
+    await waitForFarmLedgerSync();
+    toast.add({ title: '정산 변경을 저장했습니다.', type: 'success' });
+    return data.project as FarmProject;
+  }
+
+  function changeProjectDetailTab(value: string) {
+    if (value !== projectDetailTab && !canGoBackDetail()) return;
+    setProjectDetailTab(value);
+  }
+
+  function projectListRow(project: FarmProject): ProjectManagementRow {
+    const snapshot = projectSnapshots.get(project.id)!;
+    const internal = isInternalProject(project);
+    const blockers = snapshot.openProjectBlockers.length + snapshot.blockedItems.length;
+    const subscriptionRisks = snapshot.expiringSoon.length + snapshot.expiredSubscriptions.length + snapshot.missingSubscriptionExpiry.length;
+    return {
+      id: project.id, name: project.name, manager: project.manager, endDate: project.endDate,
+      context: `${project.year}년 · ${FARM_PROJECT_TYPE_LABELS[project.projectType]} · ${project.institution || '기관 미입력'}`,
+      status: project.status, statusLabel: FARM_PROJECT_STATUS_LABELS[project.status], statusClass: projectStatusClass(project.status),
+      stageLabel: internal ? '내부 업무 관리' : FARM_PROJECT_STAGE_LABELS[project.currentStage], internal,
+      canEdit: !project.deletedAt,
+      farmCount: new Set(snapshot.records.map((record) => record.farmId)).size,
+      subscriptionCount: new Set(snapshot.activeSubscriptions.map((record) => record.farmId)).size,
+      installationRate: snapshot.installationRate, commissioningRate: snapshot.commissioningRate, educationRate: snapshot.educationRate,
+      riskCount: projectRiskCount(project),
+      riskLabel: [blockers ? `막힘 ${blockers}` : '', !internal && snapshot.documentRisks.length ? `서류 ${snapshot.documentRisks.length}` : '', !internal && subscriptionRisks ? `구독 ${subscriptionRisks}` : '', !internal && projectHasSettlementRisk(project) ? '정산 확인' : ''].filter(Boolean).join(' · '),
+    };
+  }
+
   function workContextLabel(item: FarmWorkItem) {
     return isInternalTask(item)
-      ? `내부 업무 · ${organization.departments.find((dept) => dept.id === item.departmentId)?.name || '부서'}`
+      ? `내부 업무 · ${projectForWorkItem(item)?.name || organization.departments.find((dept) => dept.id === item.departmentId)?.name || '부서'}`
       : projectForWorkItem(item)?.name || '사업 없음';
   }
 
   function addChildTask(parent: FarmWorkItem) {
+    if (workTitleEditingRef.current) { canGoBackDetail(); return; }
     if (isInternalTask(parent) && !organization.personal) {
       toast.add({
         title: '개인 계정이 필요합니다',
@@ -3347,6 +3355,7 @@ export function FarmLedgerDashboard({
   }
 
   function openFarmDialog() {
+    if (!canGoBackDetail()) return;
     setEditingFarmId('');
     setFarmLocationImages([]);
     setFarmLocationIds([]);
@@ -3355,8 +3364,8 @@ export function FarmLedgerDashboard({
     farmImageBusyRef.current = false;
     setFarmForm(
       emptyFarmForm(
-        activeProjects.find((project) => project.status === 'active')?.id ??
-          activeProjects[0]?.id ??
+        activeBusinessProjects.find((project) => project.status === 'active')?.id ??
+          activeBusinessProjects[0]?.id ??
           '',
       ),
     );
@@ -3374,7 +3383,7 @@ export function FarmLedgerDashboard({
     setFarmLocationBusy(false);
     farmImageBusyRef.current = false;
     const form = emptyFarmForm(
-      selectedRecords[0]?.projectId ?? activeProjects[0]?.id ?? '',
+      selectedRecords[0]?.projectId ?? activeBusinessProjects[0]?.id ?? '',
     );
     setFarmForm({
       ...form,
@@ -3398,7 +3407,7 @@ export function FarmLedgerDashboard({
     const existingProjectIds = new Set(
       allSelectedRecords.map((record) => record.projectId),
     );
-    const availableProject = activeProjects.find(
+    const availableProject = activeBusinessProjects.find(
       (project) => !existingProjectIds.has(project.id),
     );
     if (!availableProject) {
@@ -3444,42 +3453,13 @@ export function FarmLedgerDashboard({
   }
 
   function openProjectDialog() {
+    if (!canGoBackDetail()) return;
     projectExpectedVersion.current = 0;
+    projectRegistrationRequest.current = crypto.randomUUID();
     setEditingProjectId('');
-    setProjectForm(emptyProjectForm());
-    setFormError('');
-    setDialog('project');
-  }
-
-  function openProjectEditDialog(project: FarmProject) {
-    projectExpectedVersion.current = project.updatedAt;
-    setEditingProjectId(project.id);
-    setProjectForm({
-      name: project.name,
-      projectType: project.projectType,
-      year: project.year,
-      institution: project.institution,
-      status: project.status,
-      description: project.description,
-      targetFarmCount: project.targetFarmCount,
-      manager: project.manager,
-      startDate: project.startDate,
-      endDate: project.endDate,
-      currentStage: project.currentStage,
-      settlementStatus: project.settlementStatus,
-      settlementDueDate: project.settlementDueDate,
-      contractAmount: project.contractAmount,
-      settlementClaimAmount: project.settlementClaimAmount,
-      settlementApprovedAmount: project.settlementApprovedAmount,
-      settlementPaidAmount: project.settlementPaidAmount,
-      settledAt: project.settledAt,
-      settlementOwner: project.settlementOwner,
-      settlementEvidenceUrl: project.settlementEvidenceUrl,
-      settlementNote: project.settlementNote,
-      ...(project.settlementRounds
-        ? { settlementRounds: structuredClone(project.settlementRounds) }
-        : {}),
-    });
+    setProjectForm(projectTypeFilter === 'internal' && view === 'projects'
+      ? normalizeInternalProject({ ...emptyProjectForm(), projectType: 'internal', manager: accountName || '' })
+      : emptyProjectForm());
     setFormError('');
     setDialog('project');
   }
@@ -3694,6 +3674,24 @@ export function FarmLedgerDashboard({
     }
   }
 
+  async function saveWorkTitle(base: FarmWorkItem, title: string, operationId: string): Promise<FarmWorkItem> {
+    if (!canRenameWork(base, member)) throw new Error('업무명을 수정할 수 있는 개인 계정인지 확인해 주세요.');
+    const response = await farmLedgerFetch('/api/farm-ledger', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'work_title', workItemId: base.id, title,
+        expectedUpdatedAt: base.updatedAt, operationId,
+      }),
+    });
+    const data = await readResponse(response);
+    if (!response.ok || !data.workItem)
+      throw new Error(data.error || '업무명을 저장하지 못했습니다.');
+    await waitForFarmLedgerSync();
+    toast.add({ title: '업무명을 변경했습니다', type: 'success' });
+    return data.workItem as FarmWorkItem;
+  }
+
   async function saveQuickWork(
     input: AddFarmHistoryEntryInput,
     images: ReceivedImage[],
@@ -3760,6 +3758,7 @@ export function FarmLedgerDashboard({
   }
 
   function openHistoryDialog(workItem: FarmWorkItem, advanced = false) {
+    if (workTitleEditingRef.current) { canGoBackDetail(); return; }
     if (!advanced && workItem.workType !== 'payment') {
       setQuickDetailTaskId(workItem.id);
       return;
@@ -4211,15 +4210,24 @@ export function FarmLedgerDashboard({
 
   async function submitProject(event: FormSubmitEvent) {
     event.preventDefault();
+    if (projectSaveBusy.current) return;
+    projectSaveBusy.current = true;
     setSubmitting(true);
     setFormError('');
     try {
+      if (!editingProjectId && !isInternalProject(projectForm)) {
+        validateInstallationFarmCount(projectForm.targetFarmCount);
+      }
+      if (!editingProjectId && !projectRegistrationRequest.current) {
+        projectRegistrationRequest.current = crypto.randomUUID();
+      }
       const response = await farmLedgerFetch('/api/farm-ledger', {
         method: editingProjectId ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           kind: 'project',
           projectId: editingProjectId,
+          ...(!editingProjectId ? { requestId: projectRegistrationRequest.current } : {}),
           expectedUpdatedAt: projectExpectedVersion.current,
           project: projectForm.settlementRounds
             ? withSettlementRounds(projectForm, projectForm.settlementRounds)
@@ -4232,20 +4240,63 @@ export function FarmLedgerDashboard({
       const saved = data.project as FarmProject;
       await waitForFarmLedgerSync();
       openProjectDetail(saved.id);
+      const setup = saved.installationFarmSetup;
+      if (!editingProjectId && setup?.requestedCount) setProjectDetailTab('farms');
+      setInstallationErrors((current) => ({
+        ...current,
+        [saved.id]: typeof data.installationSetupError === 'string' ? data.installationSetupError : '',
+      }));
       setDialog(null);
       toast.add({
-        title: editingProjectId
+        title: data.installationSetupError
+          ? '프로젝트는 저장됐으며 농가 생성이 남아 있습니다'
+          : editingProjectId
           ? '사업 정보를 수정했습니다'
           : '사업을 등록했습니다',
-        description: projectForm.name,
-        type: 'success',
+        description: data.installationSetupError
+          ? '프로젝트 상세에서 남은 농가 생성을 이어서 진행해 주세요.'
+          : !editingProjectId && setup?.requestedCount
+            ? `${setup.completedCount}개소의 임시 농가를 생성했습니다. 농가명을 눌러 정보를 수정할 수 있습니다.`
+            : projectForm.name,
+        type: data.installationSetupError ? 'error' : 'success',
       });
     } catch (error) {
       setFormError(
         error instanceof Error ? error.message : '사업을 저장하지 못했습니다.',
       );
     } finally {
+      projectSaveBusy.current = false;
       setSubmitting(false);
+    }
+  }
+
+  async function resumeInstallationFarms(project: FarmProject) {
+    if (installationResumeBusy.current) return;
+    installationResumeBusy.current = true;
+    setInstallationBusyId(project.id);
+    setInstallationErrors((current) => ({ ...current, [project.id]: '' }));
+    try {
+      const response = await farmLedgerFetch('/api/farm-ledger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'project_installation_farms', projectId: project.id }),
+      });
+      const data = await readResponse(response);
+      if (!response.ok || !data.project || data.installationSetupError) {
+        throw new Error(typeof data.installationSetupError === 'string'
+          ? data.installationSetupError
+          : data.error || '농가 생성을 완료하지 못했습니다. 다시 시도해 주세요.');
+      }
+      await waitForFarmLedgerSync();
+      toast.add({ title: '농가 생성을 완료했습니다', description: project.name, type: 'success' });
+    } catch (error) {
+      setInstallationErrors((current) => ({
+        ...current,
+        [project.id]: error instanceof Error ? error.message : '농가 생성을 완료하지 못했습니다.',
+      }));
+    } finally {
+      installationResumeBusy.current = false;
+      setInstallationBusyId('');
     }
   }
 
@@ -4270,7 +4321,7 @@ export function FarmLedgerDashboard({
       );
     await waitForFarmLedgerSync();
     if (deleted && selectedProjectId === project.id)
-      setDeletedProjectToClose(project.id);
+      deletedProjectToClose.current = project.id;
     toast.add({
       title: deleted ? '프로젝트를 삭제했습니다' : '프로젝트를 복구했습니다',
       description: deleted
@@ -4291,7 +4342,7 @@ export function FarmLedgerDashboard({
         className="text-red-700 hover:text-red-800"
         disabled={disabled}
         aria-label={`${item.title} 삭제`}
-        onClick={() => setWorkDeletionTarget(item)}
+        onClick={() => { if (workTitleEditingRef.current) { canGoBackDetail(); return; } setWorkDeletionTarget(item); }}
       >
         삭제
       </Button>
@@ -5013,6 +5064,7 @@ export function FarmLedgerDashboard({
   }
 
   const projectHasSettlementRisk = (project: FarmProject) => {
+    if (isInternalProject(project)) return false;
     const due = daysUntil(project.settlementDueDate);
     return (
       project.settlementStatus === 'revision' ||
@@ -5035,7 +5087,15 @@ export function FarmLedgerDashboard({
     );
   };
   const normalizedProjectSearch = projectSearch.trim().toLocaleLowerCase();
-  const filteredProjects = yearProjects
+  const annualProjectRows = annualProjects.filter((project) => {
+    if (!overviewQuery) return true;
+    const snapshot = projectSnapshots.get(project.id)!;
+    return [project.name, project.institution, project.manager,
+      ...snapshot.records.map((record) => farmById.get(record.farmId)?.name ?? ''),
+      ...snapshot.workItems.flatMap((task) => [task.title, task.owner, task.nextAction, task.blockedReason]),
+    ].join(' ').toLocaleLowerCase('ko-KR').includes(overviewQuery);
+  }).map(projectListRow);
+  const filteredProjects = filterProjectsByScope(activeProjects, projectYearFilter, projectTypeFilter)
     .filter((project) => {
       const snapshot = projectSnapshots.get(project.id);
       const matchesSearch =
@@ -5094,7 +5154,7 @@ export function FarmLedgerDashboard({
             progress: selectedProjectSnapshot.farmCoverage,
             evidence: selectedProject.targetFarmCount
               ? `${selectedProjectSnapshot.records.length}/${selectedProject.targetFarmCount}곳`
-              : '목표 농가 수 미입력',
+              : '설치 개소 미입력',
           },
           {
             label: '설치·시운전',
@@ -5245,7 +5305,7 @@ export function FarmLedgerDashboard({
               </p>
               <button
                 type="button"
-                onClick={onSignOut}
+                onClick={() => { if (canGoBackDetail()) onSignOut(); }}
                 className="mt-4 flex items-center gap-1.5 text-[11px] font-semibold text-[#a9dfb9] hover:text-white"
               >
                 <LogOut className="size-3" />
@@ -5307,12 +5367,12 @@ export function FarmLedgerDashboard({
                 <p className="text-xs text-[#586777]">
                   {refreshing
                     ? '최신 내용을 확인하고 있습니다'
-                    : `${activeProjects.length}개 사업 · ${workspace.farms.length}개 농가`}
+                    : `${activeProjects.length}개 프로젝트 · ${workspace.farms.length}개 농가`}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <Button
-                  onClick={onSignOut}
+                  onClick={() => { if (canGoBackDetail()) onSignOut(); }}
                   variant="ghost"
                   size="icon-lg"
                   aria-label={`${accountName} 로그아웃`}
@@ -5343,11 +5403,7 @@ export function FarmLedgerDashboard({
                   ? 'true'
                   : 'false'
               }
-              className={
-                selectedProject || selectedFarm || selectedWorkItem
-                  ? 'hidden'
-                  : 'page-content'
-              }
+              className="page-content"
             >
               {loading ? (
                 <div className="grid min-h-[60vh] place-items-center">
@@ -5409,7 +5465,7 @@ export function FarmLedgerDashboard({
                             <Button
                               type="button"
                               variant="outline"
-                              onClick={() => openScopedWork()}
+                              onClick={() => openAnnualWork()}
                             >
                               <List />
                               전체 업무
@@ -5436,424 +5492,40 @@ export function FarmLedgerDashboard({
                           id="project-type-scope"
                           value={projectTypeFilter}
                           onChange={setProjectTypeFilter}
+                          includeInternal
                         />
                       </div>
-                      <ProjectKpiPanel
-                        summary={yearProjectKpis}
+                      <AnnualOverviewPanel
+                        projects={annualProjects}
+                        snapshots={projectSnapshots}
                         year={projectYearFilter}
-                        projectType={projectTypeFilter}
-                        onSelect={selectProjectKpi}
+                        selectedStatus={annualMetric || overviewProjectStatus === 'attention' ? undefined : overviewProjectStatus}
+                        onProjectStatus={(status) => { setAnnualMetric(null); setOverviewProjectStatus(status); }}
+                        onMetric={setAnnualMetric}
                       />
+                      <div aria-label="선택 연도 프로젝트의 처리 필요 업무" className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm">
+                        <span className="font-medium text-slate-600">처리 필요</span>
+                        <button type="button" className="min-h-9 rounded px-1 font-semibold text-red-700 underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-emerald-700" onClick={() => openAnnualWork('overdue')}>마감 지연 {annualOverdueCount}건</button>
+                        <button type="button" className="min-h-9 rounded px-1 font-semibold text-amber-800 underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-emerald-700" onClick={() => openAnnualWork('waiting')}>대기·막힘 {annualWaitingCount}건</button>
+                        <span className="text-xs text-slate-500">최하위 실행 업무 기준 · 중복 해당 가능</span>
+                      </div>
+                      {annualMetric ? (
+                        <AnnualMetricList key={`${annualMetric}:${projectYearFilter}:${projectTypeFilter}`} metric={annualMetric}
+                          records={annualMetric === 'subscriptions' ? annualRecords.filter((record) => annualActiveRecordIds.has(record.id)) : annualRecords}
+                          farmById={farmById} projectById={projectById} onOpen={(record) => openFarm(record.farmId, '', annualMetric === 'farms' || annualMetric === 'subscriptions' ? undefined : record.projectId)} onClose={() => setAnnualMetric(null)} />
+                      ) : (
+                        <ProjectManagementList rows={annualProjectRows} showSummary={false} showStatusFilters={false} focus={overviewProjectStatus}
+                          onFocusChange={setOverviewProjectStatus} selectedId={selectedProjectId} onOpen={openProjectDetail} onQuickEdit={openProjectQuickEdit} />
+                      )}
+                      <Collapsible className="mt-5 rounded-xl border border-slate-200 bg-white px-4">
+                        <CollapsibleTrigger className="flex min-h-11 w-full items-center justify-between gap-2 text-sm text-slate-600">
+                          업무 처리·확인 필요·최근 이력 자세히 <ChevronDown className="size-4" />
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="pb-4">
+                      <p className="mb-3 text-xs text-slate-500">최근 이력은 선택한 연도·프로젝트 유형 기준입니다. 내부 업무 지표는 전체 기간이며, 농가 사업 점검은 일반·연구 사업에만 표시합니다.</p>
+                      <InternalWorkKpiPanel summary={internalWorkKpis} onSelect={selectInternalKpi} />
 
-                      <section className="mt-5 overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
-                        <div className="flex flex-col gap-4 border-b border-[#e5ebe3] px-5 py-4 xl:flex-row xl:items-end xl:justify-between">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <h2 className="font-bold">
-                                프로젝트별 하위 업무 처리 현황
-                              </h2>
-                              <Badge
-                                variant="outline"
-                                className="border-[#cfe0d1] bg-[#f2f8f2] text-[#39795b]"
-                              >
-                                {overviewProjectRows.length}개 프로젝트 표시
-                              </Badge>
-                            </div>
-                            <p className="mt-1 text-xs leading-5 text-[#7d8981]">
-                              프로젝트를 펼치면 연결된 하위 업무의 상태, 담당자,
-                              마감일과 마지막 처리 내용을 볼 수 있습니다.
-                            </p>
-                          </div>
-                          <div className="flex flex-wrap gap-2">
-                            {(
-                              [
-                                {
-                                  value: 'all',
-                                  label: '전체',
-                                  count: yearProjects.length,
-                                },
-                                {
-                                  value: 'active',
-                                  label: '진행',
-                                  count: yearProjects.filter(
-                                    (project) => project.status === 'active',
-                                  ).length,
-                                },
-                                {
-                                  value: 'on_hold',
-                                  label: '보류',
-                                  count: yearProjects.filter(
-                                    (project) => project.status === 'on_hold',
-                                  ).length,
-                                },
-                                {
-                                  value: 'completed',
-                                  label: '완료',
-                                  count: yearProjects.filter(
-                                    (project) => project.status === 'completed',
-                                  ).length,
-                                },
-                              ] as const
-                            ).map((option) => (
-                              <button
-                                key={option.value}
-                                type="button"
-                                onClick={() =>
-                                  setOverviewProjectStatus(option.value)
-                                }
-                                aria-pressed={
-                                  overviewProjectStatus === option.value
-                                }
-                                className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
-                                  overviewProjectStatus === option.value
-                                    ? 'border-[#4f8f68] bg-[#eaf5ed] text-[#2f6f4d]'
-                                    : 'border-[#dbe3d9] bg-white text-[#6f7b73] hover:bg-[#f5f8f4]'
-                                }`}
-                              >
-                                {option.label} {option.count}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="space-y-3 bg-[#f6f8f5] p-3 sm:p-4">
-                          {overviewProjectRows.map((row) => {
-                            const projectMatches =
-                              !overviewQuery ||
-                              row.projectSearchableText.includes(overviewQuery);
-                            const matchedWorkItems = projectMatches
-                              ? row.workItems
-                              : row.workItems.filter((item) =>
-                                  [
-                                    item.title,
-                                    item.owner,
-                                    item.nextAction,
-                                    item.blockedReason,
-                                    farmById.get(item.farmId)?.name ?? '',
-                                  ]
-                                    .join(' ')
-                                    .toLocaleLowerCase('ko-KR')
-                                    .includes(overviewQuery),
-                                );
-                            const showAllTasks =
-                              overviewExpandedTaskProjects.includes(
-                                row.project.id,
-                              );
-
-                            return (
-                              <details
-                                key={row.project.id}
-                                className="group overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-[0_1px_2px_rgba(32,58,39,0.04)]"
-                              >
-                                <summary
-                                  aria-label={`${row.project.name} 하위 업무 펼치기 또는 접기`}
-                                  className="cursor-pointer list-none px-4 py-4 marker:content-none sm:px-5 [&::-webkit-details-marker]:hidden"
-                                >
-                                  <div className="grid items-center gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(510px,0.9fr)_28px]">
-                                    <div className="min-w-0">
-                                      <div className="flex flex-wrap items-center gap-2">
-                                        <Badge
-                                          variant="outline"
-                                          className={projectStatusClass(
-                                            row.project.status,
-                                          )}
-                                        >
-                                          {
-                                            FARM_PROJECT_STATUS_LABELS[
-                                              row.project.status
-                                            ]
-                                          }
-                                        </Badge>
-                                        <Badge variant="outline">
-                                          {
-                                            FARM_PROJECT_STAGE_LABELS[
-                                              row.project.currentStage
-                                            ]
-                                          }
-                                        </Badge>
-                                        {(row.overdue > 0 ||
-                                          row.snapshot.openProjectBlockers
-                                            .length > 0) && (
-                                          <Badge
-                                            variant="outline"
-                                            className="border-[#efc8bb] bg-[#fff1ec] text-[#a94f32]"
-                                          >
-                                            확인 필요
-                                          </Badge>
-                                        )}
-                                      </div>
-                                      <button
-                                        type="button"
-                                        onClick={(event) => {
-                                          event.preventDefault();
-                                          event.stopPropagation();
-                                          openProjectDetail(row.project.id);
-                                        }}
-                                        className="mt-2 min-h-10 text-left text-base font-bold text-[#176448] hover:underline"
-                                      >
-                                        {row.project.name}
-                                        <span className="ml-2 text-xs font-medium">
-                                          상세 보기 →
-                                        </span>
-                                      </button>
-                                      <p className="mt-1 truncate text-xs text-[#7d8981]">
-                                        {row.project.year}년 ·{' '}
-                                        {row.project.institution ||
-                                          '기관 미입력'}{' '}
-                                        · 담당 {row.project.manager || '미지정'}
-                                      </p>
-                                    </div>
-
-                                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-                                      {[
-                                        {
-                                          label: '실행 업무',
-                                          value:
-                                            row.snapshot.hierarchy.leafCount,
-                                          tone: 'bg-[#f2f5f1] text-[#4f5e54]',
-                                        },
-                                        {
-                                          label: '접수',
-                                          value: row.counts.open,
-                                          tone: 'bg-[#fff4ed] text-[#9e5a36]',
-                                        },
-                                        {
-                                          label: '처리 중',
-                                          value: row.counts.inProgress,
-                                          tone: 'bg-[#f0f5fb] text-[#416c9c]',
-                                        },
-                                        {
-                                          label: '대기·막힘',
-                                          value: row.counts.waiting,
-                                          tone: 'bg-[#fff9ed] text-[#94601c]',
-                                        },
-                                        {
-                                          label: '완료',
-                                          value: row.counts.completed,
-                                          tone: 'bg-[#eef8f1] text-[#2e7650]',
-                                        },
-                                      ].map((metric) => (
-                                        <div
-                                          key={metric.label}
-                                          className={`rounded-xl px-3 py-2 text-center ${metric.tone}`}
-                                        >
-                                          <p className="text-[10px] font-medium opacity-80">
-                                            {metric.label}
-                                          </p>
-                                          <p className="mt-0.5 text-sm font-bold">
-                                            {metric.value}
-                                          </p>
-                                        </div>
-                                      ))}
-                                    </div>
-                                    <span className="flex items-center gap-2 text-sm text-[#586777] xl:justify-end">
-                                      <span className="xl:sr-only">
-                                        하위 업무 펼치기
-                                      </span>
-                                      <ChevronDown className="size-5 shrink-0 transition-transform group-open:rotate-180" />
-                                    </span>
-                                  </div>
-                                </summary>
-
-                                <div className="border-t border-[#e8ede7] bg-white px-4 py-4 sm:px-5">
-                                  <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-                                    <div>
-                                      <div className="flex items-center justify-between gap-3 text-xs">
-                                        <span className="font-semibold text-[#536158]">
-                                          실행 업무 완료율
-                                        </span>
-                                        <strong className="text-[#316e4c]">
-                                          {row.completionRate === null
-                                            ? row.snapshot.hierarchy.missing
-                                              ? '세부 업무 조회 확인 필요'
-                                              : '업무 없음'
-                                            : `${row.completionRate}% · ${row.counts.completed}/${row.snapshot.hierarchy.leafCount}건`}
-                                        </strong>
-                                      </div>
-                                      <div className="mt-2 h-2 overflow-hidden rounded-full bg-[#edf1ec]">
-                                        <div
-                                          className="h-full rounded-full bg-[#62b982]"
-                                          style={{
-                                            width: `${row.completionRate ?? 0}%`,
-                                          }}
-                                        />
-                                      </div>
-                                    </div>
-                                    <div className="flex flex-wrap gap-2">
-                                      <Badge variant="outline">
-                                        참여 농가 {row.snapshot.records.length}
-                                        곳
-                                      </Badge>
-                                      <Badge
-                                        variant="outline"
-                                        className={
-                                          row.overdue
-                                            ? 'border-[#efc4b7] bg-[#fff1ed] text-[#aa4e30]'
-                                            : undefined
-                                        }
-                                      >
-                                        기한초과 {row.overdue}건
-                                      </Badge>
-                                      <Badge variant="outline">
-                                        7일 내 마감 {row.dueSoon}건
-                                      </Badge>
-                                      <Badge
-                                        variant="outline"
-                                        className={
-                                          row.snapshot.openProjectBlockers
-                                            .length
-                                            ? 'border-[#ead9b8] bg-[#fff9ed] text-[#94601c]'
-                                            : undefined
-                                        }
-                                      >
-                                        프로젝트 직접 막힘{' '}
-                                        {
-                                          row.snapshot.openProjectBlockers
-                                            .length
-                                        }
-                                        건
-                                      </Badge>
-                                    </div>
-                                  </div>
-
-                                  <div className="mt-5 flex flex-wrap items-end justify-between gap-3">
-                                    <div>
-                                      <h3 className="text-sm font-bold">
-                                        하위 업무{' '}
-                                        {row.snapshot.hierarchy.rootCount}건
-                                        <span className="ml-2 text-xs font-medium text-[#52735e]">
-                                          세부 업무{' '}
-                                          {row.snapshot.hierarchy.subtaskCount}
-                                          건
-                                        </span>
-                                      </h3>
-                                      <p className="mt-1 text-xs text-[#7d8981]">
-                                        화살표로 세부 업무를 펼치고, 업무명을
-                                        눌러 상세를 확인하세요. 실행 업무 수와
-                                        완료율은 가장 마지막 단계 업무
-                                        기준입니다.
-                                      </p>
-                                    </div>
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() =>
-                                        openProjectDetail(row.project.id)
-                                      }
-                                    >
-                                      <BriefcaseBusiness /> 프로젝트 상세
-                                    </Button>
-                                  </div>
-
-                                  {matchedWorkItems.length ? (
-                                    <ProjectWorkTree
-                                      items={row.workItems}
-                                      matchedItems={matchedWorkItems}
-                                      searching={Boolean(overviewQuery)}
-                                      expanded={showAllTasks}
-                                      onToggleExpanded={() =>
-                                        setOverviewExpandedTaskProjects(
-                                          (current) =>
-                                            current.includes(row.project.id)
-                                              ? current.filter(
-                                                  (projectId) =>
-                                                    projectId !==
-                                                    row.project.id,
-                                                )
-                                              : [...current, row.project.id],
-                                        )
-                                      }
-                                      onOpen={(item) =>
-                                        openFarm(item.farmId, item.id)
-                                      }
-                                      farmName={(item) =>
-                                        farmById.get(item.farmId)?.name ??
-                                        '프로젝트 공통'
-                                      }
-                                      latestAction={(item) =>
-                                        latestEntryWith(item, 'actionContent')
-                                          ?.actionContent || ''
-                                      }
-                                      renderStatus={(item) => (
-                                        <Badge
-                                          variant="outline"
-                                          className={`text-sm ${workStatusClass(item.status)}`}
-                                        >
-                                          {FARM_WORK_STATUS_LABELS[item.status]}
-                                        </Badge>
-                                      )}
-                                      renderDueDate={(item) => (
-                                        <div className="space-y-1">
-                                          <p className="text-sm text-[#4d6054]">
-                                            {formatDate(item.dueDate)}
-                                          </p>
-                                          <Badge
-                                            variant="outline"
-                                            className={`text-xs ${dueClass(item.dueDate, item.status === 'completed')}`}
-                                          >
-                                            {dueLabel(
-                                              item.dueDate,
-                                              item.status === 'completed',
-                                            )}
-                                          </Badge>
-                                        </div>
-                                      )}
-                                    />
-                                  ) : (
-                                    <div className="mt-3 rounded-xl border border-dashed border-[#d7dfd5] bg-[#fafbf9] px-4 py-8 text-center">
-                                      <ClipboardList className="mx-auto size-6 text-[#97a29a]" />
-                                      <p className="mt-2 text-sm font-semibold">
-                                        {row.workItems.length
-                                          ? '검색 조건에 맞는 하위 업무가 없습니다.'
-                                          : '등록된 하위 업무가 없습니다.'}
-                                      </p>
-                                      <p className="mt-1 text-xs text-[#89938c]">
-                                        {row.workItems.length
-                                          ? '검색어를 바꾸면 전체 업무를 확인할 수 있습니다.'
-                                          : '참여 농가 상세에서 첫 업무를 등록할 수 있습니다.'}
-                                      </p>
-                                    </div>
-                                  )}
-                                </div>
-                              </details>
-                            );
-                          })}
-
-                          {!overviewProjectRows.length && (
-                            <div className="rounded-2xl border border-dashed border-[#d7dfd5] bg-white px-4 py-12 text-center">
-                              <BriefcaseBusiness className="mx-auto size-8 text-[#97a29a]" />
-                              <p className="mt-3 font-semibold">
-                                {workspace.projects.length
-                                  ? '선택한 연도·사업 타입·검색·상태에 맞는 프로젝트가 없습니다.'
-                                  : '아직 등록된 프로젝트가 없습니다.'}
-                              </p>
-                              <p className="mt-1 text-sm text-[#89938c]">
-                                {workspace.projects.length
-                                  ? '검색어를 지우거나 프로젝트 상태를 전체로 바꿔 보세요.'
-                                  : '프로젝트를 등록하면 하위 업무 처리 현황이 여기에 표시됩니다.'}
-                              </p>
-                              {workspace.projects.length > 0 && (
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  className="mt-4"
-                                  onClick={() => {
-                                    setOverviewSearch('');
-                                    setOverviewProjectStatus('all');
-                                    setProjectYearFilter('all');
-                                    setProjectTypeFilter('all');
-                                  }}
-                                >
-                                  필터 초기화
-                                </Button>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </section>
-
-                      <div className="mt-5 grid gap-5 2xl:grid-cols-[1fr_320px]">
+                      <div className={`mt-5 grid gap-5 ${projectTypeFilter !== 'internal' ? '2xl:grid-cols-[1fr_320px]' : ''}`}>
                         <section className="overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
                           <div className="flex items-center justify-between border-b border-[#e5ebe3] px-5 py-4">
                             <div>
@@ -5861,11 +5533,11 @@ export function FarmLedgerDashboard({
                                 최근 업무·처리 히스토리
                               </h2>
                               <p className="mt-0.5 text-xs text-[#89938c]">
-                                업무별 최신 수신 내용과 마지막 처리 결과입니다.
+                                선택한 프로젝트에서 최근에 남긴 수신·처리 기록입니다.
                               </p>
                             </div>
                             <Button
-                              onClick={() => openScopedWork()}
+                              onClick={() => openAnnualWork()}
                               variant="ghost"
                               className="text-[#39795b]"
                             >
@@ -5920,9 +5592,7 @@ export function FarmLedgerDashboard({
                                     {workItem.title}
                                   </h3>
                                   <p className="mt-1 truncate text-xs text-[#7b877f]">
-                                    {farm?.name ?? '농가 없음'} ·{' '}
-                                    {projectForWorkItem(workItem)?.name ??
-                                      '사업 없음'}
+                                    {farm ? `${farm.name} · ` : ''}{workContextLabel(workItem)}
                                   </p>
                                   {entry.receivedContent && (
                                     <p className="mt-3 line-clamp-2 rounded-xl bg-[#f6f8f6] p-3 text-xs leading-5">
@@ -5943,39 +5613,24 @@ export function FarmLedgerDashboard({
                             })}
                             {!recentHistoryEntries.length && (
                               <p className="col-span-full py-14 text-center text-sm text-[#89938c]">
-                                농가 상세에서 첫 업무를 등록해 주세요.
+                                선택한 프로젝트의 처리 이력이 없습니다.
                               </p>
                             )}
                           </div>
                         </section>
-                        <aside className="rounded-2xl border border-[#dfe6dd] bg-white p-5 shadow-sm">
+                        {projectTypeFilter !== 'internal' && <aside aria-label="농가 사업 점검" className="rounded-2xl border border-[#dfe6dd] bg-white p-5 shadow-sm">
                           <div className="flex items-center gap-2">
                             <CircleAlert className="size-5 text-[#bd6b3d]" />
-                            <h2 className="font-bold">확인 필요</h2>
+                            <h2 className="font-bold">농가 사업 점검</h2>
                           </div>
                           <div className="mt-4 space-y-3">
-                            <button
-                              type="button"
-                              onClick={() => openScopedWork('overdue')}
-                              className="w-full rounded-xl bg-[#fff6ef] p-4 text-left"
-                            >
-                              <p className="text-xs font-semibold text-[#a75b35]">
-                                마감 지연 업무
-                              </p>
-                              <p className="mt-1 text-sm font-bold">
-                                {yearProjectKpis.overdueTasks}건
-                              </p>
-                              <p className="mt-1 text-xs text-[#8b7a70]">
-                                지연 업무부터 확인하고 처리 기록을 이어갑니다.
-                              </p>
-                            </button>
                             <button
                               type="button"
                               onClick={() => {
                                 if (!changeView('subscriptions')) return;
                                 setSubscriptionMode('management');
                                 setSubscriptionListProjectType(
-                                  projectTypeFilter,
+                                  overviewProjectType,
                                 );
                                 setSubscriptionListProjectId('all');
                                 setSubscriptionListStatus('all');
@@ -6017,7 +5672,7 @@ export function FarmLedgerDashboard({
                                         : overviewFarmIds.has(issue.farmId),
                                     )
                                     .map((issue) => issue.id),
-                                  label: `${projectYearFilter === 'all' ? '전체 연도' : `${projectYearFilter}년`} · ${projectTypeFilter === 'all' ? '전체 사업 타입' : FARM_PROJECT_TYPE_LABELS[projectTypeFilter]}`,
+                                  label: `${projectYearFilter === 'all' ? '전체 연도' : `${projectYearFilter}년`} · ${overviewProjectType === 'all' ? '전체 사업 타입' : FARM_PROJECT_TYPE_LABELS[overviewProjectType]}`,
                                 });
                               }}
                               className="w-full rounded-xl bg-[#f2f6f3] p-4 text-left"
@@ -6033,8 +5688,10 @@ export function FarmLedgerDashboard({
                               </p>
                             </button>
                           </div>
-                        </aside>
+                        </aside>}
                       </div>
+                        </CollapsibleContent>
+                      </Collapsible>
                     </>
                   )}
 
@@ -6104,6 +5761,7 @@ export function FarmLedgerDashboard({
                             ],
                             ['board', '업무 보드', LayoutDashboard, null],
                             ['list', '목록', List, null],
+                            ['calendar', '달력', CalendarClock, null],
                             [
                               'review',
                               '주간 검토',
@@ -6146,7 +5804,7 @@ export function FarmLedgerDashboard({
                               ? '마감 지연 업무'
                               : workScope.status === 'open'
                                 ? '미완료 업무'
-                                : '모든 하위 업무'}{' '}
+                                : workScope.source === 'internal' ? '모든 내부 업무' : '모든 하위 업무'}{' '}
                             · 목록 {filteredWorkItems.length}건
                           </p>
                           <Button
@@ -6890,6 +6548,17 @@ export function FarmLedgerDashboard({
                         </div>
                       )}
 
+                      {workMode === 'calendar' && (
+                        <WorkCalendar
+                          workItems={workspace.workItems}
+                          visits={workspace.visits}
+                          projects={workspace.projects}
+                          farmRecords={workspace.records}
+                          farms={workspace.farms}
+                          historyEntries={workspace.historyEntries}
+                          onOpenWork={(item) => openFarm(item.farmId, item.id)}
+                        />
+                      )}
                       {workMode === 'board' && (
                         <WorkTaskSurface
                           deleteAction={workDeleteAction}
@@ -7659,6 +7328,7 @@ export function FarmLedgerDashboard({
                           id="project-type-scope"
                           value={projectTypeFilter}
                           onChange={setProjectTypeFilter}
+                          includeInternal
                         />
                         <div className="space-y-2">
                           <label
@@ -7724,44 +7394,12 @@ export function FarmLedgerDashboard({
                         </div>
                       </section>
                       <ProjectManagementList
-                        rows={filteredProjects.map((project) => {
-                          const snapshot = projectSnapshots.get(project.id)!;
-                          const blockers =
-                            snapshot.openProjectBlockers.length +
-                            snapshot.blockedItems.length;
-                          const subscriptions =
-                            snapshot.expiringSoon.length +
-                            snapshot.expiredSubscriptions.length +
-                            snapshot.missingSubscriptionExpiry.length;
-                          const riskLabel = [
-                            blockers ? `막힘 ${blockers}` : '',
-                            snapshot.documentRisks.length
-                              ? `서류 ${snapshot.documentRisks.length}`
-                              : '',
-                            subscriptions ? `구독 ${subscriptions}` : '',
-                            projectHasSettlementRisk(project)
-                              ? '정산 확인'
-                              : '',
-                          ]
-                            .filter(Boolean)
-                            .join(' · ');
-                          return {
-                            id: project.id,
-                            name: project.name,
-                            context: `${project.year}년 · ${FARM_PROJECT_TYPE_LABELS[project.projectType]} · ${project.institution || '기관 미입력'}`,
-                            manager: project.manager,
-                            status: project.status,
-                            statusLabel:
-                              FARM_PROJECT_STATUS_LABELS[project.status],
-                            statusClass: projectStatusClass(project.status),
-                            stageLabel:
-                              FARM_PROJECT_STAGE_LABELS[project.currentStage],
-                            farmCount: snapshot.records.length,
-                            riskCount: projectRiskCount(project),
-                            riskLabel,
-                          };
-                        })}
+                        rows={filteredProjects.map(projectListRow)}
+                        focus={projectListFocus}
+                        onFocusChange={setProjectListFocus}
+                        selectedId={selectedProjectId}
                         onOpen={openProjectDetail}
+                        onQuickEdit={openProjectQuickEdit}
                       />
                       {deletedProjects.length > 0 && (
                         <Collapsible className="mt-5 rounded-xl border border-slate-200 bg-white px-4 py-2">
@@ -8408,10 +8046,6 @@ export function FarmLedgerDashboard({
                               }}
                             />
                           )}
-                          <SubscriptionCyclePanel
-                            counts={subscriptionCycleCounts}
-                          />
-
                           <div className="mb-8 grid gap-4 2xl:grid-cols-[minmax(0,1fr)_360px]">
                             <Card className="border-0 bg-white ring-[#dfe6dd]">
                               <CardContent>
@@ -8791,7 +8425,8 @@ export function FarmLedgerDashboard({
                               사용하면 실적과 현재 구독 상태가 함께 반영됩니다.
                             </p>
                           </div>
-                          <div className="grid gap-4 2xl:grid-cols-[1fr_290px]">
+                          <SubscriptionMonthlyPayments months={subscriptionMonthlyPayments} />
+                          <div className="space-y-4">
                             <div className="min-w-0 space-y-3">
                               <div className="overflow-hidden rounded-2xl border border-[#dfe6dd] bg-white shadow-sm">
                                 <Table
@@ -9052,41 +8687,6 @@ export function FarmLedgerDashboard({
                                 </div>
                               </div>
                             </div>
-                            <Card className="h-fit border-0 bg-white ring-[#dfe6dd]">
-                              <CardContent>
-                                <div className="mb-4">
-                                  <h2 className="font-bold">최근 월별 입금</h2>
-                                  <p className="mt-1 text-xs text-[#89938c]">
-                                    입금 업무 히스토리 기준
-                                  </p>
-                                </div>
-                                <div className="space-y-3">
-                                  {subscriptionMonthlyPayments.map((month) => (
-                                    <div
-                                      key={month.label}
-                                      className="rounded-xl bg-[#f5f8f4] p-3"
-                                    >
-                                      <div className="flex items-center justify-between">
-                                        <span className="text-xs font-semibold">
-                                          {month.label}
-                                        </span>
-                                        <Badge variant="outline">
-                                          {month.count}건
-                                        </Badge>
-                                      </div>
-                                      <p className="mt-2 font-bold text-[#39795b]">
-                                        {formatMoney(month.amount)}
-                                      </p>
-                                    </div>
-                                  ))}
-                                  {!subscriptionMonthlyPayments.length && (
-                                    <p className="py-8 text-center text-sm text-[#89938c]">
-                                      입금 기록이 없습니다.
-                                    </p>
-                                  )}
-                                </div>
-                              </CardContent>
-                            </Card>
                           </div>
                         </TabsContent>
                       </Tabs>
@@ -9341,7 +8941,18 @@ export function FarmLedgerDashboard({
               )}
             </div>
 
-            <div
+            <Sheet open={Boolean(selectedProject || selectedFarm || selectedWorkItem)} modal={detailPopup || isMobile} disablePointerDismissal
+              onOpenChange={(open) => { if (!open) closeDetailPanel(); }}>
+              <SheetContent displayMode={detailPopup ? 'dialog' : 'panel'} showOverlay={detailPopup} showCloseButton={false} initialFocus={detailPopup || isMobile} finalFocus={false}
+                className={`farm-app farm-detail-panel gap-0 border-slate-200 bg-slate-50 ${detailPopup ? 'z-50' : 'z-40 border-l shadow-xl data-[side=right]:w-full data-[side=right]:sm:max-w-none data-[side=right]:md:w-[min(880px,72vw)]'}`}>
+                <SheetHeader className="shrink-0 flex-row items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
+                  <div className="min-w-0">
+                    <SheetTitle>{selectedProject ? '프로젝트 조회·수정' : selectedWorkItem ? '업무 조회·수정' : '농가 상세'}</SheetTitle>
+                    <SheetDescription>목록과 조회 조건을 유지한 채 관리합니다.</SheetDescription>
+                  </div>
+                  <Button type="button" variant="ghost" size="sm" onClick={closeDetailPanel} aria-label="상세 닫기"><X /> 닫기</Button>
+                </SheetHeader>
+            <div ref={detailPanelRef}
               data-active-content={
                 selectedProject || selectedFarm || selectedWorkItem
                   ? 'true'
@@ -9349,16 +8960,37 @@ export function FarmLedgerDashboard({
               }
               className={
                 selectedProject || selectedFarm || selectedWorkItem
-                  ? 'page-content'
+                  ? 'page-content min-h-0 flex-1 overflow-y-auto'
                   : 'hidden'
               }
             >
+              {selectedProject && <>
+                <header aria-label="프로젝트 제목과 작업" className="mb-4 rounded-xl border border-slate-200 bg-white p-4">
+                  <Button type="button" size="sm" variant="ghost" className="-ml-2 mb-2" onClick={backDetail}>
+                    <ArrowLeft /> {detailTrail.length ? '이전 상세로' : `${navItems.find((item) => item.id === view)?.label}으로`}
+                  </Button>
+                  <h1 tabIndex={-1} className="text-xl font-bold">{selectedProject.name}</h1>
+                  <ProjectDetailActions
+                    project={selectedProject}
+                    canAddTask={organization.personal}
+                    onAddTask={() => { if (canGoBackDetail()) setTaskRegistrationOpen(true); }}
+                    onRecord={() => { if (canGoBackDetail()) openProjectUpdateDialog(selectedProject); }}
+                    onDocument={() => { if (canGoBackDetail()) openProjectDocumentDialog(selectedProject); }}
+                    onDelete={() => { if (canGoBackDetail()) setProjectDeletionTarget(selectedProject); }}
+                  />
+                  {selectedProject.deletedAt && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">삭제된 프로젝트입니다. 연결된 기록은 보존됩니다.</p>}
+                </header>
+                <ProjectQuickEditor key={selectedProject.id} project={selectedProject}
+                focusRequest={projectQuickFocus} onSave={saveProjectQuick} onEditingChange={(editing) => { projectQuickEditingRef.current = editing; }} />
+              </>}
               {selectedWorkItem &&
-                !selectedWorkItem.deletedAt &&
                 isStandaloneWork(selectedWorkItem) && (
                   <ProjectTaskDetail
                     deleteAction={workDeleteAction(selectedWorkItem)}
                     task={selectedWorkItem}
+                    titleContent={<WorkTitleEditor key={selectedWorkItem.id} task={selectedWorkItem}
+                      canEdit={canRenameWork(selectedWorkItem, member)} onSave={saveWorkTitle}
+                      onEditingChange={(editing) => { workTitleEditingRef.current = editing; setWorkTitleEditing(editing); }} />}
                     project={projectForWorkItem(selectedWorkItem) || undefined}
                     departmentName={
                       organization.departments.find(
@@ -9425,123 +9057,23 @@ export function FarmLedgerDashboard({
                     }
                   />
                 )}
-              {selectedProject && selectedProjectSnapshot && (
+              {selectedProject && selectedProjectSnapshot && (isInternalProject(selectedProject) ? (
+                <InternalProjectDetail project={selectedProject} canAddTask={organization.personal}>
+                  <WorkTaskSurface mode="list" items={selectedProjectSnapshot.workItems} allItems={operationalWorkItems} recorder={accountName || accountEmail}
+                    projectLabel={workContextLabel} onOpen={(item) => openFarm(item.farmId, item.id)} onAddChild={addChildTask}
+                    onEditingChange={setWorkQuickEditOpen} onSave={saveQuickWork} isClosed={() => selectedProject.status === 'completed'} />
+                </InternalProjectDetail>
+              ) : (
                 <section aria-label="프로젝트 전체 상세" className="w-full">
-                  <div className="mb-3 flex min-h-11 flex-wrap items-center gap-2 text-sm">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      onClick={backDetail}
-                      className="-ml-2 min-h-11 rounded-xl text-[#315f43]"
-                    >
-                      <ArrowLeft />
-                      {detailTrail.length
-                        ? '이전 상세로'
-                        : `${navItems.find((item) => item.id === view)?.label}으로`}
-                    </Button>
-                    <span className="text-xs font-semibold text-[#7d8981]">
-                      {selectedProject.year}년 ·{' '}
-                      {FARM_PROJECT_TYPE_LABELS[selectedProject.projectType]} /{' '}
-                      {selectedProject.name}
-                    </span>
-                  </div>
-                  <div className="mb-4 flex w-full flex-col gap-1 rounded-xl border border-[#d8e0e7] bg-white p-5">
-                    <div className="mb-2 flex flex-wrap gap-2">
-                      <Badge variant="outline">{selectedProject.year}</Badge>
-                      <Badge variant="outline">
-                        {FARM_PROJECT_TYPE_LABELS[selectedProject.projectType]}
-                      </Badge>
-                      <Badge
-                        variant="outline"
-                        className="border-[#c7dfcf] bg-[#eef8f1] text-[#2e7650]"
-                      >
-                        {
-                          FARM_PROJECT_STAGE_LABELS[
-                            selectedProject.currentStage
-                          ]
-                        }
-                      </Badge>
-                      <Badge variant="outline">
-                        {FARM_PROJECT_STATUS_LABELS[selectedProject.status]}
-                      </Badge>
-                    </div>
-                    <h1 className="cn-font-heading text-left text-xl font-medium text-foreground">
-                      {selectedProject.name}
-                    </h1>
-                    <p className="text-left text-sm text-muted-foreground">
-                      {selectedProject.institution} · 담당{' '}
-                      {selectedProject.manager || '미지정'} ·{' '}
-                      {selectedProject.startDate || '시작일 미입력'} ~{' '}
-                      {selectedProject.endDate || '종료일 미입력'}
-                    </p>
-                    {selectedProject.description && (
-                      <Collapsible className="mt-2 rounded-lg bg-slate-50 px-3">
-                        <CollapsibleTrigger className="flex min-h-10 w-full items-center justify-between text-sm font-medium">
-                          사업 설명
-                          <ChevronDown className="size-4" />
-                        </CollapsibleTrigger>
-                        <CollapsibleContent className="pb-3 text-sm whitespace-pre-wrap break-words text-slate-600">
-                          {selectedProject.description}
-                        </CollapsibleContent>
-                      </Collapsible>
-                    )}
-                    <div className="flex flex-wrap gap-2 pt-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={Boolean(selectedProject.deletedAt)}
-                        onClick={() => openProjectUpdateDialog(selectedProject)}
-                      >
-                        <MessageSquareText /> 프로젝트 기록 추가
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={Boolean(selectedProject.deletedAt)}
-                        onClick={() => openProjectEditDialog(selectedProject)}
-                      >
-                        <Pencil /> 사업·정산 수정
-                      </Button>
-                      <Button
-                        size="sm"
-                        onClick={() =>
-                          openProjectDocumentDialog(selectedProject)
-                        }
-                        disabled={
-                          selectedProject.status === 'completed' ||
-                          Boolean(selectedProject.deletedAt)
-                        }
-                        className="bg-[#2f7b59] hover:bg-[#286b4d]"
-                      >
-                        <Plus /> 제출서류 추가
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="text-red-700"
-                        onClick={() =>
-                          setProjectDeletionTarget(selectedProject)
-                        }
-                      >
-                        <Trash2 />
-                        {selectedProject.deletedAt
-                          ? '프로젝트 복구'
-                          : '프로젝트 삭제'}
-                      </Button>
-                    </div>
-                    {selectedProject.deletedAt && (
-                      <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
-                        삭제된 프로젝트입니다. 목록·사업 집계에서는 제외되며,
-                        연결된 기록은 보존됩니다.
-                      </p>
-                    )}
-                  </div>
-
+                  <ProjectInstallationSetupNotice
+                    project={selectedProject}
+                    busy={installationBusyId === selectedProject.id}
+                    error={installationErrors[selectedProject.id]}
+                    onResume={() => void resumeInstallationFarms(selectedProject)}
+                  />
                   <Tabs
                     value={projectDetailTab}
-                    onValueChange={(value) =>
-                      setProjectDetailTab(String(value))
-                    }
+                    onValueChange={(value) => changeProjectDetailTab(String(value))}
                     className="w-full gap-4"
                   >
                     <TabsList
@@ -9589,8 +9121,8 @@ export function FarmLedgerDashboard({
                           </p>
                           <p className="mt-2 text-xs text-slate-500">
                             {selectedProject.targetFarmCount
-                              ? `목표 ${selectedProject.targetFarmCount}개소 · 달성 ${selectedProjectSnapshot.farmCoverage ?? 0}%`
-                              : '목표 농가 수 미입력'}
+                              ? `설치 ${selectedProject.targetFarmCount}개소 · 농가 등록 ${selectedProjectSnapshot.farmCoverage ?? 0}%`
+                              : '설치 개소 미입력'}
                           </p>
                         </div>
                         <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -9624,7 +9156,7 @@ export function FarmLedgerDashboard({
                               0 && (
                               <button
                                 type="button"
-                                onClick={() => setProjectDetailTab('farms')}
+                                onClick={() => changeProjectDetailTab('farms')}
                                 className="flex w-full items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-left text-sm"
                               >
                                 <span>
@@ -9655,7 +9187,7 @@ export function FarmLedgerDashboard({
                               <button
                                 type="button"
                                 onClick={() =>
-                                  setProjectDetailTab('settlement')
+                                  changeProjectDetailTab('settlement')
                                 }
                                 className="flex w-full items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-left text-sm"
                               >
@@ -9847,6 +9379,12 @@ export function FarmLedgerDashboard({
                               농가별 설치 단계와 실제 만료일 기준 구독
                               상태입니다.
                             </p>
+                            {Boolean(selectedProject.installationFarmSetup?.requestedCount) && (
+                              <p className="mt-2 text-xs leading-5 text-slate-600">
+                                농가명을 누른 뒤 기본정보 수정에서 이름·주소·전화번호·농장번호를 입력할 수 있습니다.
+                                임시 농가는 설치·교육·시운전 미완료, 구독 미등록으로 시작합니다.
+                              </p>
+                            )}
                             <Button
                               variant="outline"
                               className="mt-3"
@@ -9980,11 +9518,11 @@ export function FarmLedgerDashboard({
                           {selectedProject.name} · 하위 업무
                         </h2>
                         <Button
-                          disabled={selectedProject.status === 'completed'}
-                          onClick={() => openInboxDialog(selectedProject.id)}
+                          disabled={selectedProject.status === 'completed' || Boolean(selectedProject.deletedAt)}
+                          onClick={() => { if (canGoBackDetail()) openInboxDialog(selectedProject.id); }}
                         >
                           <Plus />
-                          하위 업무 추가
+                          빠른 수신
                         </Button>
                       </div>
                       <p className="mb-3 text-sm text-slate-600">
@@ -10029,16 +9567,6 @@ export function FarmLedgerDashboard({
                                 책임자와 현재 처리자를 분리해 관리합니다.
                               </p>
                             </div>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={selectedProject.status === 'completed'}
-                              onClick={() =>
-                                openProjectDocumentDialog(selectedProject)
-                              }
-                            >
-                              <Plus /> 추가
-                            </Button>
                           </div>
                           <div className="mt-4 space-y-2">
                             {selectedProjectSnapshot.documents.map(
@@ -10151,20 +9679,9 @@ export function FarmLedgerDashboard({
                       </section>
                     </TabsContent>
                     <TabsContent value="settlement">
-                      <section>
-                        <div className="rounded-2xl bg-white p-5 shadow-sm">
-                          <ProjectSettlementDetails project={selectedProject} />
-                          <Button
-                            variant="outline"
-                            className="mt-4 w-full"
-                            onClick={() =>
-                              openProjectEditDialog(selectedProject)
-                            }
-                          >
-                            <Pencil /> 정산 정보 수정
-                          </Button>
-                        </div>
-                      </section>
+                      <ProjectSettlementWorkspace key={selectedProject.id} project={selectedProject}
+                        onSave={saveProjectSettlement}
+                        onEditingChange={(editing) => { projectSettlementEditingRef.current = editing; }} />
                     </TabsContent>
                     <TabsContent value="history">
                       <section className="rounded-2xl bg-white p-5 shadow-sm">
@@ -10191,15 +9708,6 @@ export function FarmLedgerDashboard({
                               disabled={selectedProject.status === 'completed'}
                             >
                               <CircleAlert /> 막힘 추가
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
-                                openProjectUpdateDialog(selectedProject)
-                              }
-                            >
-                              <Plus /> 기록 추가
                             </Button>
                           </div>
                         </div>
@@ -10292,7 +9800,7 @@ export function FarmLedgerDashboard({
                     </TabsContent>
                   </Tabs>
                 </section>
-              )}
+              ))}
 
               {selectedFarm && (
                 <section
@@ -10604,17 +10112,6 @@ export function FarmLedgerDashboard({
                                 <Plus />
                                 참여 사업 추가
                               </Button>
-                              <Button
-                                onClick={() =>
-                                  openWorkItemDialog('', 'service')
-                                }
-                                size="sm"
-                                disabled={!selectedRecords.length}
-                                className="bg-[#2f7b59] hover:bg-[#286b4d]"
-                              >
-                                <Plus />
-                                A/S 등록
-                              </Button>
                             </div>
                             {!!selectedFarm.locationImageIds?.length && (
                               <section
@@ -10752,9 +10249,9 @@ export function FarmLedgerDashboard({
                                       }
                                     </Badge>
                                   </div>
-                                  <h3 className="mt-3 text-lg font-bold">
-                                    {selectedWorkItem.title}
-                                  </h3>
+                                  <WorkTitleEditor key={selectedWorkItem.id} task={selectedWorkItem} headingLevel={3}
+                                    canEdit={canRenameWork(selectedWorkItem, member)} onSave={saveWorkTitle}
+                                    onEditingChange={(editing) => { workTitleEditingRef.current = editing; setWorkTitleEditing(editing); }} />
                                   <p className="mt-1 text-sm text-[#68766d]">
                                     담당 {selectedWorkItem.owner || '미지정'} ·
                                     기한 {formatDate(selectedWorkItem.dueDate)}
@@ -11320,6 +10817,8 @@ export function FarmLedgerDashboard({
                 </section>
               )}
             </div>
+              </SheetContent>
+            </Sheet>
           </section>
         </div>
 
@@ -11335,7 +10834,11 @@ export function FarmLedgerDashboard({
             key={projectDeletionTarget.id}
             project={projectDeletionTarget}
             onConfirm={confirmProjectDeletion}
-            onClose={() => setProjectDeletionTarget(null)}
+            onClose={() => {
+              setProjectDeletionTarget(null);
+              if (deletedProjectToClose.current === selectedProjectId && selectedProjectId) closeDetails();
+              deletedProjectToClose.current = '';
+            }}
           />
         )}
         <Dialog
@@ -11379,6 +10882,7 @@ export function FarmLedgerDashboard({
               departments={organization.departments}
               projects={activeProjects}
               parent={childTaskParent || undefined}
+              initialProject={taskRegistrationOpen ? selectedProject || undefined : undefined}
               onClose={() => {
                 setTaskRegistrationOpen(false);
                 setChildTaskParent(null);
@@ -11782,17 +11286,17 @@ export function FarmLedgerDashboard({
           <DialogContent className="max-h-[92dvh] overflow-y-auto p-5 sm:max-w-[1100px] sm:p-6">
             <DialogHeader>
               <DialogTitle className="text-lg">
-                {editingProjectId
+                {isInternalProject(projectForm) ? (editingProjectId ? '내부 프로젝트 수정' : '내부 프로젝트 등록') : editingProjectId
                   ? '프로젝트·정산 정보 수정'
                   : '스마트팜 사업 등록'}
               </DialogTitle>
               <DialogDescription>
-                현재 단계, 담당자, 사업기간과 최종정산 기준을 함께 관리합니다.
+                {isInternalProject(projectForm) ? '내부 업무를 프로젝트 단위로 묶어 관리합니다. 농가·설치·구독·정산 지표와 분리됩니다.' : '현재 단계, 담당자, 사업기간과 최종정산 기준을 함께 관리합니다.'}
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={submitProject} className="mt-1 space-y-4">
               <Field>
-                <FieldLabel htmlFor="project-name">사업명</FieldLabel>
+                <FieldLabel htmlFor="project-name">프로젝트명</FieldLabel>
                 <Input
                   id="project-name"
                   value={projectForm.name}
@@ -11802,12 +11306,12 @@ export function FarmLedgerDashboard({
                       name: event.target.value,
                     }))
                   }
-                  placeholder="예: 2026 데이터 기반 스마트농업"
+                  placeholder={isInternalProject(projectForm) ? '예: 사내 업무관리 프로그램 개선' : '예: 2026 데이터 기반 스마트농업'}
                 />
               </Field>
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field>
-                  <FieldLabel htmlFor="project-type">사업 유형</FieldLabel>
+                  <FieldLabel htmlFor="project-type">프로젝트 유형</FieldLabel>
                   <Select
                     value={projectForm.projectType}
                     onValueChange={(value) =>
@@ -11823,10 +11327,16 @@ export function FarmLedgerDashboard({
                       </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="general">일반 사업</SelectItem>
-                      <SelectItem value="research">연구 사업</SelectItem>
+                      <SelectItem value="general" disabled={Boolean(editingProjectId && isInternalProject(projectById.get(editingProjectId)))}>일반 사업</SelectItem>
+                      <SelectItem value="research" disabled={Boolean(editingProjectId && isInternalProject(projectById.get(editingProjectId)))}>연구 사업</SelectItem>
+                      <SelectItem value="internal">내부 프로젝트</SelectItem>
                     </SelectContent>
                   </Select>
+                  {editingProjectId && isInternalProject(projectForm) && !isInternalProject(projectById.get(editingProjectId)) && (
+                    <output className="block text-sm text-slate-600">
+                      저장하면 내부 프로젝트로 변경됩니다. 연결된 농가·업무 또는 작성된 정산·서류·진행 기록이 있으면 기존 자료 보호를 위해 저장이 제한됩니다. 저장 전에는 원래 유형으로 돌아갈 수 있습니다.
+                    </output>
+                  )}
                 </Field>
                 <Field>
                   <FieldLabel htmlFor="project-year">기준 연도</FieldLabel>
@@ -11846,7 +11356,7 @@ export function FarmLedgerDashboard({
                 </Field>
                 <Field>
                   <FieldLabel htmlFor="project-institution">
-                    주관기관
+                    {isInternalProject(projectForm) ? '주관 부서 (선택)' : '주관기관'}
                   </FieldLabel>
                   <Input
                     id="project-institution"
@@ -11860,14 +11370,17 @@ export function FarmLedgerDashboard({
                     placeholder="예: 지역 농업기술원"
                   />
                 </Field>
-                <Field>
+                {!isInternalProject(projectForm) && <Field>
                   <FieldLabel htmlFor="project-target-farms">
-                    목표 농가 수
+                    설치 개소
                   </FieldLabel>
                   <Input
                     id="project-target-farms"
                     type="number"
                     min={0}
+                    step={1}
+                    max={editingProjectId ? undefined : MAX_PROJECT_INSTALLATION_FARMS}
+                    aria-describedby="project-installation-help"
                     value={projectForm.targetFarmCount}
                     onChange={(event) =>
                       setProjectForm((current) => ({
@@ -11876,9 +11389,14 @@ export function FarmLedgerDashboard({
                       }))
                     }
                   />
-                </Field>
+                  <p id="project-installation-help" className="text-xs leading-5 text-muted-foreground">
+                    {editingProjectId
+                      ? '설치 개소 기준값입니다. 숫자를 수정해도 기존 농가가 자동으로 추가되거나 삭제되지는 않습니다.'
+                      : `등록 시 입력한 수만큼 임시 농가를 생성합니다 (0~${MAX_PROJECT_INSTALLATION_FARMS}개소). 농가명·주소·전화번호·농장번호는 나중에 수정할 수 있습니다.`}
+                  </p>
+                </Field>}
                 <Field>
-                  <FieldLabel htmlFor="project-status">사업 상태</FieldLabel>
+                  <FieldLabel htmlFor="project-status">프로젝트 상태</FieldLabel>
                   <Select
                     value={projectForm.status}
                     onValueChange={(value) =>
@@ -11910,7 +11428,7 @@ export function FarmLedgerDashboard({
                   </Select>
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="project-manager">사업 담당자</FieldLabel>
+                  <FieldLabel htmlFor="project-manager">담당자</FieldLabel>
                   <Input
                     id="project-manager"
                     value={projectForm.manager}
@@ -11923,7 +11441,7 @@ export function FarmLedgerDashboard({
                     placeholder="예: 사업운영팀 홍길동"
                   />
                 </Field>
-                <Field>
+                {!isInternalProject(projectForm) && <Field>
                   <FieldLabel htmlFor="project-stage">
                     현재 사업 단계
                   </FieldLabel>
@@ -11960,10 +11478,10 @@ export function FarmLedgerDashboard({
                       )}
                     </SelectContent>
                   </Select>
-                </Field>
+                </Field>}
                 <Field>
                   <FieldLabel htmlFor="project-start-date">
-                    사업 시작일
+                    프로젝트 시작일
                   </FieldLabel>
                   <Input
                     id="project-start-date"
@@ -11995,7 +11513,7 @@ export function FarmLedgerDashboard({
                 </Field>
               </div>
               <Field>
-                <FieldLabel htmlFor="project-description">사업 설명</FieldLabel>
+                <FieldLabel htmlFor="project-description">프로젝트 설명</FieldLabel>
                 <Textarea
                   id="project-description"
                   value={projectForm.description}
@@ -12009,24 +11527,24 @@ export function FarmLedgerDashboard({
                   className="min-h-24"
                 />
               </Field>
-              {editingProjectId && projectForm.status === 'completed' && (
+              {editingProjectId && !isInternalProject(projectForm) && projectForm.status === 'completed' && (
                 <div className="flex gap-3 rounded-2xl border border-[#d7d8b8] bg-[#fbfaed] p-4 text-sm text-[#746d2f]">
                   <LockKeyhole className="mt-0.5 size-4 shrink-0" />
                   <p className="leading-6">
-                    완료 근거인 목표 농가·기간·정산·필수서류는 잠겨 있습니다.
+                    완료 근거인 설치 개소·기간·정산·필수서류는 잠겨 있습니다.
                     이를 바꾸거나 새 농가·업무를 연결하려면 사업 상태를 먼저
                     진행 중 또는 보류로 바꿔 저장해 주세요.
                   </p>
                 </div>
               )}
-              <ProjectSettlementEditor
+              {!isInternalProject(projectForm) && <ProjectSettlementEditor
                 value={projectForm}
                 onChange={setProjectForm}
                 locked={Boolean(
                   editingProjectId &&
                   projectById.get(editingProjectId)?.status === 'completed',
                 )}
-              />
+              />}
               {formError && <FieldError>{formError}</FieldError>}
               <DialogFooter className="mx-0 mb-0 px-0 pb-0 pt-4">
                 <Button
@@ -12043,7 +11561,7 @@ export function FarmLedgerDashboard({
                   className="bg-[#2f7b59] hover:bg-[#286b4d]"
                 >
                   {submitting && <Loader2 className="animate-spin" />}
-                  {editingProjectId ? '수정 저장' : '사업 등록'}
+                  {editingProjectId ? '수정 저장' : '프로젝트 등록'}
                 </Button>
               </DialogFooter>
             </form>
@@ -12939,7 +12457,7 @@ export function FarmLedgerDashboard({
                             </SelectValue>
                           </SelectTrigger>
                           <SelectContent>
-                            {activeProjects
+                            {activeBusinessProjects
                               .filter(
                                 (project) =>
                                   dialog === 'farm' ||
@@ -13333,7 +12851,7 @@ export function FarmLedgerDashboard({
                     <SelectItem value="unassigned">
                       미지정 · 수신함에만 보관
                     </SelectItem>
-                    {activeProjects
+                    {activeBusinessProjects
                       .filter((project) => project.status !== 'completed')
                       .map((project) => (
                         <SelectItem key={project.id} value={project.id}>
@@ -13521,7 +13039,7 @@ export function FarmLedgerDashboard({
                     <SelectItem value="none">
                       선택 안 함 · 농가별 업무로 정리
                     </SelectItem>
-                    {activeProjects
+                    {activeBusinessProjects
                       .filter((project) => project.status !== 'completed')
                       .map((project) => (
                         <SelectItem key={project.id} value={project.id}>

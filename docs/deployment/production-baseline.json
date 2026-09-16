@@ -1,0 +1,13 @@
+{
+  "release": "manual-20260916-work-ui-836c517b9251",
+  "sourceSnapshotSha256": "836c517b9251b54da57cb03174c03efa0aa68ef95d4958605cb741e7b513bf5a",
+  "sourceArchiveSha256": "1dd19eb64db7524683d1c395004851ae980760a3e8d7022587cf3bea551851bc",
+  "rulesSourceSha256": "656f1178e3f524b948c49f5111d4eaa4f0eb76659270a3e618727a9d5ee80d7f",
+  "excludes": [
+    "unfinished farm map",
+    "secrets and .env.local",
+    "operational data",
+    "user spreadsheet"
+  ],
+  "note": "Baseline synchronization only; portability tooling and docs added afterward. Git push does not deploy the production server."
+}

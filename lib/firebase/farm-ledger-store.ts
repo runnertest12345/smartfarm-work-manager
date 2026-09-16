@@ -1,4 +1,5 @@
 'use client';
+import { canRenameWork, validateWorkTitle } from '@/lib/work-title';
 import { accountIdentifier } from '@/lib/login-identity';
 
 import {
@@ -86,13 +87,24 @@ import {
 } from '@/lib/project-work';
 import { resolveTaskAssignment } from './organization-store';
 import { isFarmServiceWork } from '@/lib/service-work';
+import { isInternalProject, normalizeInternalProject, assertBusinessProject, assertProjectKindTransition, assertWorkProjectKind } from '@/lib/internal-projects';
 import { projectLifecyclePatch } from '@/lib/project-lifecycle';
+import {
+  installationFarmProgress,
+  PROJECT_INSTALLATION_FARM_CHUNK_SIZE,
+  projectInstallationFarm,
+  projectRegistrationRequestId,
+  projectRegistrationSignature,
+  validateInstallationFarmCount,
+} from '@/lib/project-installation-farms';
 import {
   assertSettlementTransition,
   parseSettlementRounds,
   withSettlementRounds,
   settlementsEqual,
   normalizeProjectSettlement,
+  SETTLEMENT_ROUND_KEYS,
+  settlementRoundLabel,
 } from '@/lib/project-settlements';
 import {
   assertWorkActive,
@@ -286,16 +298,17 @@ function parseProjectInput(value: unknown): FarmProjectInput {
     FARM_SETTLEMENT_STATUSES,
     '정산 상태를 확인해 주세요.',
   );
-  if (!input.name || !input.institution || !input.manager) {
+  if (!input.name || (!isInternalProject(input) && !input.institution) || !input.manager) {
     throw new Error('사업명, 주관기관, 담당자를 입력해 주세요.');
   }
   if (input.year < 2000 || input.year > 2100 || input.targetFarmCount < 0) {
-    throw new Error('사업 연도와 목표 농가 수를 확인해 주세요.');
+    throw new Error('사업 연도와 설치 개소를 확인해 주세요.');
   }
   if (input.settlementPaidAmount > input.settlementApprovedAmount) {
     throw new Error('입금액은 승인액보다 클 수 없습니다.');
   }
-  assertProjectState(input);
+  // Keep the submitted values until conversion checks have protected existing records.
+  assertProjectState(normalizeInternalProject(input));
   return input;
 }
 
@@ -627,10 +640,10 @@ function parseWorkItemInput(value: unknown): FarmWorkItemInput {
     input.assigneeUid = requiredId(source.assigneeUid, '담당 계정');
   if (
     input.scope === 'internal' &&
-    (input.farmRecordId || source.projectId || !input.assigneeUid)
+    (input.farmRecordId || !input.assigneeUid)
   )
     throw new Error(
-      '내부 업무는 프로젝트 없이 승인된 담당 계정에 배정해 주세요.',
+      '내부 업무는 농가 연결 없이 승인된 담당 계정에 배정해 주세요.',
     );
   if (
     input.parentWorkItemId &&
@@ -956,8 +969,10 @@ function assertProjectEditable(
   project: FarmProject | undefined,
   allowDeleted = false,
   allowCompleted = false,
+  businessOnly = false,
 ) {
   if (!project) throw new Error('선택한 사업을 찾을 수 없습니다.');
+  if (businessOnly) assertBusinessProject(project);
   if (project.deletedAt && !allowDeleted)
     throw new Error(
       '삭제된 프로젝트입니다. 프로젝트 관리에서 먼저 복구해 주세요.',
@@ -1063,7 +1078,7 @@ function toError(error: unknown) {
       'code' in error ? String((error as Error & { code?: string }).code) : '';
     if (code.includes('permission-denied')) {
       return new Error(
-        '이 관리대장을 읽거나 수정할 권한이 없습니다. 관리자 승인을 확인해 주세요.',
+        '서버에서 요청을 거부했습니다. 계정 접근 권한 또는 데이터 저장 조건을 확인해 주세요.',
       );
     }
     if (code.includes('resource-exhausted')) {
@@ -1089,18 +1104,15 @@ export async function waitForFarmLedgerSync() {
 function projectChangeSummary(existing: FarmProject, input: FarmProjectInput) {
   const changed: string[] = [];
   if (input.settlementRounds) {
-    for (const [key, label] of [
-      ['first', '1차 정산'],
-      ['second', '2차 정산'],
-      ['unassigned', '회차 미지정 정산'],
-    ] as const) {
+    for (const key of [...SETTLEMENT_ROUND_KEYS, 'unassigned'] as const) {
+      const label = key === 'unassigned' ? '회차 미지정 정산' : settlementRoundLabel(key);
       const before = existing.settlementRounds?.[key];
       const after = input.settlementRounds[key];
       if (!settlementsEqual(before, after)) {
         changed.push(
           after
             ? `${label} (상태 ${FARM_SETTLEMENT_STATUS_LABELS[after.status]}, 청구 ${after.claimAmount.toLocaleString('ko-KR')}원, 승인 ${after.approvedAmount.toLocaleString('ko-KR')}원, 입금 ${after.paidAmount.toLocaleString('ko-KR')}원)`
-            : `${label} 회차 지정`,
+            : key === 'unassigned' ? `${label} 회차 지정` : `${label} 빈 차수 삭제`,
         );
       }
     }
@@ -1129,14 +1141,23 @@ function projectChangeSummary(existing: FarmProject, input: FarmProjectInput) {
     : '프로젝트 정보를 다시 확인하고 저장했습니다.';
 }
 
-async function createProject(input: FarmProjectInput) {
+async function createProject(input: FarmProjectInput, rawRequestId?: unknown) {
+  input = normalizeInternalProject(input);
+  validateInstallationFarmCount(input.targetFarmCount);
   if (input.status === 'completed') {
     throw new Error('새 사업은 진행 또는 보류 상태로 등록해 주세요.');
   }
   const now = Date.now();
+  const requestId = projectRegistrationRequestId(rawRequestId);
+  const signature = await projectRegistrationSignature(input);
   const project: FarmProject = {
-    id: crypto.randomUUID(),
+    id: `registration-${requestId}`,
     ...input,
+    registrationRequestId: requestId,
+    registrationInputSignature: signature,
+    ...(!isInternalProject(input) ? {
+      installationFarmSetup: { requestedCount: input.targetFarmCount, completedCount: 0 },
+    } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -1148,23 +1169,20 @@ async function createProject(input: FarmProjectInput) {
     now,
   );
   const templates: Array<Pick<FarmProjectDocumentInput, 'title' | 'category'>> =
-    [
+    isInternalProject(input) ? [] : [
       { title: '협약서·계약서', category: 'agreement' },
       { title: '참여농가 확정 명단', category: 'farm' },
       { title: '설치·시운전 확인서', category: 'installation' },
       { title: '검수·교육 확인서', category: 'inspection' },
       { title: '정산보고서·증빙', category: 'settlement' },
     ];
-  const batch = writeBatch(getFirebaseServices().db);
-  setCreated(batch, 'projects', project);
-  setCreated(batch, 'projectUpdates', update);
-  for (const template of templates) {
+  const documents = templates.map((template): FarmProjectDocument => {
     const owner =
       template.category === 'settlement'
         ? project.settlementOwner || project.manager
         : project.manager;
-    const document: FarmProjectDocument = {
-      id: crypto.randomUUID(),
+    return {
+      id: `${project.id}-${template.category}`,
       projectId: project.id,
       title: template.title,
       category: template.category,
@@ -1181,10 +1199,80 @@ async function createProject(input: FarmProjectInput) {
       createdAt: now,
       updatedAt: now,
     };
-    setCreated(batch, 'projectDocuments', document);
+  });
+  const registered = await runTransaction(getFirebaseServices().db, async (transaction) => {
+    const existing = await transaction.get(documentRef('projects', project.id));
+    if (existing.exists()) {
+      const saved = existing.data() as FarmProject & AuditFields;
+      if (saved.createdByUid !== requireSignedInUser().uid || saved.registrationRequestId !== requestId || saved.registrationInputSignature !== signature) {
+        throw new Error('다른 프로젝트 등록에 사용된 요청입니다. 등록 화면을 다시 열어 주세요.');
+      }
+      return saved;
+    }
+    setCreated(transaction, 'projects', project);
+    setCreated(transaction, 'projectUpdates', { ...update, id: `${project.id}-created` });
+    for (const document of documents) setCreated(transaction, 'projectDocuments', document);
+    return project;
+  });
+  if (isInternalProject(registered)) return { project: registered };
+  return provisionProjectInstallationFarms(registered.id, registered);
+}
+
+/** Every chunk is atomic; persisted progress makes interruption/retry and concurrency safe. */
+async function provisionProjectInstallationFarms(projectId: string, initialProject?: FarmProject) {
+  let latestProject = initialProject;
+  try {
+    do {
+      latestProject = await runTransaction(getFirebaseServices().db, async (transaction) => {
+        const projectRef = documentRef('projects', projectId);
+        const projectSnapshot = await transaction.get(projectRef);
+        const project = assertProjectEditable(projectSnapshot.exists() ? projectSnapshot.data() as FarmProject : undefined, false, false, true);
+        const setup = installationFarmProgress(project);
+        if (setup.completedCount === setup.requestedCount) return project;
+        const now = Math.max(Date.now(), project.updatedAt + 1);
+        const end = Math.min(setup.requestedCount, setup.completedCount + PROJECT_INSTALLATION_FARM_CHUNK_SIZE);
+        const sites = await Promise.all(Array.from({ length: end - setup.completedCount }, async (_, offset) => {
+          const site = projectInstallationFarm(project, setup.completedCount + offset, now);
+          const farmRef = documentRef('farms', site.farm.id);
+          const recordRef = documentRef('records', site.record.id);
+          const farmClaimId = farmCodeKey(site.farm.farmCode);
+          const recordClaimId = recordKey(site.farm.id, project.id);
+          const farmClaimRef = internalDocumentRef('farmCodeReservations', farmClaimId);
+          const recordClaimRef = internalDocumentRef('farmRecordReservations', recordClaimId);
+          const [farm, record, farmClaim, recordClaim] = await Promise.all([
+            transaction.get(farmRef), transaction.get(recordRef), transaction.get(farmClaimRef), transaction.get(recordClaimRef),
+          ]);
+          // Existing identities may already have user-edited names, addresses or codes.
+          // Never overwrite them or reactivate their original temporary-code claim.
+          if (farm.exists() || record.exists()) {
+            if (!farm.exists() || !record.exists() || farm.data().id !== site.farm.id || record.data().id !== site.record.id || record.data().farmId !== site.farm.id || record.data().projectId !== project.id) {
+              throw new Error('자동 생성 농가의 연결 정보를 확인해 주세요. 기존 정보는 변경하지 않았습니다.');
+            }
+            return { ...site, exists: true, farmRef, recordRef, farmClaimRef, recordClaimRef, farmClaimId, recordClaimId };
+          }
+          if (farmClaim.exists() || recordClaim.exists()) {
+            throw new Error('자동 생성 농장번호 또는 참여 정보가 이미 예약되어 있습니다. 기존 정보는 변경하지 않았습니다.');
+          }
+          return { ...site, exists: false, farmRef, recordRef, farmClaimRef, recordClaimRef, farmClaimId, recordClaimId };
+        }));
+        // All document and uniqueness reads above must precede any writes.
+        for (const site of sites) {
+          if (site.exists) continue;
+          transaction.set(site.farmRef, createdData(site.farm));
+          transaction.set(site.recordRef, createdData(site.record));
+          transaction.set(site.farmClaimRef, createdData({ id: site.farmClaimId, entityId: site.farm.id, active: true, createdAt: now, updatedAt: now }));
+          transaction.set(site.recordClaimRef, createdData({ id: site.recordClaimId, entityId: site.record.id, active: true, createdAt: now, updatedAt: now }));
+        }
+        const installationFarmSetup = { ...setup, completedCount: end };
+        transaction.update(projectRef, { installationFarmSetup, updatedAt: now, updatedByUid: requireSignedInUser().uid });
+        return { ...project, installationFarmSetup, updatedAt: now };
+      });
+    } while (installationFarmProgress(latestProject).completedCount < installationFarmProgress(latestProject).requestedCount);
+    return { project: latestProject };
+  } catch (error) {
+    if (!latestProject) throw error;
+    return { project: latestProject, installationSetupError: toError(error).message };
   }
-  await batch.commit();
-  return { project };
 }
 
 async function updateProject(
@@ -1204,7 +1292,11 @@ async function updateProject(
     throw new Error(
       '다른 변경이 먼저 저장됐습니다. 프로젝트를 다시 열어 주세요.',
     );
-  assertSettlementTransition(existing, input);
+  const convertingToInternal = !isInternalProject(existing) && isInternalProject(input);
+  const submittedInput = input;
+  assertProjectKindTransition(existing, submittedInput, workspace);
+  input = normalizeInternalProject(input);
+  if (!isInternalProject(input)) assertSettlementTransition(existing, input);
   if (existing.deletedAt)
     throw new Error(
       '삭제된 프로젝트입니다. 프로젝트 관리에서 먼저 복구해 주세요.',
@@ -1255,19 +1347,19 @@ async function updateProject(
       (item) =>
         isActiveWork(item) &&
         (recordIds.has(item.farmRecordId) ||
-          (isProjectTask(item) && item.projectId === projectId)) &&
+          ((isProjectTask(item) || isInternalTask(item)) && item.projectId === projectId)) &&
         item.status !== 'completed',
     );
     if (
-      requiredDocuments.length === 0 ||
+      (!isInternalProject(input) && (requiredDocuments.length === 0 ||
       requiredDocuments.some((item) => item.status !== 'approved') ||
       !['paid', 'closed'].includes(input.settlementStatus) ||
+      (input.targetFarmCount > 0 && farmCount < input.targetFarmCount))) ||
       openBlockers ||
-      openWork ||
-      (input.targetFarmCount > 0 && farmCount < input.targetFarmCount)
+      openWork
     ) {
       throw new Error(
-        '필수서류 승인, 정산 완료, 목표 농가, 열린 업무와 막힘을 모두 확인한 뒤 사업을 완료해 주세요.',
+        isInternalProject(input) ? '내부 업무와 프로젝트 막힘을 모두 처리한 뒤 완료해 주세요.' : '필수서류 승인, 정산 완료, 설치 개소의 농가 등록, 열린 업무와 막힘을 모두 확인한 뒤 사업을 완료해 주세요.',
       );
     }
   }
@@ -1278,10 +1370,12 @@ async function updateProject(
     ...input,
     updatedAt: now,
   };
+  // Only untouched, empty settlement templates may be removed during conversion.
+  if (convertingToInternal) delete project.settlementRounds;
   const auditUpdate = systemProjectUpdate(
     projectId,
-    '프로젝트 정보 수정',
-    projectChangeSummary(existing, input),
+    convertingToInternal ? '내부 프로젝트로 변경' : '프로젝트 정보 수정',
+    convertingToInternal ? `${existing.name}의 유형을 내부 프로젝트로 변경했습니다. 연결된 농가·업무 및 작성된 정산·서류·진행 기록이 없는 상태에서 변경했습니다. 기존 프로젝트 ID와 기본정보는 유지됩니다.` : projectChangeSummary(existing, input),
     input.manager,
     now,
   );
@@ -1291,6 +1385,22 @@ async function updateProject(
       throw new Error(
         '다른 변경이 먼저 저장됐습니다. 프로젝트를 다시 열어 주세요.',
       );
+    if (convertingToInternal) {
+      // Read fresh relationships while the transaction guards the project's version.
+      // Normal linked-record creation also touches this project, forcing a retry/conflict.
+      const keys = ['records', 'workItems', 'projectDocuments', 'projectUpdates'] as const;
+      const snapshots = await Promise.all(keys.map((key) => getDocsFromServer(
+        query(collectionRef(key), where('projectId', '==', projectId), limit(1000)),
+      )));
+      if (snapshots.some((snapshot) => snapshot.size >= 1000))
+        throw new Error('연결된 기록이 많아 안전하게 전환할 수 없습니다. 별도 내부 프로젝트를 등록해 주세요.');
+      assertProjectKindTransition(latest.data() as FarmProject, submittedInput, {
+        records: snapshots[0].docs.map((doc) => doc.data() as FarmRecord),
+        workItems: snapshots[1].docs.map((doc) => doc.data() as FarmWorkItem),
+        projectDocuments: snapshots[2].docs.map((doc) => doc.data() as FarmProjectDocument),
+        projectUpdates: snapshots[3].docs.map((doc) => doc.data() as FarmProjectUpdate),
+      });
+    }
     setUpdated(transaction, 'projects', project);
     setCreated(transaction, 'projectUpdates', auditUpdate);
   });
@@ -1334,6 +1444,69 @@ async function changeProjectDeletion(
     transaction.update(reference, patch);
     setCreated(transaction, 'projectUpdates', audit);
     return { project: { ...existing, ...patch } };
+  });
+}
+
+async function renameWorkTitle(
+  workItemId: string,
+  title: string,
+  expectedUpdatedAt: number,
+  operationId: string,
+) {
+  const user = requireSignedInUser();
+  const { db } = getFirebaseServices();
+  const fingerprint = await paymentFingerprint({
+    kind: 'work_title', workItemId, title, expectedUpdatedAt,
+  });
+  return runTransaction(db, async (transaction) => {
+    const reference = documentRef('workItems', workItemId);
+    const snapshot = await transaction.get(reference);
+    const actor = await transaction.get(doc(db, 'appMembers', user.uid));
+    const replay = await transaction.get(documentRef('historyEntries', operationId));
+    if (!snapshot.exists()) throw new Error('업무를 찾을 수 없습니다.');
+    const existing = snapshot.data() as FarmWorkItem;
+    assertWorkActive(existing);
+    if (!actor.exists() || !canRenameWork(
+      existing, readMember(user.uid, actor.data()), firebaseWorkspaceId,
+    ))
+      throw new Error('승인된 개인 계정으로 일반 업무명만 변경할 수 있습니다. 입금·구독 증빙의 업무명은 변경할 수 없습니다.');
+    if (replay.exists()) {
+      const historyEntry = replay.data() as FarmHistoryEntry & AuditFields;
+      if (
+        historyEntry.workItemId !== workItemId ||
+        historyEntry.workRequestFingerprint !== fingerprint ||
+        historyEntry.createdByUid !== user.uid
+      )
+        throw new Error('다른 요청에 사용된 번호입니다. 업무명 수정 창을 다시 열어 주세요.');
+      return { workItem: existing, historyEntry };
+    }
+    if (existing.updatedAt !== expectedUpdatedAt)
+      throw new Error('다른 변경이 먼저 저장되었습니다. 입력 내용은 유지되며, 최신 업무를 확인한 뒤 다시 수정해 주세요.');
+    if (existing.title === title) return { workItem: existing };
+    const now = Math.max(Date.now(), existing.updatedAt + 1);
+    const patch = { title, updatedAt: now, updatedByUid: user.uid };
+    const actorData = actor.data();
+    const recorder = (typeof actorData.displayName === 'string' ? actorData.displayName.trim() : '')
+      || accountIdentifier(typeof actorData.email === 'string' ? actorData.email : '')
+      || user.uid;
+    const historyEntry: FarmHistoryEntry = {
+      id: operationId,
+      workItemId,
+      workRequestFingerprint: fingerprint,
+      channel: 'system',
+      sender: '',
+      receivedContent: '',
+      actionContent: `업무명 변경: ‘${existing.title}’ → ‘${title}’`,
+      amount: 0,
+      recorder,
+      occurredAt: now,
+      referenceUrl: '',
+      createdAt: now,
+    };
+    // A title correction must not rewrite status, hierarchy, activity, or payment data.
+    transaction.update(reference, patch);
+    setCreated(transaction, 'historyEntries', historyEntry);
+    return { workItem: { ...existing, ...patch }, historyEntry };
   });
 }
 
@@ -1495,6 +1668,8 @@ async function createProjectDocument(
   const project = assertProjectEditable(
     currentWorkspace().projects.find((item) => item.id === projectId),
   );
+  if (isInternalProject(project))
+    throw new Error('내부 프로젝트에는 사업 제출서류를 등록할 수 없습니다. 내부 업무에 내용을 기록해 주세요.');
   const now = Date.now();
   const document: FarmProjectDocument = {
     id: crypto.randomUUID(),
@@ -1531,6 +1706,8 @@ async function updateProjectDocument(
     workspace.projects.find((item) => item.id === existing.projectId),
     true,
   );
+  if (isInternalProject(project))
+    throw new Error('내부 프로젝트로 변경되어 사업 제출서류를 수정할 수 없습니다. 화면을 새로고침해 주세요.');
   const statusRank = {
     not_started: 0,
     preparing: 1,
@@ -1588,6 +1765,8 @@ async function createProjectUpdate(
     (item) => item.id === projectId,
   );
   if (!project) throw new Error('선택한 사업을 찾을 수 없습니다.');
+  if (isInternalProject(project))
+    throw new Error('내부 프로젝트의 진행 내용과 막힘은 내부 업무에 기록해 주세요.');
   if (project.status === 'completed' && input.kind === 'blocker') {
     throw new Error('완료된 사업에는 새 막힘을 등록할 수 없습니다.');
   }
@@ -1692,6 +1871,7 @@ async function createFarmWithRecord(
   const workspace = currentWorkspace();
   const project = assertProjectEditable(
     workspace.projects.find((item) => item.id === recordInput.projectId),
+    false, false, true,
   );
   if (
     workspace.farms.some(
@@ -1744,6 +1924,7 @@ async function createFarmWithRecord(
       latestProject.exists()
         ? (latestProject.data() as FarmProject)
         : undefined,
+      false, false, true,
     );
     const [farmClaim, recordClaim] = await Promise.all([
       transaction.get(farmClaimRef),
@@ -1828,6 +2009,7 @@ async function createRecord(
   if (!farm) throw new Error('농가를 찾을 수 없습니다.');
   const project = assertProjectEditable(
     workspace.projects.find((item) => item.id === input.projectId),
+    false, false, true,
   );
   if (
     workspace.records.some(
@@ -1864,6 +2046,7 @@ async function createRecord(
       latestProject.exists()
         ? (latestProject.data() as FarmProject)
         : undefined,
+      false, false, true,
     );
     const claimRef = internalDocumentRef('farmRecordReservations', claimId);
     const claim = await transaction.get(claimRef);
@@ -2022,6 +2205,7 @@ async function updateRecord(
     (item) => item.id === input.projectId,
   );
   if (!nextProject) throw new Error('선택한 사업을 찾을 수 없습니다.');
+  assertBusinessProject(nextProject);
   if (
     workspace.records.some(
       (item) =>
@@ -2051,6 +2235,9 @@ async function updateRecord(
       throw new Error('농가의 사업 참여 정보를 찾을 수 없습니다.');
     }
     const existing = snapshot.data() as FarmRecord;
+    const nextProjectSnapshot = await transaction.get(documentRef('projects', input.projectId));
+    if (!nextProjectSnapshot.exists()) throw new Error('프로젝트를 찾을 수 없습니다.');
+    assertBusinessProject(nextProjectSnapshot.data() as FarmProject);
     const previousProject = workspace.projects.find(
       (item) => item.id === existing.projectId,
     );
@@ -2443,7 +2630,7 @@ async function createInboxItem(
         documentRef('projects', input.projectId),
       );
       if (!projectDoc.exists()) throw new Error('프로젝트를 찾을 수 없습니다.');
-      assertProjectEditable(projectDoc.data() as FarmProject);
+      assertProjectEditable(projectDoc.data() as FarmProject, false, false, true);
     }
     setCreated(transaction, 'inboxItems', inboxItem);
     writeReceivedImages(transaction, images, 'inboxItems', id);
@@ -2999,12 +3186,14 @@ async function createWorkItem(
   const projectId = record?.projectId || input.projectId || '';
   if (!record && initialHistory.amount !== 0)
     throw new Error('프로젝트 업무에는 구독 입금을 기록할 수 없습니다.');
-  if (!internal)
-    assertProjectEditable(
+  if (projectId) {
+    const linkedProject = assertProjectEditable(
       workspace.projects.find((item) => item.id === projectId),
       Boolean(record) && !isFarmServiceWork(input),
       isFarmServiceWork(input),
     );
+    assertWorkProjectKind(input, linkedProject);
+  }
   const sourceInbox = sourceInboxId
     ? workspace.inboxItems.find((item) => item.id === sourceInboxId)
     : undefined;
@@ -3154,9 +3343,10 @@ async function createWorkItem(
   return runTransaction(getFirebaseServices().db, async (transaction) => {
     const replay = await readCreateReplay(transaction);
     if (replay) return replay;
-    if (!internal) {
+    if (projectId) {
       const project = await transaction.get(documentRef('projects', projectId));
       if (!project.exists()) throw new Error('프로젝트를 찾을 수 없습니다.');
+      assertWorkProjectKind(input, project.data() as FarmProject);
       assertProjectEditable(
         project.data() as FarmProject,
         Boolean(record) && !isFarmServiceWork(workItem),
@@ -3502,12 +3692,13 @@ async function addHistoryEntry(
       throw new Error(
         '다른 변경이 먼저 저장되었습니다. 최신 업무를 확인한 뒤 다시 적용해 주세요.',
       );
-    if (!isInternalTask(existing)) {
+    if (projectId) {
       const projectSnapshot = await transaction.get(
         documentRef('projects', projectId),
       );
       if (!projectSnapshot.exists())
         throw new Error('프로젝트를 찾을 수 없습니다.');
+      assertWorkProjectKind(existing, projectSnapshot.data() as FarmProject);
       if (
         projectSnapshot.data().status === 'completed' &&
         !isFarmServiceWork(existing) &&
@@ -3733,10 +3924,11 @@ async function toggleChecklist(
       throw new Error(
         '완료된 업무는 수정할 수 없습니다. 업무를 다시 열어 주세요.',
       );
-    if (!isInternalTask(workItem)) {
+    if (record?.projectId || workItem.projectId) {
       const latestProject = await batch.get(
         documentRef('projects', record?.projectId || workItem.projectId || ''),
       );
+      if (latestProject.exists()) assertWorkProjectKind(workItem, latestProject.data() as FarmProject);
       assertProjectEditable(
         latestProject.exists()
           ? (latestProject.data() as FarmProject)
@@ -3768,7 +3960,7 @@ async function toggleChecklist(
       touchActivity(batch, 'records', record.id, now, now);
       touch(batch, 'farms', record.farmId, now);
     }
-    if (!isInternalTask(workItem))
+    if (record?.projectId || workItem.projectId)
       touch(
         batch,
         'projects',
@@ -3795,6 +3987,22 @@ function parseChecklist(value: unknown) {
 async function mutateFarmLedger(method: string, body: JsonObject) {
   const kind = typeof body.kind === 'string' ? body.kind : '';
   if (!kind) throw new Error('저장할 정보 종류를 확인해 주세요.');
+
+  if (kind === 'work_title' && method === 'PATCH') {
+    const workItemId = requiredId(body.workItemId, '업무 ID');
+    if (
+      workItemId.includes('/') ||
+      !Number.isSafeInteger(body.expectedUpdatedAt) || Number(body.expectedUpdatedAt) <= 0 ||
+      typeof body.operationId !== 'string' || !/^[a-zA-Z0-9-]{16,80}$/.test(body.operationId)
+    )
+      throw new Error('업무명 수정 요청을 확인해 주세요.');
+    return renameWorkTitle(
+      workItemId,
+      validateWorkTitle(body.title),
+      Number(body.expectedUpdatedAt),
+      body.operationId,
+    );
+  }
 
   if (kind === 'work_lifecycle' && method === 'PATCH') {
     if (
@@ -3832,7 +4040,11 @@ async function mutateFarmLedger(method: string, body: JsonObject) {
           input,
           body.expectedUpdatedAt as number | undefined,
         )
-      : createProject(input);
+      : createProject(input, body.requestId);
+  }
+
+  if (kind === 'project_installation_farms' && method === 'POST') {
+    return provisionProjectInstallationFarms(requiredId(body.projectId, '사업 ID'));
   }
 
   if (kind === 'project_document') {

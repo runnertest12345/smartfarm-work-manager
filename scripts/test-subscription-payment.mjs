@@ -319,8 +319,11 @@ const scripts = new Map(
     'lib/subscription-payment.ts',
     'lib/subscription-renewal-report.ts',
     'lib/project-work.ts',
+    'lib/internal-projects.ts',
+    'lib/project-installation-farms.ts',
     'lib/service-work.ts',
     'lib/work-lifecycle.ts',
+    'lib/work-title.ts',
     'lib/organization.ts',
     'lib/login-identity.ts',
     'lib/firebase/organization-store.ts',
@@ -374,6 +377,7 @@ function load(
 }
 const { calculateSubscriptionPayment } = load('lib/subscription-payment.ts');
 const settlementTools = load('lib/project-settlements.ts');
+const internalProjectTools = load('lib/internal-projects.ts');
 
 test('회차 원본에서 기한·마감일·금액을 재계산하여 오래된 요약이 위험 KPI를 숨기지 않는다', () => {
   const first = {
@@ -497,6 +501,54 @@ test('정산 회차는 금액을 중복하지 않고 미지정 보존·빈 회�
         second: emptySettlement(),
       }),
     );
+});
+
+test('정산은 1차만 완료 가능하며 추가 차수와 미지정 원본을 합계에 한 번만 포함한다', () => {
+  const { emptySettlement, withSettlementRounds, addSettlementRound, removeLastSettlementRound, parseSettlementRounds, assertSettlementTransition } = settlementTools;
+  const done = { ...emptySettlement(), status: 'paid', claimAmount: 100, approvedAmount: 100, paidAmount: 100, settledAt: '2026-09-11' };
+  let rounds = { first: done };
+  assert.equal(withSettlementRounds(settlementProject(), rounds).settlementStatus, 'paid');
+  rounds = addSettlementRound(addSettlementRound(rounds));
+  assert.equal(withSettlementRounds(settlementProject(), rounds).settlementStatus, 'collecting');
+  rounds.second = done;
+  rounds.third = { ...done, status: 'submitted', paidAmount: 0, settledAt: '', dueDate: '2026-10-01' };
+  const project = withSettlementRounds(settlementProject(), rounds);
+  assert.equal(project.settlementPaidAmount, 200);
+  assert.equal(project.settlementClaimAmount, 300);
+  assert.equal(project.settlementDueDate, '2026-10-01');
+  assert.equal(project.settledAt, '');
+  assert.throws(() => removeLastSettlementRound(rounds), /비어 있는/);
+  assert.throws(() => assertSettlementTransition(project, withSettlementRounds(project, { first: done, second: done })), /삭제/);
+  assert.throws(() => parseSettlementRounds({ first: done, third: done }), /순서/);
+  assert.throws(() => parseSettlementRounds({ first: done, invalid: done }), /회차/);
+  assert.throws(() => parseSettlementRounds({ first: { ...done, claimAmount: 1e15 }, second: done }), /합계/);
+  let maximum = { first: emptySettlement() };
+  for (let count = 1; count < 3; count++) maximum = addSettlementRound(maximum);
+  assert.equal(Object.keys(parseSettlementRounds(maximum)).length, 3);
+  assert.throws(() => addSettlementRound(maximum), /최대 3/);
+  const withOld = { ...maximum, unassigned: done };
+  const assigned = settlementTools.assignLegacySettlement(withOld, 'third');
+  assert.equal(withSettlementRounds(project, assigned).settlementPaidAmount, 100);
+  assertSettlementTransition(withSettlementRounds(project, withOld), withSettlementRounds(project, assigned));
+});
+
+test('추가 정산 차수도 저장·재조회·실패 복구와 감사 이력에 보존된다', async () => {
+  const h = harness();
+  const { emptySettlement, withSettlementRounds } = settlementTools;
+  const old = { ...withSettlementRounds(settlementProject(), { first: emptySettlement(), second: emptySettlement() }), id: 'multi-round-project', createdAt: 1, updatedAt: 1, createdByUid: 'tester', updatedByUid: 'tester' };
+  h.put('projects', old); h.sync();
+  const updated = withSettlementRounds(old, { ...old.settlementRounds, third: { ...emptySettlement(), status: 'submitted', claimAmount: 300, owner: '담당자', dueDate: '2026-10-01', note: '3차 원본' } });
+  const request = { kind: 'project', projectId: old.id, expectedUpdatedAt: 1, project: updated };
+  h.fail();
+  await assert.rejects(h.api.patch(request), /Simulated/);
+  assert.equal(h.list('projects').find((p) => p.id === old.id).settlementRounds.third, undefined);
+  const saved = (await h.api.patch(request)).project; h.sync();
+  assert.equal(saved.settlementRounds.third.note, '3차 원본');
+  assert.equal(saved.settlementClaimAmount, 300);
+  assert.match(h.list('projectUpdates')[0].actionContent, /3차 정산/);
+  await assert.rejects(h.api.patch(request), /다른 변경/);
+  await assert.rejects(h.api.patch({ ...request, expectedUpdatedAt: saved.updatedAt, project: old }), /삭제/);
+  assert.equal(h.list('projects').find((p) => p.id === old.id).settlementRounds.third.note, '3차 원본');
 });
 
 test('프로젝트 정산 저장은 차수·감사를 원자적으로 보존하고 과거 완료·오래된 초안·구버전 덮어쓰기를 막는다', async () => {
@@ -1374,6 +1426,154 @@ function internalWork(
   };
   return body;
 }
+async function createInternalProject(h, name = '내부 프로젝트') {
+  h.sync();
+  return (await h.api.post({ kind: 'project', project: settlementProject({
+    name, projectType: 'internal', institution: '',
+  }) })).project;
+}
+
+function linkedInternalWork(h, projectId, operationId, parent = '') {
+  const body = internalWork(h, operationId, parent);
+  body.workItem.projectId = projectId;
+  return body;
+}
+
+test('내부 프로젝트는 서류·정산·농가 없이 등록하고 업무를 모두 완료한 뒤 마감한다', async () => {
+  const h = organizationHarness();
+  const project = await createInternalProject(h);
+  assert.equal(project.projectType, 'internal');
+  assert.equal(project.contractAmount, 0);
+  assert.equal(project.settlementStatus, 'not_started');
+  assert.equal(project.settlementRounds, undefined);
+  assert.equal(h.list('projectDocuments').length, 0);
+  h.sync();
+  const root = (await h.api.post(linkedInternalWork(h, project.id, 'linked-root-create'))).workItem;
+  h.sync();
+  const child = (await h.api.post(linkedInternalWork(h, project.id, 'linked-child-create', root.id))).workItem;
+  h.sync();
+  const grandchild = (await h.api.post(linkedInternalWork(h, project.id, 'linked-grandchild-create', child.id))).workItem;
+  assert.equal(grandchild.projectId, project.id);
+  assert.equal(grandchild.departmentId, child.departmentId);
+  assert.equal(h.list('subscriptionEvents').length, 0);
+  const save = (patch = {}) => {
+    h.sync();
+    const current = h.list('projects').find((item) => item.id === project.id);
+    return h.api.patch({ kind: 'project', projectId: project.id, expectedUpdatedAt: current.updatedAt, project: { ...current, ...patch } });
+  };
+  await assert.rejects(save({ status: 'completed' }), /내부 업무/);
+  await assert.rejects(changeTask(h, root.id, 'completed'), /세부 업무/);
+  for (const item of [grandchild, child, root]) await changeTask(h, item.id, 'completed');
+  const completed = (await save({ status: 'completed' })).project;
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.currentStage, 'closed');
+  assert.equal(completed.settlementStatus, 'not_started');
+  await assert.rejects(changeTask(h, root.id, 'open'), /완료/);
+  await assert.rejects(h.api.post(linkedInternalWork(h, project.id, 'linked-after-close')), /완료/);
+  await assert.rejects(save({ projectType: 'general', institution: '사업 기관', status: 'active', currentStage: 'operation' }), /별도 프로젝트/);
+});
+
+async function unusedBusinessProject(h) {
+  const empty = internalProjectTools.normalizeInternalProject(settlementProject({ projectType: 'internal' }));
+  return (await h.api.post({ kind: 'project', project: {
+    // Nonzero counts now create linked farms, so a genuinely unused project has zero sites.
+    ...empty, projectType: 'general', targetFarmCount: 0, currentStage: 'verification',
+    settlementRounds: { first: settlementTools.emptySettlement(), second: settlementTools.emptySettlement() },
+  } })).project;
+}
+
+test('빈 일반 프로젝트는 동일 ID로 내부 전환하고 감사 이력·기본정보를 보존한다', async () => {
+  const h = organizationHarness();
+  const before = await unusedBusinessProject(h);
+  assert.equal(h.list('farmRecords').filter((record) => record.projectId === before.id).length, 0);
+  const documents = h.list('projectDocuments');
+  const initialUpdates = h.list('projectUpdates');
+  h.sync();
+  const request = { kind: 'project', projectId: before.id, expectedUpdatedAt: before.updatedAt, project: { ...before, projectType: 'internal' } };
+  h.fail();
+  await assert.rejects(h.api.patch(request), /Simulated/);
+  assert.equal(h.list('projects').find((p) => p.id === before.id).projectType, 'general');
+  assert.deepEqual(h.list('projectUpdates'), initialUpdates);
+  const after = (await h.api.patch(request)).project;
+  for (const key of ['id', 'name', 'manager', 'description', 'startDate', 'endDate', 'createdAt']) assert.equal(after[key], before[key]);
+  assert.equal(after.projectType, 'internal');
+  assert.equal(after.targetFarmCount, 0);
+  assert.equal(after.settlementRounds, undefined);
+  assert.deepEqual(h.list('projectDocuments'), documents);
+  assert.equal(h.list('projectUpdates').length, initialUpdates.length + 1);
+  h.sync();
+  const task = (await h.api.post(linkedInternalWork(h, after.id, 'converted-new-task'))).workItem;
+  assert.equal(task.projectId, before.id);
+  assert.equal(task.scope, 'internal');
+  await assert.rejects(h.api.patch(request), /다른 변경/);
+});
+
+test('전환은 오래된 화면에 없는 서버 연결 기록도 확인하고 원본을 보존한다', async () => {
+  for (const [collection, record] of [
+    ['farmRecords', { id: 'late-farm' }],
+    ['workItems', { id: 'late-task', scope: '', deletedAt: fixedNow }],
+    ['projectDocuments', { id: 'late-doc', status: 'approved' }],
+    ['projectUpdates', { id: 'late-note', kind: 'communication' }],
+  ]) {
+    const h = organizationHarness();
+    const before = await unusedBusinessProject(h);
+    h.sync();
+    // Do not sync this server record into the old UI snapshot.
+    h.put(collection, { ...record, projectId: before.id });
+    await assert.rejects(h.api.patch({ kind: 'project', projectId: before.id, expectedUpdatedAt: before.updatedAt, project: { ...before, projectType: 'internal' } }), /농가|업무|서류/);
+    assert.equal(h.list('projects').find((p) => p.id === before.id).projectType, 'general');
+    assert.ok(h.list(collection).find((row) => row.id === record.id));
+  }
+});
+
+test('전환은 정산이 있는 원본과 수정 초안을 초기화하지 않고 최신 버전 충돌을 거부한다', async () => {
+  const h = organizationHarness();
+  const before = await unusedBusinessProject(h);
+  h.sync();
+  await assert.rejects(h.api.patch({ kind: 'project', projectId: before.id, expectedUpdatedAt: before.updatedAt, project: { ...before, projectType: 'internal', contractAmount: 100 } }), /정산/);
+  h.put('projects', { ...before, contractAmount: 100, updatedAt: before.updatedAt + 1 });
+  await assert.rejects(h.api.patch({ kind: 'project', projectId: before.id, expectedUpdatedAt: before.updatedAt, project: { ...before, projectType: 'internal' } }), /다른 변경/);
+  assert.equal(h.list('projects').find((p) => p.id === before.id).contractAmount, 100);
+});
+
+test('내부 업무의 프로젝트·부서 경계와 기존 미연결 업무를 보존한다', async () => {
+  const h = organizationHarness();
+  const first = await createInternalProject(h, '첫 내부 프로젝트');
+  const second = await createInternalProject(h, '다른 내부 프로젝트');
+  h.sync();
+  const root = (await h.api.post(linkedInternalWork(h, first.id, 'linked-boundary-root'))).workItem;
+  h.sync();
+  await assert.rejects(h.api.post(linkedInternalWork(h, second.id, 'linked-cross-project', root.id)), /같은|상위/);
+  await assert.rejects(h.api.post(internalWork(h, 'linked-omit-project', root.id)), /같은|상위/);
+  const otherDepartment = linkedInternalWork(h, first.id, 'linked-cross-department', root.id);
+  otherDepartment.workItem.assigneeUid = 'other';
+  await assert.rejects(h.api.post(otherDepartment), /같은|상위/);
+  await assert.rejects(h.api.post(linkedInternalWork(h, 'p1', 'linked-business-denied')), /내부 프로젝트/);
+  const businessWork = projectWork(h);
+  businessWork.workItem.projectId = first.id;
+  await assert.rejects(h.api.post(businessWork), /일반·연구/);
+  await assert.rejects(h.api.post(capture({ projectId: first.id })), /내부 프로젝트/);
+  const standalone = (await h.api.post(internalWork(h, 'standalone-still-works'))).workItem;
+  assert.equal(standalone.projectId, '');
+  assert.equal(standalone.scope, 'internal');
+});
+
+test('연결 내부 업무는 삭제·복원해도 프로젝트와 계정 배정을 보존한다', async () => {
+  const h = organizationHarness();
+  const project = await createInternalProject(h);
+  h.sync();
+  const task = (await h.api.post(linkedInternalWork(h, project.id, 'linked-lifecycle-root'))).workItem;
+  const removed = (await deleteOrRestoreTask(h, task, true)).workItem;
+  const restored = (await deleteOrRestoreTask(h, removed, false)).workItem;
+  assert.equal(restored.projectId, project.id);
+  assert.equal(restored.assigneeUid, task.assigneeUid);
+  assert.equal(restored.departmentId, task.departmentId);
+  const removedAgain = (await deleteOrRestoreTask(h, restored, true)).workItem;
+  h.put('projects', { ...project, deletedAt: fixedNow });
+  h.sync();
+  await assert.rejects(deleteOrRestoreTask(h, removedAgain, false), /프로젝트를 먼저 복구/);
+});
+
 test('내부 업무는 실제 계정 배정 근거를 저장하고 사업·농가·구독 데이터는 변경하지 않는다', async () => {
   const h = organizationHarness();
   const before = JSON.stringify(
